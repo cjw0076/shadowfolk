@@ -43,3 +43,10 @@ pids/
 .cursor/mcp.json
 .vscode/mcp.json
 .codex/config.toml
+
+# Local agent/editor wiring (absolute paths; regenerate with `npx @iwsdk/cli adapter sync`)
+.mcp.json
+.cursor/mcp.json
+.vscode/mcp.json
+opencode.json
+.codex/
