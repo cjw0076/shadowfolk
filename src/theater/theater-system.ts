@@ -4,7 +4,7 @@
  * creature waiting for the right shadow: hold your hands so the shadow fits
  * and it wakes, blinks and walks off into the night's story.
  */
-import { Matrix4, Quaternion, Vector3, VisibilityState, createSystem } from '@iwsdk/core';
+import { Color, Matrix4, Quaternion, Vector3, VisibilityState, createSystem } from '@iwsdk/core';
 import {
   HandPose, JOINT_COUNT, JOINT_NAMES, basePoses, mirror,
 } from '../shadow/hand-model.js';
@@ -90,6 +90,7 @@ export class TheaterSystem extends createSystem({}) {
   private saved: Saved = loadSaved();
   private demo = false;
   private immersive = false;
+  private night = new Color('#140e0c');
 
   // Scratch, allocated once.
   private v0 = new Vector3();
@@ -129,6 +130,8 @@ export class TheaterSystem extends createSystem({}) {
     this.cleanupFuncs.push(
       this.world.visibilityState.subscribe((state) => {
         this.immersive = state !== VisibilityState.NonImmersive;
+        // Night backdrop for the browser preview; passthrough shows the room in XR.
+        this.scene.background = this.immersive ? null : this.night;
         if (state === VisibilityState.Visible) {
           this.audio.start();
           this.placed = false;
