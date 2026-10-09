@@ -1,0 +1,25 @@
+{
+  "version": "iwsdk.scene.v1",
+  "units": "meters",
+  "components": {
+    "com.iwsdk.components.IBLGradient": {
+      "sky": [0.32, 0.28, 0.3, 1],
+      "equator": [0.42, 0.33, 0.28, 1],
+      "ground": [0.22, 0.17, 0.15, 1],
+      "intensity": 1
+    }
+  },
+  "resources": {},
+  "nodes": [
+    {
+      "id": "welcome-panel",
+      "name": "Welcome Panel",
+      "content": { "type": "asset", "asset": "welcome-panel" },
+      "transform": { "position": [0, 1.6, -2], "scale": 0.4 },
+      "components": {
+        "RayInteractable": {},
+        "ScreenSpace": { "top": "20px", "left": "20px", "width": "25vw", "height": "40%" }
+      }
+    }
+  ]
+}

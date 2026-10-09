@@ -1,0 +1,154 @@
+/**
+ * The shadow creatures. Each target is a real, reachable hand pose (captured
+ * Quest hand data bent with forward kinematics) presented at a fixed angle to
+ * the screen. Its orthographic shadow becomes the template the player's live
+ * shadow must fit; the same pose drives the ghost-hand hint.
+ */
+import { HandPose, basePoses, clonePose, orient, shape, spread } from './hand-model.js';
+import { PASS } from './thresholds.js';
+import { HandPose as Pose, JOINT_COUNT } from './hand-model.js';
+import {
+  FlatHand, Mask, NORM, STAGE, ScreenFrame, drawHand, moments, normalise, projectFromLight,
+} from './silhouette.js';
+
+export type Motion = 'swim' | 'hop' | 'crawl' | 'bob' | 'fan';
+
+export interface TargetDef {
+  id: string;
+  creature: string;
+  /** One line of the night's story, told when the creature wakes. */
+  line: string;
+  motion: Motion;
+  /** Eyes, each placed between two joints: [jointA, jointB, t]. */
+  eyes: [number, number, number][];
+  build: () => HandPose;
+}
+
+const straight = -0.32;
+
+export const TARGETS: readonly TargetDef[] = [
+  {
+    id: 'peacock',
+    creature: 'Peacock',
+    line: 'A peacock opens its tail to greet the lantern.',
+    motion: 'fan',
+    eyes: [[3, 4, 0.55]],
+    build: () => {
+      const p = shape(basePoses.relaxed(), {
+        thumb: straight, index: straight, middle: straight, ring: straight, pinky: straight,
+      });
+      spread(p, 'index', 8); spread(p, 'pinky', -14); spread(p, 'ring', -6);
+      return orient(p, [0, 0, 0]);
+    },
+  },
+  {
+    id: 'rabbit',
+    creature: 'Rabbit',
+    line: 'The rabbit pricks its ears. Something is coming.',
+    motion: 'hop',
+    eyes: [[11, 16, 0.35]],
+    build: () => {
+      const p = shape(basePoses.relaxed(), {
+        thumb: 0.9, index: straight, middle: straight, ring: 1, pinky: 1,
+      });
+      spread(p, 'index', 10); spread(p, 'middle', -8);
+      return orient(p, [0, 0, 0]);
+    },
+  },
+  {
+    id: 'snail',
+    creature: 'Snail',
+    line: 'A snail lifts two curious horns and starts the long way home.',
+    motion: 'crawl',
+    eyes: [[9, 9, 0], [24, 24, 0]],
+    build: () => {
+      const p = shape(basePoses.relaxed(), {
+        thumb: 0.9, index: straight, middle: 1, ring: 1, pinky: straight,
+      });
+      spread(p, 'index', 6); spread(p, 'pinky', -10);
+      return orient(p, [0, 0, 0]);
+    },
+  },
+  {
+    id: 'fish',
+    creature: 'Fish',
+    line: 'A fish slips out of the dark water of the wall.',
+    motion: 'swim',
+    eyes: [[8, 13, 0.5]],
+    build: () => {
+      const p = shape(basePoses.relaxed(), {
+        thumb: -0.1, index: straight, middle: straight, ring: straight, pinky: straight,
+      });
+      spread(p, 'index', -6); spread(p, 'ring', 5); spread(p, 'pinky', 9);
+      return orient(p, [0, 90, -70]);
+    },
+  },
+  {
+    id: 'duck',
+    creature: 'Duck',
+    line: 'The duck clacks its beak: the night is not over yet.',
+    motion: 'bob',
+    eyes: [[7, 11, 0.6]],
+    build: () => orient(clonePose(basePoses.pinch()), [0, 90, -20]),
+  },
+  {
+    id: 'heron',
+    creature: 'Heron',
+    line: 'A heron stands on one leg and points its beak toward morning.',
+    motion: 'bob',
+    eyes: [[6, 11, 0.4]],
+    build: () => orient(basePoses.point(), [0, 90, -55]),
+  },
+];
+
+/** A target baked into its normalised template and a display silhouette. */
+export interface BakedTarget {
+  def: TargetDef;
+  pose: HandPose;
+  template: Uint8Array; // NORM x NORM
+  /** Weighted IoU needed to wake the creature (tools/eval-targets.ts). */
+  pass: number;
+  /** The ideal shadow on the paper (screen metres, lantern axis at 0,0). */
+  flat: FlatHand;
+  display: Mask;
+}
+
+/** Canonical stage: light at the origin, cut-out centre up and ahead on -Z. */
+const CANON: ScreenFrame = {
+  ox: 0, oy: STAGE.lightDrop, oz: -STAGE.lightToScreen, rx: 1, ry: 0, rz: 0, ux: 0, uy: 1, uz: 0, nx: 0, ny: 0, nz: 1,
+};
+
+/**
+ * Cast a hand-space pose from the canonical lantern: the pose is centred on
+ * the lantern-to-cut-out line at the natural hand distance, hand-space +Z toward the light.
+ */
+export function castCanonical(p: Pose, out: FlatHand, joints = new Float32Array(JOINT_COUNT * 3)): FlatHand {
+  let cx = 0, cy = 0, cz = 0;
+  for (let j = 0; j < JOINT_COUNT; j++) {
+    cx += p.mats[j * 16 + 12]; cy += p.mats[j * 16 + 13]; cz += p.mats[j * 16 + 14];
+  }
+  cx /= JOINT_COUNT; cy /= JOINT_COUNT; cz /= JOINT_COUNT;
+  for (let j = 0; j < JOINT_COUNT; j++) {
+    joints[j * 3] = p.mats[j * 16 + 12] - cx;
+    joints[j * 3 + 1] = p.mats[j * 16 + 13] - cy + (STAGE.lightDrop * STAGE.lightToHand) / STAGE.lightToScreen;
+    joints[j * 3 + 2] = p.mats[j * 16 + 14] - cz - STAGE.lightToHand;
+  }
+  return projectFromLight(joints, p.radii, 0, 0, 0, CANON, out);
+}
+
+export function bakeTarget(def: TargetDef): BakedTarget {
+  const pose = def.build();
+  const flat = castCanonical(pose, new FlatHand());
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (let j = 0; j < flat.x.length; j++) {
+    minX = Math.min(minX, flat.x[j] - flat.r[j]); maxX = Math.max(maxX, flat.x[j] + flat.r[j]);
+    minY = Math.min(minY, flat.y[j] - flat.r[j]); maxY = Math.max(maxY, flat.y[j] + flat.r[j]);
+  }
+  const cell = 0.003;
+  const w = Math.ceil((maxX - minX) / cell) + 4, h = Math.ceil((maxY - minY) / cell) + 4;
+  const display = new Mask(w, h, minX - 2 * cell, minY - 2 * cell, cell);
+  drawHand(display, flat);
+  const template = new Uint8Array(NORM * NORM);
+  normalise(display, moments(display, { area: 0, cx: 0, cy: 0 }), template);
+  return { def, pose, flat, template, display, pass: PASS[def.id] ?? 0.65 };
+}
