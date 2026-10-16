@@ -83,7 +83,10 @@ interface LiveHand {
 
 /** A shadow the player invented: its hands' flat shapes on the paper (metres), an eye, a name. */
 interface Invented { id: string; name: string; hands: { x: number[]; y: number[]; r: number[] }[]; eye: [number, number, number, number] }
-interface Saved { nights: number; woken: Record<string, number>; order?: string[]; carried?: boolean; invented?: Invented[] }
+interface Saved {
+  nights: number; woken: Record<string, number>; order?: string[]; carried?: boolean; invented?: Invented[];
+  oneHand?: boolean; oneHandAdaptations?: number; deferred?: string[];
+}
 
 function loadSaved(): Saved {
   try {
@@ -103,7 +106,13 @@ function loadSaved(): Saved {
         const ids = new Set(TARGETS.map((t) => t.id));
         const order = Array.isArray(candidate.order) ? candidate.order.filter((id): id is string => typeof id === 'string' && ids.has(id)) : undefined;
         const invented = Array.isArray(candidate.invented) ? candidate.invented.filter(validInvented).slice(-MAX_INVENTED) : undefined;
-        return { nights, woken, order, carried: candidate.carried === true, invented };
+        const deferred = Array.isArray(candidate.deferred)
+          ? [...new Set(candidate.deferred.filter((id): id is string => typeof id === 'string'
+            && TARGETS.some((target) => target.id === id && !!target.partner)))] : undefined;
+        const oneHandAdaptations = Number.isSafeInteger(candidate.oneHandAdaptations)
+          && candidate.oneHandAdaptations! >= 0 ? Math.min(2, candidate.oneHandAdaptations!) : 0;
+        return { nights, woken, order, carried: candidate.carried === true, invented,
+          oneHand: candidate.oneHand === true, oneHandAdaptations, deferred };
       }
     }
   } catch { /* private mode: play without memory */ }
@@ -176,7 +185,12 @@ export class TheaterSystem extends createSystem({
   private awaitingLight = false;
   private sessionAt = -1;
   private voiced = false;
-  private oneHand = 0; // seconds a two-hand creature has seen only one shadow
+  private oneHand = 0; // seek seconds with at most one tracked shadow
+  private oneHandSeen = false;
+  private twoHandsSeen = false;
+  private bothHandsTime = 0;
+  private clearOneHandThisSession = false;
+  private reform: { old: number; elapsed: number } | null = null;
   private fresh = -1; // index into TARGETS of tonight's newly joined creature
   private nightTitle = '';
   private moon = new Moon();
@@ -388,14 +402,64 @@ export class TheaterSystem extends createSystem({
     const first = (new URLSearchParams(location.search).get('first') ?? '').split(',')
       .map((id) => TARGETS.findIndex((t) => t.id === id)).filter((i) => i >= 0);
     if (first.length) this.order = [...first, ...this.order.filter((i) => !first.includes(i))].slice(0, Math.max(NIGHT_LENGTH, first.length));
+    if ((!this.saved.oneHand || this.twoHandsSeen) && this.saved.deferred?.length) {
+      const deferred = this.saved.deferred.map((id) => TARGETS.findIndex((target) => target.id === id))
+        .find((index) => index >= 0 && index < known && !this.order.slice(0, NIGHT_LENGTH).includes(index));
+      if (deferred !== undefined) this.order[Math.min(1, this.order.length - 1)] = deferred;
+    }
+    this.step = 0;
+    if (this.saved.oneHand && !this.twoHandsSeen) this.suppressTwoHandTargets();
     const key = nights === 0 ? 'first' : this.fresh >= 0 ? TARGETS[this.fresh].id : '';
     this.nightTitle = `Night ${nights + 1} \u00b7 ${NIGHT_NAMES[key] ?? 'Old Friends'}`;
     const phase = moonPhase();
     this.moon.setPhase(phase);
     this.fullMoon = isFullMoon(phase);
     this.nightTitleAt = -1;
-    this.step = 0;
     this.enter(Phase.Seek);
+  }
+
+  private replacement(slot: number): number {
+    const known = Math.min(TARGETS.length, FIRST_NIGHT + this.saved.nights);
+    const candidates = TARGETS.slice(0, known).map((target, index) => ({ target, index }))
+      .filter(({ target }) => !target.partner);
+    const available = candidates.filter(({ index }) => !this.order.slice(0, NIGHT_LENGTH).includes(index));
+    const notYetPlayed = candidates.filter(({ index }) => !this.order.slice(0, slot).includes(index));
+    const pool = available.length ? available : notYetPlayed.length ? notYetPlayed : candidates;
+    pool.sort((a, b) => (this.saved.woken[a.target.id] ?? 0) - (this.saved.woken[b.target.id] ?? 0) || a.index - b.index);
+    return pool[0].index;
+  }
+
+  private replaceTwoHand(slot: number, animate: boolean): void {
+    const old = this.order[slot];
+    if (!TARGETS[old].partner) return;
+    this.order[slot] = this.replacement(slot);
+    const deferred = this.saved.deferred ?? (this.saved.deferred = []);
+    if (!deferred.includes(TARGETS[old].id)) deferred.push(TARGETS[old].id);
+    if (this.fresh === old) this.fresh = -1;
+    if (animate) {
+      this.reform = { old, elapsed: 0 };
+      this.score = this.hold = this.stuck = this.oneHand = 0;
+      this.oneHandSeen = false;
+      this.ghost.opacity = this.ghost2.opacity = 0;
+      this.audio.setHold(0);
+    }
+  }
+
+  private suppressTwoHandTargets(): void {
+    for (let slot = this.step; slot < Math.min(NIGHT_LENGTH, this.order.length); slot++) {
+      if (TARGETS[this.order[slot]].partner) this.replaceTwoHand(slot, false);
+    }
+    save(this.saved);
+  }
+
+  private adaptOneHand(): void {
+    this.replaceTwoHand(this.step, true);
+    this.saved.oneHandAdaptations = Math.min(2, (this.saved.oneHandAdaptations ?? 0) + 1);
+    if (this.saved.oneHandAdaptations >= 2) {
+      this.saved.oneHand = true;
+      this.suppressTwoHandTargets();
+    }
+    save(this.saved);
   }
 
   /** True when some cast shadow's centre lies on the paper (a hand has entered the light). */
@@ -423,6 +487,9 @@ export class TheaterSystem extends createSystem({
     this.hold = 0;
     this.stuck = 0;
     this.score = 0;
+    this.oneHand = 0;
+    this.oneHandSeen = false;
+    this.reform = null;
     if (p === Phase.Seek) this.audio.rustle();
   }
 
@@ -435,6 +502,10 @@ export class TheaterSystem extends createSystem({
     this.placeAt = -1;
     this.visibleAt = -1;
     this.anchored = false;
+    this.twoHandsSeen = false;
+    this.bothHandsTime = 0;
+    this.clearOneHandThisSession = this.saved.oneHand === true;
+    if (this.saved.oneHand) this.suppressTwoHandTargets();
     const session = this.renderer.xr.getSession?.();
     if (session && this.rigAnchor.hasSaved) {
       this.restore = 'pending';
@@ -450,6 +521,9 @@ export class TheaterSystem extends createSystem({
     this.rigAnchor.endSession();
     this.restore = 'idle';
     this.anchored = false;
+    this.twoHandsSeen = false;
+    this.bothHandsTime = 0;
+    this.clearOneHandThisSession = false;
     this.table = null;
     this.mode = 'float';
     this.screen.setPinned(false);
@@ -1068,6 +1142,7 @@ export class TheaterSystem extends createSystem({
       this.audio.setHold(0);
     }
     this.handMask = handMask;
+    this.observeSessionHands(handMask, dt);
     const anyReal = handMask !== 0;
     if (anyReal) this.handsSeenAt = time;
     else if (this.handsSeenAt < 0) this.handsSeenAt = time;
@@ -1175,10 +1250,25 @@ export class TheaterSystem extends createSystem({
     this.wall.update(this.animationTime);
   }
 
+  private observeSessionHands(mask: number, dt: number): void {
+    if (!this.immersive) return;
+    if (mask !== 3) { this.bothHandsTime = 0; return; }
+    this.twoHandsSeen = true;
+    this.bothHandsTime += dt;
+    if (this.clearOneHandThisSession && this.bothHandsTime >= 3) {
+      this.saved.oneHand = false;
+      this.saved.oneHandAdaptations = 0;
+      this.clearOneHandThisSession = false;
+      save(this.saved);
+    }
+  }
+
   private seek(target: BakedTarget, stencil: Stencil, casters: number, dt: number, time: number): void {
     const casting = casters > 0;
+    if (this.reform) this.reform.elapsed += dt;
+    const reforming = !!this.reform && this.reform.elapsed < 1.4;
     // A two-hand creature only wakes for two shadows.
-    const raw = casters >= (target.partner ? 2 : 1) ? this.matcher.score(this.live, target.template) : 0;
+    const raw = !reforming && casters >= (target.partner ? 2 : 1) ? this.matcher.score(this.live, target.template) : 0;
     this.score += (raw - this.score) * Math.min(1, dt * 10);
     const close = Math.max(0, Math.min(1, (this.score - 0.3) / (target.pass - 0.3)));
     if (!casting) { this.score = 0; this.hold = 0; }
@@ -1187,10 +1277,20 @@ export class TheaterSystem extends createSystem({
     this.audio.setHold(casting ? close * close : 0);
 
     const glow = close * close + (this.hold > 0 ? 0.4 * this.hold / HOLD_TO_WAKE : 0);
-    this.painter.target(stencil, 0, TARGET_CY, glow, time, ease(this.phaseTime / 0.9));
+    const oldCut = this.reform && this.reform.elapsed < 0.5;
+    const shown = oldCut ? this.stencils[this.reform!.old] : stencil;
+    const reveal = this.reform
+      ? oldCut ? 1 - ease(this.reform.elapsed / 0.5) : ease((this.reform.elapsed - 0.5) / 0.9)
+      : ease(this.phaseTime / 0.9);
+    this.painter.target(shown, 0, TARGET_CY, glow, time, reveal, this.reform ? 0.25 : 0);
+    if (this.reform) {
+      this.painter.caption('One hand is enough tonight.', Math.min(ease(this.reform.elapsed / 0.5),
+        1 - ease((this.reform.elapsed - 3.8) / 0.7)), 0.24);
+      if (this.reform.elapsed >= 4.5) this.reform = null;
+    }
 
     // First moment of the first night: light and shadow speak first; words only if nothing happens.
-    if (this.saved.nights === 0 && this.step === 0) {
+    if (!this.reform && this.saved.nights === 0 && this.step === 0) {
       const quiet = this.animationTime - Math.max(0, this.sessionAt);
       if (!casting && quiet > 5) this.painter.caption('Lift a hand into the lantern light.', ease((quiet - 5) / 0.8));
       else if (casting && this.phaseTime > 6 && close < 0.6) this.painter.caption('Fit your shadow to the shape.', 1);
@@ -1203,12 +1303,14 @@ export class TheaterSystem extends createSystem({
       if (this.fullMoon && a > 1 && a < 5.5) this.painter.caption('A full moon tonight. Everyone is awake a little longer.', Math.min(ease((a - 1) / 0.6), 1 - ease((a - 4.7) / 0.8)), -0.27);
     }
     // Once, after the first creature of a session: the theater can be carried by hand.
-    if (this.immersive && this.step === 1 && !this.saved.carried && this.phaseTime > 1 && this.phaseTime < 6) {
+    if (!this.reform && this.immersive && this.step === 1 && !this.saved.carried && this.phaseTime > 1 && this.phaseTime < 6) {
       this.painter.caption('Pinch the lantern to carry the theater.', Math.min(ease((this.phaseTime - 1) / 0.6), 1 - ease((this.phaseTime - 5.2) / 0.8)), -0.27);
     }
-    // A two-hand creature: say so when only one shadow keeps trying.
-    if (target.partner && casters === 1) this.oneHand += dt; else this.oneHand = Math.max(0, this.oneHand - dt);
-    if (target.partner && this.oneHand > 2.5) this.painter.caption('This one takes both hands.', ease((this.oneHand - 2.5) / 0.6), -0.27);
+    if (target.partner) {
+      if (casters === 1) this.oneHandSeen = true;
+      if (casters >= 2) { this.oneHand = 0; this.oneHandSeen = false; }
+      else if (this.oneHandSeen) this.oneHand += dt;
+    }
     // A newcomer shimmers the first time it appears.
     if (this.baked.indexOf(target) === this.fresh) {
       this.painter.sparks(0, TARGET_CY, (time * 0.35) % 1, 0.5);
@@ -1235,10 +1337,16 @@ export class TheaterSystem extends createSystem({
     this.ghost.opacity = hintsAllowed ? hint * (0.28 + 0.08 * Math.sin(time * 3)) : 0;
     this.ghost2.opacity = target.partner ? this.ghost.opacity : 0;
 
+    if (target.partner && this.oneHand >= 8 && hint > 0 && hintsAllowed) {
+      this.adaptOneHand();
+      return;
+    }
+
     if (this.hold >= HOLD_TO_WAKE) {
       this.audio.setHold(0);
       this.audio.chime(this.step);
       const id = target.def.id;
+      if (this.saved.deferred?.includes(id)) this.saved.deferred = this.saved.deferred.filter((value) => value !== id);
       this.saved.woken[id] = (this.saved.woken[id] ?? 0) + 1;
       const order = this.saved.order ?? (this.saved.order = Object.keys(this.saved.woken).filter((k) => k !== id));
       if (!order.includes(id)) order.push(id);
