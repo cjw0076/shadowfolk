@@ -809,7 +809,19 @@ export class TheaterSystem extends createSystem({
       case Phase.Finale: this.finale(this.animationTime); break;
     }
 
-    for (const h of this.allHands) if (h.valid && h.flat.valid) p.shadow(h.flat);
+    const screenDistance = this.screenCentre.distanceTo(L);
+    for (const hand of this.allHands) {
+      if (!hand.valid || !hand.flat.valid) continue;
+      let distance = 0;
+      for (let joint = 0; joint < JOINT_COUNT; joint++) {
+        const offset = joint * 3;
+        distance += Math.hypot(hand.joints[offset] - L.x, hand.joints[offset + 1] - L.y,
+          hand.joints[offset + 2] - L.z);
+      }
+      distance = Math.max(0.15, distance / JOINT_COUNT);
+      const penumbraMetres = 0.038 * Math.max(0, screenDistance - distance) / distance;
+      p.shadow(hand.flat, Math.min(24, Math.max(1, penumbraMetres * 256)));
+    }
     p.flushShadows(this.phase === Phase.Wake ? 0.35 : 0.9);
     if (this.phase !== Phase.Finale) p.progress(this.step, NIGHT_LENGTH);
 
@@ -956,4 +968,3 @@ export class TheaterSystem extends createSystem({
   }
 
 }
-

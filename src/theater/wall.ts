@@ -307,18 +307,26 @@ export class WallLayer {
     eyes.height = st.ink.height;
     eyes.dataset.shadowfolkWallUpload = 'sprite';
     const eyeContext = eyes.getContext('2d')!;
-    eyeContext.fillStyle = '#ffd9a0';
-    const pixelX = st.ink.width / (st.w * PX);
-    const pixelY = st.ink.height / (st.h * PX);
     for (const [u, v] of st.eyes) {
       for (let blink = 0; blink < 2; blink++) {
+        const x = (u + blink) * st.ink.width;
+        const y = v * st.ink.height;
+        const glow = eyeContext.createRadialGradient(x, y, 0, x, y, 9);
+        glow.addColorStop(0, '#ffd9a0');
+        glow.addColorStop(0.35, 'rgba(217,143,63,0.85)');
+        glow.addColorStop(1, 'rgba(217,143,63,0)');
+        eyeContext.fillStyle = glow;
         eyeContext.beginPath();
-        eyeContext.ellipse(
-          (u + blink) * st.ink.width, v * st.ink.height,
-          (blink ? 2.4 : 2.2) * pixelX, (blink ? 0.6 : 2.2) * pixelY,
-          0, 0, Math.PI * 2,
-        );
+        eyeContext.ellipse(x, y, blink ? 6 : 9, blink ? 1.8 : 9, 0, 0, Math.PI * 2);
         eyeContext.fill();
+        if (!blink) {
+          eyeContext.fillStyle = '#ffd985';
+          eyeContext.beginPath();
+          eyeContext.arc(x, y, 2.3, 0, Math.PI * 2);
+          eyeContext.fill();
+          eyeContext.fillStyle = '#fff';
+          eyeContext.fillRect(x - 1, y - 1.5, 1, 1);
+        }
       }
     }
     const makeTexture = (source: HTMLCanvasElement): CanvasTexture => {
