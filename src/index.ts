@@ -6,11 +6,13 @@ import projectOptions from 'virtual:iwsdk-project';
 import { capturing, installCapture } from './capture.js';
 import { PanelSystem } from './panel.js';
 import { TheaterSystem } from './theater/theater-system.js';
+import { configureXrRendering } from './theater/xr-render.js';
 
 World.create(
   document.getElementById('scene-container') as HTMLDivElement,
   projectOptions,
 ).then((world) => {
+  configureXrRendering(world.renderer);
   if (capturing) installCapture(world);
   world.registerSystem(TheaterSystem);
   world.registerSystem(PanelSystem);
