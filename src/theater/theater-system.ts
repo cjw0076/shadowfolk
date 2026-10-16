@@ -165,6 +165,8 @@ export class TheaterSystem extends createSystem({
   private reported = new Set<string>();
   private emberShown = false;
   private demoDelay = Number(new URLSearchParams(typeof location !== 'undefined' ? location.search : '').get('demoDelay')) || 0;
+  /** `?demoDepth` (filming): before forming a shape, the demo hand moves toward the lantern and back. */
+  private demoDepth = typeof location !== 'undefined' && new URLSearchParams(location.search).has('demoDepth');
   private lit = 1; // lantern brightness 0..1
   private litTarget = 1;
   private awaitingLight = false;
@@ -976,6 +978,11 @@ export class TheaterSystem extends createSystem({
     this.poseToWorld(tmp, pos, lift, shift);
     // A touch of drift so the shadow breathes like a real hand.
     for (let j = 0; j < JOINT_COUNT; j++) pos[j * 3] += 0.006 * Math.sin(t * 0.9);
+    if (this.demoDepth && this.phase === Phase.Seek) {
+      // Slide along the lantern-to-paper line: the shadow swells near the light and sharpens near the paper.
+      const f = this.frame, d = 0.13 * Math.sin(this.phaseTime * 1.6) * (1 - k);
+      for (let j = 0; j < JOINT_COUNT; j++) { pos[j * 3] += d * f.nx; pos[j * 3 + 1] += d * f.ny; pos[j * 3 + 2] += d * f.nz; }
+    }
     if (this.phase === Phase.Wake && this.phaseTime < WALK_AT) {
       // Sway sideways so the just-woken creature visibly follows the hand.
       const sw = 0.035 * Math.sin(this.phaseTime * 4.5), f = this.frame;
