@@ -38,6 +38,7 @@ A paper lantern stands on your real table and a washi-paper screen stands beyond
 ## Verification
 - `tools/check-runtime-browser.mjs`: runtime fault checks (storage, pause and resume, hand loss, audio).
 - `tools/check-matcher.ts`: matcher exactness.
+- `tools/check-static-canvas-backing.mjs <preview-url>`: static paper and wall textures use CPU-backed canvases; the live shadow keeps its GPU 2D path.
 - `tools/browser/xr-e2e-all.mjs`, `xr-room-e2e.mjs`: end-to-end in the IWER emulator with real emulated XR hand joints through `readHands`, the matcher and the wake.
   - All 11 creatures wake.
   - Seven near-miss inputs never wake.
