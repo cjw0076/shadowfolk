@@ -19,7 +19,7 @@ import { runtimePerf as perf } from './perf.js';
 import { SCREEN_H, SCREEN_W, ScreenPainter, Stencil, makeStencil } from './painter.js';
 import { RigAnchor } from './anchor.js';
 import { LANTERN_ON_TABLE, Surface, TableFit, WallFit, fitPinWall, fitTable, fitWall } from './room.js';
-import { GhostHand, Lantern, PaperScreen, buildLantern, buildScreen } from './stage.js';
+import { GhostHand, Lantern, PaperScreen, RoomDim, buildLantern, buildRoomDim, buildScreen } from './stage.js';
 import { captureControl } from '../capture.js';
 import { PreviewRoom } from './preview-room.js';
 import { WallLayer } from './wall.js';
@@ -122,6 +122,7 @@ export class TheaterSystem extends createSystem({
   // Room awareness: a table to stand on, a wall to live on, an anchor to return to.
   private wall = new WallLayer();
   private preview = new PreviewRoom(); // stand-in room for the browser preview
+  private dim!: RoomDim; // theater lights down over the passthrough room
   private rigAnchor = new RigAnchor();
   private table: TableFit | null = null;
   private mode: RigMode = 'float';
@@ -140,6 +141,7 @@ export class TheaterSystem extends createSystem({
   private awaitingLight = false;
   private sessionAt = -1;
   private voiced = false;
+  private oneHand = 0; // seconds a two-hand creature has seen only one shadow
   private fresh = -1; // index into TARGETS of tonight's newly joined creature
   private finaleX = new Float32Array(16);
   private aPos = new Vector3();
@@ -189,13 +191,14 @@ export class TheaterSystem extends createSystem({
     this.demo = new URLSearchParams(location.search).has('demo');
     this.painter = new ScreenPainter();
     this.lantern = buildLantern();
+    this.dim = buildRoomDim();
     this.screen = buildScreen(this.painter);
     this.ghost = new GhostHand();
     this.ghost2 = new GhostHand('GhostHand2');
     this.puppeteer = new GhostHand('DemoHand', '#c99877', true);
     this.puppeteer2 = new GhostHand('DemoHand2', '#c99877', true);
     for (const o of [this.lantern.root, this.screen.root, this.ghost.root, this.ghost2.root,
-      this.puppeteer.root, this.puppeteer2.root, this.wall.root, this.preview.root]) {
+      this.puppeteer.root, this.puppeteer2.root, this.wall.root, this.preview.root, this.dim.mesh]) {
       this.world.createTransformEntity(o);
     }
     this.baked = TARGETS.map(bakeTarget);
@@ -760,6 +763,10 @@ export class TheaterSystem extends createSystem({
     this.lantern.bodyMat.color.setRGB(glow, 0.81 * glow, 0.54 * glow);
     this.lantern.halo.scale.setScalar((0.12 + 0.12 * this.lit) + 0.02 * flick);
     (this.lantern.pool.material as MeshBasicMaterial).opacity = 0.32 * this.lit * flick;
+    // The room dims as the lantern blooms (passthrough only; the preview room is already dark).
+    // House lights go down first, then the lantern blooms.
+    const houseDown = this.immersive ? ease((this.animationTime - Math.max(0, this.sessionAt)) / 2.5) : 0;
+    this.dim.update(this.camera.getWorldPosition(this.v0), this.lanternPos, (0.38 + 0.1 * this.lit) * houseDown);
     const paperTone = 0.32 + 0.68 * this.lit;
     this.painter.setTone(paperTone);
 
@@ -822,6 +829,9 @@ export class TheaterSystem extends createSystem({
       if (!casting && quiet > 5) this.painter.caption('Lift a hand into the lantern light.', ease((quiet - 5) / 0.8));
       else if (casting && this.phaseTime > 6 && close < 0.6) this.painter.caption('Fit your shadow to the shape.', 1);
     }
+    // A two-hand creature: say so when only one shadow keeps trying.
+    if (target.partner && casters === 1) this.oneHand += dt; else this.oneHand = Math.max(0, this.oneHand - dt);
+    if (target.partner && this.oneHand > 2.5) this.painter.caption('This one takes both hands.', ease((this.oneHand - 2.5) / 0.6), -0.27);
     // A newcomer shimmers the first time it appears.
     if (this.baked.indexOf(target) === this.fresh) {
       this.painter.sparks(0, TARGET_CY, (time * 0.35) % 1, 0.5);

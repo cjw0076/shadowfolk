@@ -5,6 +5,11 @@
  */
 import {
   AdditiveBlending,
+  BackSide,
+  CustomBlending,
+  OneFactor,
+  OneMinusSrcAlphaFactor,
+  SrcAlphaFactor,
   BoxGeometry,
   CanvasTexture,
   Color,
@@ -19,6 +24,7 @@ import {
   Object3D,
   PlaneGeometry,
   Quaternion,
+  ShaderMaterial,
   SphereGeometry,
   Sprite,
   SpriteMaterial,
@@ -227,4 +233,69 @@ export function disposeTree(o: Object3D): void {
     const mesh = n as Mesh;
     mesh.geometry?.dispose?.();
   });
+}
+
+/**
+ * Theater lights down: a large sphere around the viewer that darkens the
+ * passthrough room, least in the direction of the lantern, so the real room
+ * stays visible but the lantern light and the shadows carry the scene.
+ */
+export interface RoomDim {
+  mesh: Mesh;
+  update(head: Vector3, lantern: Vector3, amount: number): void;
+}
+
+export function buildRoomDim(): RoomDim {
+  const material = new ShaderMaterial({
+    // Drawn first in the opaque pass with explicit blending, without depth, so it
+    // darkens only what is behind the scene (passthrough) and every prop draws over it.
+    transparent: false,
+    blending: CustomBlending,
+    blendSrc: SrcAlphaFactor,
+    blendDst: OneMinusSrcAlphaFactor,
+    blendSrcAlpha: OneFactor,
+    blendDstAlpha: OneMinusSrcAlphaFactor,
+    depthWrite: false,
+    depthTest: false,
+    side: BackSide,
+    uniforms: {
+      uHead: { value: new Vector3() },
+      uLantern: { value: new Vector3(0, 0, -1) },
+      uAmount: { value: 0 },
+    },
+    vertexShader: /* glsl */ `
+      varying vec3 vWorld;
+      void main() {
+        vec4 w = modelMatrix * vec4(position, 1.0);
+        vWorld = w.xyz;
+        gl_Position = projectionMatrix * viewMatrix * w;
+      }`,
+    fragmentShader: /* glsl */ `
+      uniform vec3 uHead;
+      uniform vec3 uLantern;
+      uniform float uAmount;
+      varying vec3 vWorld;
+      void main() {
+        vec3 d = normalize(vWorld - uHead);
+        vec3 l = normalize(uLantern - uHead);
+        float c = dot(d, l);
+        // Lightest toward the lantern and the paper beyond it, darkest behind the viewer.
+        float a = uAmount * (1.0 - 0.6 * smoothstep(0.55, 0.97, c));
+        gl_FragColor = vec4(0.012, 0.016, 0.03, a);
+      }`,
+  });
+  const mesh = new Mesh(new SphereGeometry(8, 32, 16), material);
+  mesh.name = 'RoomDim';
+  mesh.renderOrder = -100;
+  mesh.frustumCulled = false;
+  return {
+    mesh,
+    update(head, lantern, amount) {
+      mesh.position.copy(head);
+      material.uniforms.uHead.value.copy(head);
+      material.uniforms.uLantern.value.copy(lantern);
+      material.uniforms.uAmount.value = amount;
+      mesh.visible = amount > 0.005;
+    },
+  };
 }
