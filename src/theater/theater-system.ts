@@ -13,6 +13,7 @@ import {
 } from '../shadow/silhouette.js';
 import { BakedTarget, TARGETS, bakeTarget } from '../shadow/targets.js';
 import { TheaterAudio } from './audio.js';
+import { runtimePerf as perf } from './perf.js';
 import { SCREEN_H, SCREEN_W, ScreenPainter, Stencil, makeStencil } from './painter.js';
 import { GhostHand, Lantern, PaperScreen, buildLantern, buildScreen } from './stage.js';
 
@@ -276,6 +277,15 @@ export class TheaterSystem extends createSystem({}) {
   }
 
   update(delta: number, time: number): void {
+    const started = perf?.beginFrame();
+    try {
+      this.updateFrame(delta, time);
+    } finally {
+      if (started !== undefined) perf!.endFrame(started, this.phase);
+    }
+  }
+
+  private updateFrame(delta: number, time: number): void {
     const dt = Math.min(delta, 0.05);
     if (!this.placed && time >= this.placeAt) this.place();
     if (!this.placed) return;
