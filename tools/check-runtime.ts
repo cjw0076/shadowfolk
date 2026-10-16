@@ -40,7 +40,7 @@ export async function run(): Promise<string[]> {
     localStorage.removeItem('shadow-theater.v1');
     const { system: s, world, state, frame, ref } = make();
     let starts = 0, pauses = 0, disposed = 0;
-    s.audio = { start() { starts++; }, pause() { pauses++; }, setHold() {}, rustle() {}, chime() {}, dispose() { disposed++; } };
+    s.audio = { start() { starts++; }, pause() { pauses++; }, setHold() {}, rustle() {}, chime() {}, bloom() {}, voice() {}, note() {}, settle() {}, dispose() { disposed++; } };
     s.init();
     s.demo = false;
     try {
