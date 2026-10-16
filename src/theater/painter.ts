@@ -5,9 +5,8 @@
  * changes every frame; the rest are cached textures or GPU transforms.
  */
 import {
-  AdditiveBlending, BufferGeometry, CanvasTexture, Color, Float32BufferAttribute, Group,
-  LinearFilter, Mesh, MeshBasicMaterial, PlaneGeometry, Points, PointsMaterial,
-  SRGBColorSpace, Vector2, Vector4,
+  AdditiveBlending, CanvasTexture, Color, DynamicDrawUsage, Group, InstancedMesh,
+  LinearFilter, Mesh, MeshBasicMaterial, Object3D, PlaneGeometry, SRGBColorSpace, Vector2, Vector4,
 } from '@iwsdk/core';
 import { BONES, PALM } from '../shadow/hand-model.js';
 import { FlatHand } from '../shadow/silhouette.js';
@@ -186,8 +185,8 @@ export class ScreenPainter {
   private creatureCount = 0;
   private captions: CaptionLayer[] = [];
   private perfCaption: CaptionLayer;
-  private sparksMesh: Points<BufferGeometry, PointsMaterial>;
-  private sparkPositions: Float32BufferAttribute;
+  private sparksMesh: InstancedMesh<PlaneGeometry, MeshBasicMaterial>;
+  private sparkTransform = new Object3D();
   private paperX = 0;
   private paperY = -0.2;
   private paperReady = false;
@@ -228,20 +227,21 @@ export class ScreenPainter {
       };
       this.creatures.push({ mesh, clip, turn });
     }
-    const geometry = new BufferGeometry();
-    this.sparkPositions = new Float32BufferAttribute(new Float32Array(SPARK_COUNT * 3), 3);
-    geometry.setAttribute('position', this.sparkPositions);
-    const colors = new Float32Array(SPARK_COUNT * 3);
+    const [sparkCanvas, sparkContext] = canvas(32, 32);
+    const sparkGradient = sparkContext.createRadialGradient(16, 16, 0, 16, 16, 16);
+    sparkGradient.addColorStop(0, 'rgba(255,255,255,1)');
+    sparkGradient.addColorStop(0.45, 'rgba(255,255,255,0.95)');
+    sparkGradient.addColorStop(1, 'rgba(255,255,255,0)');
+    sparkContext.fillStyle = sparkGradient;
+    sparkContext.fillRect(0, 0, 32, 32);
+    this.sparksMesh = new InstancedMesh(new PlaneGeometry(1, 1), new MeshBasicMaterial({
+      map: texture(sparkCanvas), transparent: true, depthWrite: false,
+      blending: AdditiveBlending, toneMapped: false,
+    }), SPARK_COUNT);
+    this.sparksMesh.instanceMatrix.setUsage(DynamicDrawUsage);
     for (let index = 0; index < SPARK_COUNT; index++) {
-      colors[index * 3] = 1;
-      colors[index * 3 + 1] = (180 + ((index * 13) % 60)) / 255;
-      colors[index * 3 + 2] = 90 / 255;
+      this.sparksMesh.setColorAt(index, new Color(`rgb(255, ${180 + ((index * 13) % 60)}, 90)`));
     }
-    geometry.setAttribute('color', new Float32BufferAttribute(colors, 3));
-    this.sparksMesh = new Points(geometry, new PointsMaterial({
-      size: 7, sizeAttenuation: false, vertexColors: true, transparent: true,
-      depthWrite: false, blending: AdditiveBlending, toneMapped: false,
-    }));
     this.sparksMesh.position.z = 0.002;
     this.sparksMesh.renderOrder = 5;
     this.sparksMesh.frustumCulled = false;
@@ -405,14 +405,16 @@ export class ScreenPainter {
   /** Little sparks of lantern light (wake moment). */
   sparks(cx: number, cy: number, t: number, alpha: number): void {
     const started = perf ? performance.now() : 0;
-    const positions = this.sparkPositions.array as Float32Array;
+    const transform = this.sparkTransform;
     for (let k = 0; k < SPARK_COUNT; k++) {
       const a = k * 2.399 + t * 0.6, r = (40 + 260 * t) * (0.5 + ((k * 37) % 10) / 20);
-      positions[k * 3] = cx + Math.cos(a) * r / PX;
-      positions[k * 3 + 1] = cy - Math.sin(a) * r / PX;
-      positions[k * 3 + 2] = 0;
+      const diameter = (6 + 2 * (k % 3)) / PX;
+      transform.position.set(cx + Math.cos(a) * r / PX, cy - Math.sin(a) * r / PX, 0);
+      transform.scale.set(diameter, diameter, 1);
+      transform.updateMatrix();
+      this.sparksMesh.setMatrixAt(k, transform.matrix);
     }
-    this.sparkPositions.needsUpdate = true;
+    this.sparksMesh.instanceMatrix.needsUpdate = true;
     this.sparksMesh.material.opacity = alpha * (1 - t);
     this.sparksMesh.visible = this.sparksMesh.material.opacity > 0;
     perf?.endCall('sparks', started);
