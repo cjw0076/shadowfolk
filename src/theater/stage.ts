@@ -329,9 +329,11 @@ export function buildRoomDim(): RoomDim {
         vec3 d = normalize(vWorld - uHead);
         vec3 l = normalize(uLantern - uHead);
         float c = dot(d, l);
-        // Lightest toward the lantern and the paper beyond it, darkest behind the viewer.
-        float a = uAmount * (1.0 - 0.6 * smoothstep(0.55, 0.97, c));
-        gl_FragColor = vec4(0.012, 0.016, 0.03, a);
+        // Lightest toward the lantern and the paper beyond it, darkest behind the viewer;
+        // toward the lantern the room takes a faint warm cast, as if lit by the flame.
+        float toward = smoothstep(0.6, 0.98, c);
+        float a = uAmount * (1.0 - 0.45 * toward);
+        gl_FragColor = vec4(mix(vec3(0.012, 0.016, 0.03), vec3(0.16, 0.085, 0.025), 0.6 * smoothstep(0.75, 0.99, c)), a);
       }`,
   });
   const mesh = new Mesh(new SphereGeometry(8, 32, 16), material);

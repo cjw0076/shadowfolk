@@ -1104,7 +1104,7 @@ export class TheaterSystem extends createSystem({
     // The room dims as the lantern blooms (passthrough only; the preview room is already dark).
     // House lights go down first, then the lantern blooms.
     const houseDown = this.immersive ? ease((this.animationTime - Math.max(0, this.sessionAt)) / 2.5) : 0;
-    this.dim.update(this.camera.getWorldPosition(this.v0), this.lanternPos, (0.38 + 0.1 * this.lit) * houseDown);
+    this.dim.update(this.camera.getWorldPosition(this.v0), this.lanternPos, (0.55 + 0.17 * this.lit) * houseDown);
     const finaleDim = this.phase === Phase.Finale
       ? ease((this.phaseTime - FINALE_TIME + 2.2) / 2.2) : this.phase === Phase.Invent ? 0.45 : 0;
     this.paperDim += (finaleDim - this.paperDim) * Math.min(1, dt * 2.5);
