@@ -10,7 +10,14 @@ import { defineConfig } from 'vite';
 
 export default defineConfig({
   plugins: [iwsdkDev()],
-  server: { host: '127.0.0.1', port: 8081, open: false },
+  server: {
+    host: '127.0.0.1',
+    port: 8081,
+    open: false,
+    // This shared host runs out of inotify watches (ENOSPC), which crashed the dev
+    // server whenever a file was added. Poll instead, and skip folders Vite never serves.
+    watch: { usePolling: true, interval: 400, ignored: ['**/tools/**', '**/dist/**', '**/.iwsdk/**', '**/artifacts/**'] },
+  },
   build: {
     outDir: 'dist',
     sourcemap: process.env.NODE_ENV !== 'production',
