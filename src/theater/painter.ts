@@ -127,11 +127,11 @@ export function makeStencil(hands: FlatHand | FlatHand[], scale: number, eyes: r
   ictx.fillStyle = ictx.strokeStyle = INK;
   ictx.lineCap = 'round';
   ictx.lineJoin = 'round';
-  ictx.filter = 'blur(2px)';
+  ictx.filter = 'blur(3px)';
   ictx.fillStyle = ictx.strokeStyle = 'rgba(42,47,58,0.85)';
   for (const f of fs) handPath(ictx, f);
   ictx.filter = 'none';
-  ictx.globalAlpha = 0.9;
+  ictx.globalAlpha = 0.82;
   ictx.fillStyle = ictx.strokeStyle = INK;
   for (const f of fs) handPath(ictx, f);
   ictx.globalAlpha = 1;
@@ -147,23 +147,65 @@ export function makeStencil(hands: FlatHand | FlatHand[], scale: number, eyes: r
     ictx.fillRect(x, y, 1, 1);
   }
   ictx.globalCompositeOperation = 'source-over';
+  const inkSource = ictx.getImageData(0, 0, w, h).data;
+  for (let row = 18; row < h - 18; row += 4) {
+    for (let column = 18; column < w - 18; column += 4) {
+      const pixel = (row * w + column) * 4;
+      const alpha = inkSource[pixel + 3];
+      if (alpha < 45 || alpha > 205) continue;
+      const flow = Math.sin(column * 0.31 + row * 0.17) * Math.sin(column * 0.07 - row * 0.23);
+      if (flow < 0.35) continue;
+      const gradientX = inkSource[pixel + 7] - inkSource[pixel - 1];
+      const gradientY = inkSource[pixel + w * 4 + 3] - inkSource[pixel - w * 4 + 3];
+      const length = Math.hypot(gradientX, gradientY);
+      if (length < 18) continue;
+      const reach = 8 + 8 * flow;
+      const drift = 5 * Math.sin(column * 0.09 - row * 0.13);
+      const endX = column - gradientX / length * reach - gradientY / length * drift;
+      const endY = row - gradientY / length * reach + gradientX / length * drift;
+      const wisp = ictx.createLinearGradient(column, row, endX, endY);
+      wisp.addColorStop(0, 'rgba(28,19,22,0.36)');
+      wisp.addColorStop(1, 'rgba(28,19,22,0)');
+      ictx.strokeStyle = wisp;
+      ictx.lineWidth = 0.7 + flow * 0.8;
+      ictx.beginPath();
+      ictx.moveTo(column, row);
+      ictx.quadraticCurveTo((column + endX) / 2 + drift * 0.4, (row + endY) / 2, endX, endY);
+      ictx.stroke();
+    }
+  }
   const [cut, cctx] = canvas(w, h);
   cctx.setTransform(PX * scale, 0, 0, -PX * scale, pad * PX - minX * PX * scale, h - pad * PX + minY * PX * scale);
   cctx.lineCap = 'round';
   cctx.lineJoin = 'round';
   cctx.fillStyle = cctx.strokeStyle = '#2e1408';
-  for (const f of fs) handPathGrown(cctx, f, 0.0052 / scale);
+  for (const f of fs) handPathGrown(cctx, f, 0.005 / scale);
   cctx.fillStyle = cctx.strokeStyle = '#42220f';
-  for (const f of fs) handPathGrown(cctx, f, 0.0038 / scale);
+  for (const f of fs) handPathGrown(cctx, f, 0.0046 / scale);
+  cctx.fillStyle = cctx.strokeStyle = '#b2682a';
+  for (const f of fs) handPathGrown(cctx, f, 0.0015 / scale);
   cctx.fillStyle = cctx.strokeStyle = '#fff2d1';
   for (const f of fs) handPath(cctx, f);
   cctx.setTransform(1, 0, 0, 1, 0, 0);
   const charPixels = cctx.getImageData(0, 0, w, h);
-  for (let pixel = 0; pixel < charPixels.data.length; pixel += 4) {
-    if (charPixels.data[pixel] > 90 || charPixels.data[pixel + 3] === 0) continue;
-    const noise = ((pixel * 1664525 + 1013904223) >>> 16) & 15;
-    charPixels.data[pixel] += noise;
-    charPixels.data[pixel + 1] += noise >> 1;
+  const edgeSource = charPixels.data.slice();
+  for (let row = 2; row < h - 2; row++) {
+    for (let column = 2; column < w - 2; column++) {
+      const pixel = (row * w + column) * 4;
+      if (edgeSource[pixel] > 90 || edgeSource[pixel + 3] < 160) continue;
+      const neighbours = [pixel - 4, pixel + 4, pixel - w * 4, pixel + w * 4];
+      const edge = neighbours.find(neighbour => edgeSource[neighbour + 3] < 8);
+      if (edge === undefined) continue;
+      const waviness = Math.sin(column * 0.173 + row * 0.117) * Math.sin(column * 0.041 - row * 0.087);
+      if (waviness > 0.17) {
+        charPixels.data[edge] = 66;
+        charPixels.data[edge + 1] = 34;
+        charPixels.data[edge + 2] = 15;
+        charPixels.data[edge + 3] = 210;
+      } else if (waviness < -0.57) {
+        charPixels.data[pixel + 3] = 130;
+      }
+    }
   }
   cctx.putImageData(charPixels, 0, 0);
   const [glow, gctx] = canvas(w, h);
@@ -188,18 +230,18 @@ export function makeStencil(hands: FlatHand | FlatHand[], scale: number, eyes: r
       const x = u * w;
       const y = v * h;
       const halo = context.createRadialGradient(x, y, 1, x, y, 14);
-      halo.addColorStop(0, 'rgba(255,217,133,1)');
+      halo.addColorStop(0, 'rgba(255,227,150,1)');
       halo.addColorStop(0.45, 'rgba(217,143,63,0.85)');
       halo.addColorStop(1, 'rgba(217,143,63,0)');
       context.fillStyle = halo;
       context.beginPath();
-      if (blink) context.ellipse(x, y, 10, 2, 0, 0, Math.PI * 2);
-      else context.arc(x, y, 14, 0, Math.PI * 2);
+      if (blink) context.ellipse(x, y, 11, 2, 0, 0, Math.PI * 2);
+      else context.arc(x, y, 17, 0, Math.PI * 2);
       context.fill();
       if (!blink) {
         context.fillStyle = '#ffd985';
         context.beginPath();
-        context.arc(x, y, 4.2, 0, Math.PI * 2);
+        context.arc(x, y, 5.2, 0, Math.PI * 2);
         context.fill();
         if (eyeGlint.complete && eyeGlint.naturalWidth) context.drawImage(eyeGlint, x - 7, y - 9, 14, 14);
         context.fillStyle = '#fff';
@@ -226,6 +268,8 @@ interface CreatureLayer {
   mesh: Mesh<PlaneGeometry, MeshBasicMaterial>;
   clip: Vector4;
   turn: Vector2;
+  wake: { value: number };
+  time: { value: number };
 }
 
 interface CaptionLayer {
@@ -285,19 +329,30 @@ export class ScreenPainter {
       const mesh = this.overlay(4, new PlaneGeometry(1, 1));
       const clip = new Vector4();
       const turn = new Vector2(1, 0);
+      const wake = { value: 0 };
+      const time = { value: 0 };
       mesh.material.onBeforeCompile = shader => {
         shader.uniforms.paperClip = { value: clip };
         shader.uniforms.paperTurn = { value: turn };
-        shader.vertexShader = `uniform vec4 paperClip;\nuniform vec2 paperTurn;\nvarying vec2 vPaperPoint;\n${shader.vertexShader}`
+        shader.uniforms.inkWake = wake;
+        shader.uniforms.inkTime = time;
+        shader.vertexShader = `uniform vec4 paperClip;\nuniform vec2 paperTurn;\nvarying vec2 vPaperPoint;\nvarying vec2 vInkUv;\n${shader.vertexShader}`
           .replace('#include <begin_vertex>', `#include <begin_vertex>
+            vInkUv = uv;
             vec2 spritePoint = position.xy * paperClip.zw;
             vPaperPoint = paperClip.xy + vec2(spritePoint.x * paperTurn.x - spritePoint.y * paperTurn.y,
               spritePoint.x * paperTurn.y + spritePoint.y * paperTurn.x);`);
-        shader.fragmentShader = `varying vec2 vPaperPoint;\n${shader.fragmentShader}`
+        shader.fragmentShader = `varying vec2 vPaperPoint;\nvarying vec2 vInkUv;\nuniform float inkWake;\nuniform float inkTime;\n${shader.fragmentShader}`
           .replace('void main() {', `void main() {
-            if (abs(vPaperPoint.x) > ${SCREEN_W / 2} || abs(vPaperPoint.y) > ${SCREEN_H / 2}) discard;`);
+            if (abs(vPaperPoint.x) > ${SCREEN_W / 2} || abs(vPaperPoint.y) > ${SCREEN_H / 2}) discard;`)
+          .replace('#include <map_fragment>', `#include <map_fragment>
+            float edgeBand = smoothstep(0.03, 0.45, diffuseColor.a) * (1.0 - smoothstep(0.55, 0.95, diffuseColor.a));
+            float grain = fract(sin(dot(floor(vInkUv * vec2(220.0, 160.0)), vec2(127.1, 311.7))) * 43758.5453);
+            float drift = 0.5 + 0.25 * sin(vInkUv.x * 149.0 + inkTime * 4.0)
+              + 0.25 * sin(vInkUv.y * 233.0 - inkTime * 2.7);
+            diffuseColor.a *= 1.0 - inkWake * edgeBand * smoothstep(0.36, 0.75, grain * 0.5 + drift * 0.5);`);
       };
-      this.creatures.push({ mesh, clip, turn });
+      this.creatures.push({ mesh, clip, turn, wake, time });
     }
     const [sparkCanvas, sparkContext] = canvas(32, 32);
     const sparkGradient = sparkContext.createRadialGradient(16, 16, 0, 16, 16, 16);
@@ -376,19 +431,29 @@ export class ScreenPainter {
     g.fillRect(0, 0, CW, CH);
     if (this.washi.complete && this.washi.naturalWidth) {
       g.drawImage(this.washi, 0, 0, CW, CH, 0, 0, CW, CH);
-      g.fillStyle = 'rgba(255,248,232,0.18)';
-      g.fillRect(0, 0, CW, CH);
     }
-    g.fillStyle = 'rgba(167,91,33,0.24)';
-    g.fillRect(0, 0, CW, CH);
     const cx = CW / 2 + this.paperX * PX, cy = CH / 2 - this.paperY * PX;
-    const glow = g.createRadialGradient(cx, cy, 16, cx, cy, CW * 0.66);
-    glow.addColorStop(0, 'rgba(255,240,209,0.85)');
-    glow.addColorStop(0.45, 'rgba(255,190,83,0.44)');
-    glow.addColorStop(0.8, 'rgba(214,124,36,0.32)');
-    glow.addColorStop(1, 'rgba(82,42,20,0.66)');
-    g.fillStyle = glow;
-    g.fillRect(0, 0, CW, CH);
+    const paper = g.getImageData(0, 0, CW, CH);
+    const pixels = paper.data;
+    const hasWashi = this.washi.complete && this.washi.naturalWidth > 0;
+    for (let row = 0; row < CH; row++) {
+      const vertical = (row - CH / 2) / (CH / 2);
+      const lightY = (row - cy) / 220;
+      for (let column = 0; column < CW; column++) {
+        const offset = (row * CW + column) * 4;
+        const horizontal = (column - CW / 2) / (CW / 2);
+        const radius = Math.min(1, Math.hypot(horizontal, vertical) / (Math.SQRT2 * 0.87));
+        const shade = Math.pow(radius, 2.3);
+        const lightX = (column - cx) / 220;
+        const hotspot = Math.exp(-0.5 * (lightX * lightX + lightY * lightY));
+        const fibre = hasWashi
+          ? (pixels[offset] * 0.3 + pixels[offset + 1] * 0.59 + pixels[offset + 2] * 0.11 - 208) : 0;
+        pixels[offset] = 220 - 105 * shade + 42 * hotspot + fibre * 0.8;
+        pixels[offset + 1] = 145 - 83 * shade + 37 * hotspot + fibre * 0.6;
+        pixels[offset + 2] = 70 - 48 * shade + 23 * hotspot + fibre * 0.4;
+      }
+    }
+    g.putImageData(paper, 0, 0);
     for (let index = 0; index < this.progressTotal; index++) {
       g.fillStyle = index < this.progressDone ? 'rgba(60,40,30,0.85)' : 'rgba(60,40,30,0.18)';
       g.beginPath();
@@ -459,7 +524,8 @@ export class ScreenPainter {
   }
 
   /** A woken creature: ink silhouette with a blinking eye. */
-  creature(st: Stencil, cx: number, cy: number, scale: number, rot: number, flipX: boolean, blink: boolean, alpha: number): void {
+  creature(st: Stencil, cx: number, cy: number, scale: number, rot: number, flipX: boolean, blink: boolean, alpha: number,
+    wake = 0, time = 0): void {
     const started = perf ? performance.now() : 0;
     if (this.creatureCount >= this.creatures.length) return;
     const layer = this.creatures[this.creatureCount++];
@@ -475,6 +541,8 @@ export class ScreenPainter {
     layer.mesh.rotation.z = -rot;
     layer.clip.set(x, y, width * direction, height);
     layer.turn.set(Math.cos(rot), -Math.sin(rot));
+    layer.wake.value = wake;
+    layer.time.value = time;
     layer.mesh.visible = alpha > 0;
     perf?.endCall('creature', started);
   }
