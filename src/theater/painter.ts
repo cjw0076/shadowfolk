@@ -1,12 +1,17 @@
 /**
  * Paints the paper screen: washi paper lit by the lantern, the live hand
  * shadows (soft penumbra), the glowing cut-out of the creature to match, and
- * the woken creature's shadow animation. Everything is a 2D canvas uploaded
- * as one texture per frame.
+ * the woken creature's shadow animation. Only the quarter-size shadow canvas
+ * changes every frame; the rest are cached textures or GPU transforms.
  */
-import { CanvasTexture, LinearFilter, SRGBColorSpace } from '@iwsdk/core';
+import {
+  AdditiveBlending, BufferGeometry, CanvasTexture, Color, Float32BufferAttribute, Group,
+  LinearFilter, Mesh, MeshBasicMaterial, PlaneGeometry, Points, PointsMaterial,
+  SRGBColorSpace, Vector2, Vector4,
+} from '@iwsdk/core';
 import { BONES, PALM } from '../shadow/hand-model.js';
 import { FlatHand } from '../shadow/silhouette.js';
+import { TARGETS } from '../shadow/targets.js';
 import { runtimePerf as perf } from './perf.js';
 
 export const SCREEN_W = 1.0; // metres
@@ -17,7 +22,18 @@ const PX = CW / SCREEN_W; // canvas px per screen metre
 const SOFT = 4; // shadow layer downscale (penumbra softness)
 
 const INK = '#1c1316';
-const SPARK_COLORS = Array.from({ length: 18 }, (_, k) => `rgb(255,${180 + ((k * 13) % 60)},90)`);
+const INK_COLOR = new Color(INK);
+const SPARK_COUNT = 18;
+const CAPTION_H = 80;
+
+function texture(source: HTMLCanvasElement): CanvasTexture {
+  const result = new CanvasTexture(source);
+  result.colorSpace = SRGBColorSpace;
+  result.generateMipmaps = false;
+  result.minFilter = LinearFilter;
+  result.magFilter = LinearFilter;
+  return result;
+}
 
 function canvas(w: number, h: number): [HTMLCanvasElement, CanvasRenderingContext2D] {
   const c = document.createElement('canvas');
@@ -47,6 +63,10 @@ export interface Stencil {
   ink: HTMLCanvasElement;
   cut: HTMLCanvasElement;
   glow: HTMLCanvasElement;
+  inkOpen: CanvasTexture;
+  inkBlink: CanvasTexture;
+  cutTexture: CanvasTexture;
+  glowTexture: CanvasTexture;
   /** Sprite size in screen metres; sprite centre in screen metres. */
   w: number;
   h: number;
@@ -115,36 +135,168 @@ export function makeStencil(hands: FlatHand | FlatHand[], scale: number, eyes: r
     const f = fs[Math.min(hand, fs.length - 1)];
     return toSprite(f.x[a] + (f.x[b] - f.x[a]) * t, f.y[a] + (f.y[b] - f.y[a]) * t);
   });
+  const eyeSprite = (blink: boolean): HTMLCanvasElement => {
+    const [sprite, context] = canvas(w, h);
+    context.drawImage(ink, 0, 0);
+    context.fillStyle = '#fff6e0';
+    for (const [u, v] of eyePts) {
+      context.beginPath();
+      if (blink) context.ellipse(u * w, v * h, 8, 1.6, 0, 0, Math.PI * 2);
+      else context.arc(u * w, v * h, 7.5, 0, Math.PI * 2);
+      context.fill();
+    }
+    return sprite;
+  };
   return {
     ink, cut, glow, w: wM, h: hM,
     cx: ((minX + maxX) / 2) * scale, cy: ((minY + maxY) / 2) * scale,
     eyes: eyePts,
+    inkOpen: texture(eyeSprite(false)), inkBlink: texture(eyeSprite(true)),
+    cutTexture: texture(cut), glowTexture: texture(glow),
   };
 }
 
+interface CreatureLayer {
+  mesh: Mesh<PlaneGeometry, MeshBasicMaterial>;
+  clip: Vector4;
+  turn: Vector2;
+}
+
+interface CaptionLayer {
+  canvas: HTMLCanvasElement;
+  ctx: CanvasRenderingContext2D;
+  mesh: Mesh<PlaneGeometry, MeshBasicMaterial>;
+  text: string;
+  y: number;
+}
+
 export class ScreenPainter {
+  readonly root = new Group();
   readonly canvas: HTMLCanvasElement;
   readonly texture: CanvasTexture;
+  readonly paperMesh: Mesh<PlaneGeometry, MeshBasicMaterial>;
   private ctx: CanvasRenderingContext2D;
-  private paper: HTMLCanvasElement;
   private soft: HTMLCanvasElement;
   private sctx: CanvasRenderingContext2D;
+  private softTexture: CanvasTexture;
+  private shadowMesh: Mesh<PlaneGeometry, MeshBasicMaterial>;
+  private cutMesh: Mesh<PlaneGeometry, MeshBasicMaterial>;
+  private glowMesh: Mesh<PlaneGeometry, MeshBasicMaterial>;
+  private creatures: CreatureLayer[] = [];
+  private creatureCount = 0;
+  private captions: CaptionLayer[] = [];
+  private perfCaption: CaptionLayer;
+  private sparksMesh: Points<BufferGeometry, PointsMaterial>;
+  private sparkPositions: Float32BufferAttribute;
+  private paperX = 0;
+  private paperY = -0.2;
+  private paperReady = false;
+  private progressDone = -1;
+  private progressTotal = -1;
+  private progressCalled = false;
+  private lastPerfText = 0;
 
   constructor() {
     [this.canvas, this.ctx] = canvas(CW, CH);
     [this.soft, this.sctx] = canvas(CW / SOFT, Math.round(CH / SOFT));
-    this.paper = this.paintPaper(0, -0.2);
-    this.texture = new CanvasTexture(this.canvas);
-    this.texture.colorSpace = SRGBColorSpace;
-    // The moving canvas is sampled close up; rebuilding a mip chain every frame
-    // adds GPU work and memory traffic without helping this paper-sized surface.
-    this.texture.generateMipmaps = false;
-    this.texture.minFilter = LinearFilter;
+    this.texture = texture(this.canvas);
+    this.softTexture = texture(this.soft);
+    this.paperMesh = new Mesh(new PlaneGeometry(SCREEN_W, SCREEN_H),
+      new MeshBasicMaterial({ map: this.texture, toneMapped: false }));
+    this.paperMesh.name = 'Paper';
+    this.root.add(this.paperMesh);
+    this.cutMesh = this.overlay(1, new PlaneGeometry(1, 1));
+    this.glowMesh = this.overlay(2, new PlaneGeometry(1, 1), true);
+    this.shadowMesh = this.overlay(3, new PlaneGeometry(SCREEN_W, SCREEN_H));
+    this.shadowMesh.material.map = this.softTexture;
+    this.shadowMesh.material.color.set(INK);
+    for (let index = 0; index < TARGETS.length + 2; index++) {
+      const mesh = this.overlay(4, new PlaneGeometry(1, 1));
+      const clip = new Vector4();
+      const turn = new Vector2(1, 0);
+      mesh.material.onBeforeCompile = shader => {
+        shader.uniforms.paperClip = { value: clip };
+        shader.uniforms.paperTurn = { value: turn };
+        shader.vertexShader = `uniform vec4 paperClip;\nuniform vec2 paperTurn;\nvarying vec2 vPaperPoint;\n${shader.vertexShader}`
+          .replace('#include <begin_vertex>', `#include <begin_vertex>
+            vec2 spritePoint = position.xy * paperClip.zw;
+            vPaperPoint = paperClip.xy + vec2(spritePoint.x * paperTurn.x - spritePoint.y * paperTurn.y,
+              spritePoint.x * paperTurn.y + spritePoint.y * paperTurn.x);`);
+        shader.fragmentShader = `varying vec2 vPaperPoint;\n${shader.fragmentShader}`
+          .replace('void main() {', `void main() {
+            if (abs(vPaperPoint.x) > ${SCREEN_W / 2} || abs(vPaperPoint.y) > ${SCREEN_H / 2}) discard;`);
+      };
+      this.creatures.push({ mesh, clip, turn });
+    }
+    const geometry = new BufferGeometry();
+    this.sparkPositions = new Float32BufferAttribute(new Float32Array(SPARK_COUNT * 3), 3);
+    geometry.setAttribute('position', this.sparkPositions);
+    const colors = new Float32Array(SPARK_COUNT * 3);
+    for (let index = 0; index < SPARK_COUNT; index++) {
+      colors[index * 3] = 1;
+      colors[index * 3 + 1] = (180 + ((index * 13) % 60)) / 255;
+      colors[index * 3 + 2] = 90 / 255;
+    }
+    geometry.setAttribute('color', new Float32BufferAttribute(colors, 3));
+    this.sparksMesh = new Points(geometry, new PointsMaterial({
+      size: 7, sizeAttenuation: false, vertexColors: true, transparent: true,
+      depthWrite: false, blending: AdditiveBlending, toneMapped: false,
+    }));
+    this.sparksMesh.position.z = 0.002;
+    this.sparksMesh.renderOrder = 5;
+    this.sparksMesh.frustumCulled = false;
+    this.sparksMesh.visible = false;
+    this.root.add(this.sparksMesh);
+    for (let index = 0; index < 5; index++) this.captions.push(this.makeCaption(CW, CAPTION_H, 6));
+    this.perfCaption = this.makeCaption(420, 48, 7);
+    this.paintPaper(0, -0.2);
+  }
+
+  private overlay(order: number, geometry: PlaneGeometry, additive = false): Mesh<PlaneGeometry, MeshBasicMaterial> {
+    const material = new MeshBasicMaterial({
+      transparent: true, depthWrite: false, toneMapped: false,
+      blending: additive ? AdditiveBlending : undefined,
+    });
+    const mesh = new Mesh(geometry, material);
+    mesh.position.z = order * 0.0004;
+    mesh.renderOrder = order;
+    mesh.visible = false;
+    this.root.add(mesh);
+    return mesh;
+  }
+
+  private makeCaption(width: number, height: number, order: number): CaptionLayer {
+    const [source, ctx] = canvas(width, height);
+    const mesh = this.overlay(order, new PlaneGeometry(width / PX, height / PX));
+    mesh.material.map = texture(source);
+    return { canvas: source, ctx, mesh, text: '', y: NaN };
+  }
+
+  setTone(value: number): void {
+    this.paperMesh.material.color.setScalar(value);
+    this.cutMesh.material.color.setScalar(value);
+    this.glowMesh.material.color.setScalar(value);
+    this.shadowMesh.material.color.copy(INK_COLOR).multiplyScalar(value);
+    for (let index = 0; index < this.creatures.length; index++) this.creatures[index].mesh.material.color.setScalar(value);
+    for (let index = 0; index < this.captions.length; index++) this.captions[index].mesh.material.color.setScalar(value);
+    this.perfCaption.mesh.material.color.setScalar(value);
+    this.sparksMesh.material.color.setScalar(value);
   }
 
   /** Washi paper with fibres, warmly lit around the lantern's footprint. */
   paintPaper(lightX: number, lightY: number): HTMLCanvasElement {
-    const [c, g] = canvas(CW, CH);
+    if (this.paperReady && lightX === this.paperX && lightY === this.paperY) return this.canvas;
+    this.paperX = lightX;
+    this.paperY = lightY;
+    this.renderPaper();
+    this.paperReady = true;
+    return this.canvas;
+  }
+
+  private renderPaper(): void {
+    const g = this.ctx;
+    g.setTransform(1, 0, 0, 1, 0, 0);
+    g.globalAlpha = 1;
     g.fillStyle = '#eadbc0';
     g.fillRect(0, 0, CW, CH);
     let seed = 1234567;
@@ -158,21 +310,33 @@ export class ScreenPainter {
       g.quadraticCurveTo(x + Math.cos(a) * len * 0.5 + (rnd() - 0.5) * 8, y + Math.sin(a) * len * 0.5, x + Math.cos(a) * len, y + Math.sin(a) * len);
       g.stroke();
     }
-    const cx = CW / 2 + lightX * PX, cy = CH / 2 - lightY * PX;
+    const cx = CW / 2 + this.paperX * PX, cy = CH / 2 - this.paperY * PX;
     const glow = g.createRadialGradient(cx, cy, 20, cx, cy, CW * 0.75);
     glow.addColorStop(0, 'rgba(255,214,140,0.55)');
     glow.addColorStop(0.45, 'rgba(255,190,110,0.18)');
     glow.addColorStop(1, 'rgba(70,40,25,0.55)');
     g.fillStyle = glow;
     g.fillRect(0, 0, CW, CH);
-    this.paper = c;
-    return c;
+    for (let index = 0; index < this.progressTotal; index++) {
+      g.fillStyle = index < this.progressDone ? 'rgba(60,40,30,0.85)' : 'rgba(60,40,30,0.18)';
+      g.beginPath();
+      g.arc(CW - 40 - (this.progressTotal - 1 - index) * 26, 36, 8, 0, Math.PI * 2);
+      g.fill();
+    }
+    this.texture.needsUpdate = true;
   }
 
   begin(): void {
     const started = perf ? performance.now() : 0;
-    this.ctx.globalAlpha = 1;
-    this.ctx.drawImage(this.paper, 0, 0);
+    this.cutMesh.visible = false;
+    this.glowMesh.visible = false;
+    this.shadowMesh.visible = false;
+    for (let index = 0; index < this.creatureCount; index++) this.creatures[index].mesh.visible = false;
+    this.creatureCount = 0;
+    this.sparksMesh.visible = false;
+    for (let index = 0; index < this.captions.length; index++) this.captions[index].mesh.visible = false;
+    this.perfCaption.mesh.visible = false;
+    this.progressCalled = false;
     const s = this.sctx;
     s.setTransform(1, 0, 0, 1, 0, 0);
     s.clearRect(0, 0, this.soft.width, this.soft.height);
@@ -182,16 +346,16 @@ export class ScreenPainter {
   /** Cut-out of the creature to match, glowing with closeness. */
   target(st: Stencil, cx: number, cy: number, glow: number, time: number): void {
     const started = perf ? performance.now() : 0;
-    const g = this.ctx;
-    const w = st.w * PX, h = st.h * PX;
-    const x = CW / 2 + (cx + st.cx) * PX - w / 2, y = CH / 2 - (cy + st.cy) * PX - h / 2;
-    g.globalAlpha = 0.8 + 0.12 * Math.sin(time * 1.7);
-    g.drawImage(st.cut, x, y, w, h);
-    g.globalAlpha = Math.min(1, 0.25 + glow * 0.9);
-    g.globalCompositeOperation = 'lighter';
-    g.drawImage(st.glow, x, y, w, h);
-    g.globalCompositeOperation = 'source-over';
-    g.globalAlpha = 1;
+    this.cutMesh.material.map = st.cutTexture;
+    this.cutMesh.material.opacity = 0.8 + 0.12 * Math.sin(time * 1.7);
+    this.cutMesh.position.set(cx + st.cx, cy + st.cy, 0.0004);
+    this.cutMesh.scale.set(st.w, st.h, 1);
+    this.cutMesh.visible = true;
+    this.glowMesh.material.map = st.glowTexture;
+    this.glowMesh.material.opacity = Math.min(1, 0.25 + glow * 0.9);
+    this.glowMesh.position.set(cx + st.cx, cy + st.cy, 0.0008);
+    this.glowMesh.scale.set(st.w, st.h, 1);
+    this.glowMesh.visible = true;
     perf?.endCall('target', started);
   }
 
@@ -201,98 +365,124 @@ export class ScreenPainter {
     const started = perf ? performance.now() : 0;
     const s = this.sctx, k = PX / SOFT;
     s.setTransform(k, 0, 0, -k, this.soft.width / 2, this.soft.height / 2);
-    s.fillStyle = s.strokeStyle = INK;
+    s.fillStyle = s.strokeStyle = '#fff';
     s.lineCap = 'round';
     s.lineJoin = 'round';
     handPath(s, f);
     perf?.endCall('shadow', started);
   }
 
-  /** Composite the soft shadow layer onto the paper. */
+  /** Upload just the quarter-size shadow layer for GPU bilinear upscaling. */
   flushShadows(alpha: number): void {
     const started = perf ? performance.now() : 0;
-    const g = this.ctx;
-    g.globalAlpha = alpha;
-    g.imageSmoothingEnabled = true;
-    g.imageSmoothingQuality = 'high';
-    // Upscaling the quarter-res layer gives the penumbra; no per-frame filter.
-    g.drawImage(this.soft, 0, 0, CW, CH);
-    g.globalAlpha = 1;
+    this.shadowMesh.material.opacity = alpha;
+    this.shadowMesh.visible = true;
+    this.softTexture.needsUpdate = true;
     perf?.endCall('flushShadows', started);
   }
 
   /** A woken creature: ink silhouette with a blinking eye. */
   creature(st: Stencil, cx: number, cy: number, scale: number, rot: number, flipX: boolean, blink: boolean, alpha: number): void {
     const started = perf ? performance.now() : 0;
-    const g = this.ctx;
-    const w = st.w * PX * scale, h = st.h * PX * scale;
-    g.save();
-    g.globalAlpha = alpha;
-    g.translate(CW / 2 + (cx + st.cx * scale) * PX, CH / 2 - (cy + st.cy * scale) * PX);
-    g.rotate(rot);
-    if (flipX) g.scale(-1, 1);
-    g.drawImage(st.ink, -w / 2, -h / 2, w, h);
-    g.fillStyle = '#fff6e0';
-    for (const [u, v] of st.eyes) {
-      const ex = -w / 2 + u * w, ey = -h / 2 + v * h;
-      g.beginPath();
-      if (blink) g.ellipse(ex, ey, 8 * scale, 1.6 * scale, 0, 0, Math.PI * 2);
-      else g.arc(ex, ey, 7.5 * scale, 0, Math.PI * 2);
-      g.fill();
-    }
-    g.restore();
+    if (this.creatureCount >= this.creatures.length) return;
+    const layer = this.creatures[this.creatureCount++];
+    const width = st.w * scale;
+    const height = st.h * scale;
+    const x = cx + st.cx * scale;
+    const y = cy + st.cy * scale;
+    const direction = flipX ? -1 : 1;
+    layer.mesh.material.map = blink ? st.inkBlink : st.inkOpen;
+    layer.mesh.material.opacity = alpha;
+    layer.mesh.position.set(x, y, 0.0016);
+    layer.mesh.scale.set(width * direction, height, 1);
+    layer.mesh.rotation.z = -rot;
+    layer.clip.set(x, y, width * direction, height);
+    layer.turn.set(Math.cos(rot), -Math.sin(rot));
+    layer.mesh.visible = alpha > 0;
     perf?.endCall('creature', started);
   }
 
   /** Little sparks of lantern light (wake moment). */
   sparks(cx: number, cy: number, t: number, alpha: number): void {
     const started = perf ? performance.now() : 0;
-    const g = this.ctx;
-    const previousAlpha = g.globalAlpha;
-    g.globalAlpha = previousAlpha * alpha * (1 - t);
-    g.globalCompositeOperation = 'lighter';
-    for (let k = 0; k < 18; k++) {
+    const positions = this.sparkPositions.array as Float32Array;
+    for (let k = 0; k < SPARK_COUNT; k++) {
       const a = k * 2.399 + t * 0.6, r = (40 + 260 * t) * (0.5 + ((k * 37) % 10) / 20);
-      g.fillStyle = SPARK_COLORS[k];
-      g.beginPath();
-      g.arc(CW / 2 + cx * PX + Math.cos(a) * r, CH / 2 - cy * PX + Math.sin(a) * r, 3 + (k % 3), 0, Math.PI * 2);
-      g.fill();
+      positions[k * 3] = cx + Math.cos(a) * r / PX;
+      positions[k * 3 + 1] = cy - Math.sin(a) * r / PX;
+      positions[k * 3 + 2] = 0;
     }
-    g.globalCompositeOperation = 'source-over';
-    g.globalAlpha = previousAlpha;
+    this.sparkPositions.needsUpdate = true;
+    this.sparksMesh.material.opacity = alpha * (1 - t);
+    this.sparksMesh.visible = this.sparksMesh.material.opacity > 0;
     perf?.endCall('sparks', started);
   }
 
   caption(text: string, alpha: number, y = -0.27): void {
     if (alpha <= 0 || !text) return;
     const started = perf ? performance.now() : 0;
-    const g = this.ctx;
-    g.globalAlpha = alpha;
-    g.fillStyle = '#4a3626';
-    g.font = 'italic 34px Georgia, "Times New Roman", serif';
-    g.textAlign = 'center';
-    g.textBaseline = 'middle';
-    g.fillText(text, CW / 2, CH / 2 - y * PX);
-    g.globalAlpha = 1;
+    let selected: CaptionLayer | undefined;
+    for (let index = 0; index < this.captions.length; index++) {
+      if (this.captions[index].y === y) { selected = this.captions[index]; break; }
+    }
+    if (!selected) {
+      for (let index = 0; index < this.captions.length; index++) {
+        if (!this.captions[index].mesh.visible) { selected = this.captions[index]; break; }
+      }
+    }
+    if (selected) this.drawCaption(selected, text, alpha, y, false);
     perf?.endCall('caption', started);
   }
 
   /** Small counter of woken creatures (top-right), drawn as dots. */
   progress(done: number, total: number): void {
     const started = perf ? performance.now() : 0;
-    const g = this.ctx;
-    for (let k = 0; k < total; k++) {
-      g.fillStyle = k < done ? 'rgba(60,40,30,0.85)' : 'rgba(60,40,30,0.18)';
-      g.beginPath();
-      g.arc(CW - 40 - (total - 1 - k) * 26, 36, 8, 0, Math.PI * 2);
-      g.fill();
+    this.progressCalled = true;
+    if (done !== this.progressDone || total !== this.progressTotal) {
+      this.progressDone = done;
+      this.progressTotal = total;
+      this.renderPaper();
     }
     perf?.endCall('progress', started);
   }
 
   end(): void {
     const started = perf ? performance.now() : 0;
-    this.texture.needsUpdate = true;
+    if (!this.progressCalled && this.progressTotal > 0) {
+      this.progressTotal = 0;
+      this.renderPaper();
+    }
+    if (perf) {
+      const now = performance.now();
+      if (now - this.lastPerfText >= 500) {
+        this.lastPerfText = now;
+        const interval = perf.frameInterval.count
+          ? perf.frameInterval.values[(perf.frameInterval.count - 1) % perf.capacity] : 0;
+        const update = perf.update.count ? perf.update.values[(perf.update.count - 1) % perf.capacity] : 0;
+        this.drawCaption(this.perfCaption, `${interval ? (1000 / interval).toFixed(0) : '0'} fps / ${update.toFixed(1)} ms`,
+          0.8, SCREEN_H / 2 - 0.035, true);
+      }
+      this.perfCaption.mesh.visible = !!this.perfCaption.text;
+    }
     perf?.endCall('end', started);
+  }
+
+  private drawCaption(layer: CaptionLayer, text: string, alpha: number, y: number, small: boolean): void {
+    if (layer.text !== text) {
+      const context = layer.ctx;
+      context.clearRect(0, 0, layer.canvas.width, layer.canvas.height);
+      context.fillStyle = '#4a3626';
+      context.font = small ? '22px Arial, sans-serif' : 'italic 34px Georgia, "Times New Roman", serif';
+      context.textAlign = small ? 'left' : 'center';
+      context.textBaseline = 'middle';
+      context.fillText(text, small ? 12 : layer.canvas.width / 2, layer.canvas.height / 2);
+      layer.mesh.material.map!.needsUpdate = true;
+      layer.text = text;
+    }
+    layer.y = y;
+    layer.mesh.position.x = small ? -SCREEN_W / 2 + layer.canvas.width / (2 * PX) + 0.012 : 0;
+    layer.mesh.position.y = y;
+    layer.mesh.material.opacity = alpha;
+    layer.mesh.visible = true;
   }
 }

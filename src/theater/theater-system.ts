@@ -186,7 +186,7 @@ export class TheaterSystem extends createSystem({
     this.demo = new URLSearchParams(location.search).has('demo');
     this.painter = new ScreenPainter();
     this.lantern = buildLantern();
-    this.screen = buildScreen(this.painter.texture);
+    this.screen = buildScreen(this.painter);
     this.ghost = new GhostHand();
     this.ghost2 = new GhostHand('GhostHand2');
     this.puppeteer = new GhostHand('DemoHand', '#c99877', true);
@@ -737,7 +737,7 @@ export class TheaterSystem extends createSystem({
     this.lantern.halo.scale.setScalar((0.12 + 0.12 * this.lit) + 0.02 * flick);
     (this.lantern.pool.material as MeshBasicMaterial).opacity = 0.32 * this.lit * flick;
     const paperTone = 0.32 + 0.68 * this.lit;
-    (this.screen.paper.material as MeshBasicMaterial).color.setScalar(paperTone);
+    this.painter.setTone(paperTone);
 
     // Shadows: project every hand from the lantern onto the paper.
     const p = this.painter;

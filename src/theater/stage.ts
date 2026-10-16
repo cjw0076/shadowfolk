@@ -26,7 +26,7 @@ import {
   Vector3,
 } from '@iwsdk/core';
 import { BONES, JOINT_COUNT } from '../shadow/hand-model.js';
-import { SCREEN_H, SCREEN_W } from './painter.js';
+import { SCREEN_H, SCREEN_W, ScreenPainter } from './painter.js';
 
 export interface Lantern {
   root: Group;
@@ -126,15 +126,11 @@ export interface PaperScreen {
 }
 
 /** Framed paper screen facing +Z, centred on its origin. */
-export function buildScreen(texture: CanvasTexture): PaperScreen {
+export function buildScreen(painter: ScreenPainter): PaperScreen {
   const root = new Group();
   root.name = 'PaperScreen';
-  const paper = new Mesh(
-    new PlaneGeometry(SCREEN_W, SCREEN_H),
-    new MeshBasicMaterial({ map: texture, toneMapped: false }),
-  );
-  paper.name = 'Paper';
-  root.add(paper);
+  const paper = painter.paperMesh;
+  root.add(painter.root);
   const wood = new MeshStandardMaterial({ color: new Color('#3a2418'), roughness: 0.55, metalness: 0.05 });
   const frame = new Group();
   root.add(frame);
