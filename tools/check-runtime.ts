@@ -144,7 +144,9 @@ export async function run(): Promise<string[]> {
       check(s.phase === 3 && s.saved.nights === 1, 'last creature enters finale');
       s.phaseTime = 1; s.finale(72);
       s.phaseTime = 9.1; s.finale(82);
-      check(s.phase === 0 && s.step === 0, 'finale returns to next night');
+      check(s.phase === 4, 'finale opens the invent-your-own moment');
+      s.phaseTime = 14.1; s.invent(0.016, 96, 0);
+      check(s.phase === 0 && s.step === 0, 'invent with no hands times out into the next night');
       passed.push('PASS: last wake, six-creature finale painting, and next night');
     } finally { delete (document as any).hidden; s.destroy(); }
     check(disposed === 1, 'audio teardown registered');
