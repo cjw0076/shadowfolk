@@ -59,10 +59,13 @@ async function setHead(page, camera) {
     const yaw = Math.atan2(-direction[0], -direction[2]);
     const pitch = Math.atan2(direction[1], Math.hypot(direction[0], direction[2]));
     const device = window.IWER_DEVICE;
+    // Programmatic control: otherwise the IWER DevUI render loop writes its own stale camera-rig pose back.
+    if (device.controlMode !== 'programmatic') device.controlMode = 'programmatic';
     device.position.set(...position);
     device.quaternion.set(Math.sin(pitch / 2) * Math.cos(yaw / 2),
       Math.cos(pitch / 2) * Math.sin(yaw / 2), -Math.sin(pitch / 2) * Math.sin(yaw / 2),
       Math.cos(pitch / 2) * Math.cos(yaw / 2));
+    device.notifyStateChange?.();
   }, pose);
   return pose;
 }
@@ -153,6 +156,13 @@ try {
     await step(page);
     if (!await page.evaluate(() => window.__theater.immersive && window.__theater.mode === 'table')) {
       throw new Error(`XR table mode lost at frame ${frame}`);
+    }
+    if (process.env.XR_DEBUG && frame % 15 === 0) {
+      const d = await page.evaluate(() => {
+        const t = window.__theater, dev = window.IWER_DEVICE, r = (v) => v.toArray().map((x) => +x.toFixed(3));
+        const V = t.anchor.constructor; const cam = t.camera.getWorldPosition(new V()); const dir = t.camera.getWorldDirection(new V()); return { dev: [dev.position.x, dev.position.y, dev.position.z].map((x) => +x.toFixed(3)), cam: r(cam), dir: r(dir), lantern: r(t.lanternPos), player: t.player ? r(t.player.position) : null };
+      });
+      process.stdout.write(`dbg ${frame} ${JSON.stringify(d)}\n`);
     }
     await page.screenshot({ path: `${outDir}/frames/f${String(frame).padStart(5, '0')}.png`, timeout: 120000 });
     if (frame % 30 === 0) process.stdout.write(`frame ${frame}/${frames}\n`);
