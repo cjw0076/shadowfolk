@@ -23,6 +23,7 @@ import { GhostHand, Lantern, PaperScreen, RoomDim, buildLantern, buildRoomDim, b
 import { captureControl } from '../capture.js';
 import { PreviewRoom } from './preview-room.js';
 import { WallLayer } from './wall.js';
+import { xrRenderStatusLine } from './xr-render.js';
 
 const TARGET_CY = 0.02;
 /** Lantern placement relative to the seated head: ahead and below the eyes. */
@@ -193,7 +194,7 @@ export class TheaterSystem extends createSystem({
 
   init(): void {
     this.demo = new URLSearchParams(location.search).has('demo');
-    this.painter = new ScreenPainter();
+    this.painter = new ScreenPainter(() => xrRenderStatusLine(this.world.renderer));
     this.lantern = buildLantern();
     this.dim = buildRoomDim();
     this.screen = buildScreen(this.painter);
@@ -806,6 +807,7 @@ export class TheaterSystem extends createSystem({
     this.audio.tick(dt, this.lit);
     this.glowLight.position.copy(this.lanternPos);
     this.glowLight.intensity = (0.12 + 0.95 * this.lit) * flick;
+    this.wall.setLight(this.lit);
     // The room dims as the lantern blooms (passthrough only; the preview room is already dark).
     // House lights go down first, then the lantern blooms.
     const houseDown = this.immersive ? ease((this.animationTime - Math.max(0, this.sessionAt)) / 2.5) : 0;

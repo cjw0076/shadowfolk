@@ -77,15 +77,6 @@ export class WallLayer {
       new PlaneGeometry(1, 1),
       new MeshBasicMaterial({ map: this.texture, transparent: true, depthWrite: false, toneMapped: false }),
     );
-    this.mesh.material.onBeforeCompile = shader => {
-      shader.vertexShader = `varying vec2 vWallUv;\n${shader.vertexShader}`
-        .replace('#include <begin_vertex>', '#include <begin_vertex>\n vWallUv = uv;');
-      shader.fragmentShader = `varying vec2 vWallUv;\n${shader.fragmentShader}`
-        .replace('#include <map_fragment>', `#include <map_fragment>
-          float edgeFade = smoothstep(0.0, 0.06, vWallUv.x) * smoothstep(0.0, 0.06, vWallUv.y)
-            * smoothstep(0.0, 0.06, 1.0 - vWallUv.x) * smoothstep(0.0, 0.06, 1.0 - vWallUv.y);
-          diffuseColor.a *= edgeFade;`);
-    };
     this.mesh.renderOrder = -1;
     this.frame.add(this.mesh);
     this.root.add(this.frame);
@@ -131,6 +122,10 @@ export class WallLayer {
   onSettle?: () => void;
 
   get active(): boolean { return this.fit !== null; }
+
+  setLight(level: number): void {
+    this.mesh.material.opacity = Math.max(0, Math.min(1, level));
+  }
 
   /** Wall-local coordinates of the ray from `from` through `through` (null if it misses). */
   private onWall(from: Vector3, through: Vector3, out: [number, number]): boolean {
@@ -215,13 +210,27 @@ export class WallLayer {
     g.clearRect(0, 0, this.bg.width, this.bg.height);
     const beamX = shadow.length === 4 ? shadow.reduce((sum, point) => sum + point[0], 0) / 4 : 0;
     const beamY = shadow.length === 4 ? shadow.reduce((sum, point) => sum + point[1], 0) / 4 : 0;
-    const [gx, gy] = this.toPx(beamX, beamY + 0.28);
-    const pool = g.createRadialGradient(gx, gy, 10, gx, gy, PX * 1.35);
-    pool.addColorStop(0, 'rgba(247,178,90,0.50)');
-    pool.addColorStop(0.5, 'rgba(247,178,90,0.43)');
-    pool.addColorStop(1, 'rgba(247,178,90,0)');
-    g.fillStyle = pool;
-    g.fillRect(0, 0, this.bg.width, this.bg.height);
+    const [gx, gy] = this.toPx(beamX, beamY - 0.04);
+    const wash = g.createImageData(this.bg.width, this.bg.height);
+    const width = this.bg.width, height = this.bg.height;
+    for (let row = 0; row < height; row++) {
+      const vertical = (row - gy) / (PX * 0.8);
+      const lowerGain = 1 + 0.1 * Math.max(-1, Math.min(1, vertical));
+      const fadeY = Math.min(1, row / (PX * 0.28), (height - 1 - row) / (PX * 0.28));
+      for (let column = 0; column < width; column++) {
+        const horizontal = (column - gx) / (PX * 1.2);
+        const falloff = Math.max(0, Math.exp(-0.45 * (horizontal * horizontal + vertical * vertical)) - 0.025);
+        const fadeX = Math.min(1, column / (PX * 0.28), (width - 1 - column) / (PX * 0.28));
+        const edge = Math.min(fadeX, fadeY);
+        const alpha = 0.65 * falloff * lowerGain * edge * edge * (3 - 2 * edge);
+        const pixel = (row * width + column) * 4;
+        wash.data[pixel] = 247;
+        wash.data[pixel + 1] = 155;
+        wash.data[pixel + 2] = 64;
+        wash.data[pixel + 3] = alpha * 255;
+      }
+    }
+    g.putImageData(wash, 0, 0);
     if (shadow.length === 4) {
       g.filter = 'blur(10px)';
       g.fillStyle = 'rgba(18,10,8,0.32)';

@@ -300,6 +300,7 @@ export class ScreenPainter {
   private creatureCount = 0;
   private captions: CaptionLayer[] = [];
   private perfCaption: CaptionLayer;
+  private perfXrCaption: CaptionLayer;
   private sparksMesh: InstancedMesh<PlaneGeometry, MeshBasicMaterial>;
   private sparkTransform = new Object3D();
   private paperX = 0;
@@ -310,7 +311,7 @@ export class ScreenPainter {
   private progressCalled = false;
   private lastPerfText = 0;
 
-  constructor() {
+  constructor(private readonly xrStatusLine: () => string) {
     [this.canvas, this.ctx] = canvas(CW, CH);
     [this.soft, this.sctx] = canvas(CW / SOFT, Math.round(CH / SOFT));
     [this.handCanvas, this.handContext] = canvas(this.soft.width, this.soft.height);
@@ -378,6 +379,7 @@ export class ScreenPainter {
     this.root.add(this.sparksMesh);
     for (let index = 0; index < 5; index++) this.captions.push(this.makeCaption(CW, CAPTION_H, 6));
     this.perfCaption = this.makeCaption(420, 48, 7);
+    this.perfXrCaption = this.makeCaption(980, 42, 7);
     this.washi.onload = () => this.renderPaper();
     this.washi.src = `${import.meta.env?.BASE_URL ?? './'}textures/washi.jpg`;
     void playfairReady.then(ready => { this.fontReady = ready; });
@@ -412,6 +414,7 @@ export class ScreenPainter {
     for (let index = 0; index < this.creatures.length; index++) this.creatures[index].mesh.material.color.setScalar(value);
     for (let index = 0; index < this.captions.length; index++) this.captions[index].mesh.material.color.setScalar(value);
     this.perfCaption.mesh.material.color.setScalar(value);
+    this.perfXrCaption.mesh.material.color.setScalar(value);
     this.sparksMesh.material.color.setScalar(value);
   }
 
@@ -475,6 +478,7 @@ export class ScreenPainter {
     this.sparksMesh.visible = false;
     for (let index = 0; index < this.captions.length; index++) this.captions[index].mesh.visible = false;
     this.perfCaption.mesh.visible = false;
+    this.perfXrCaption.mesh.visible = false;
     this.progressCalled = false;
     const s = this.sctx;
     s.setTransform(1, 0, 0, 1, 0, 0);
@@ -610,8 +614,10 @@ export class ScreenPainter {
         const update = perf.update.count ? perf.update.values[(perf.update.count - 1) % perf.capacity] : 0;
         this.drawCaption(this.perfCaption, `${interval ? (1000 / interval).toFixed(0) : '0'} fps / ${update.toFixed(1)} ms`,
           0.8, SCREEN_H / 2 - 0.035, true);
+        this.drawCaption(this.perfXrCaption, this.xrStatusLine(), 0.8, SCREEN_H / 2 - 0.074, true);
       }
       this.perfCaption.mesh.visible = !!this.perfCaption.text;
+      this.perfXrCaption.mesh.visible = !!this.perfXrCaption.text;
     }
     perf?.endCall('end', started);
   }
@@ -621,8 +627,13 @@ export class ScreenPainter {
     if (layer.text !== text) {
       const context = layer.ctx;
       context.clearRect(0, 0, layer.canvas.width, layer.canvas.height);
-      context.fillStyle = '#4a3020';
-      context.font = small ? '22px Arial, sans-serif' : 'italic 34px "Playfair Display", Georgia, serif';
+      const xrPerf = layer === this.perfXrCaption;
+      if (xrPerf) {
+        context.fillStyle = 'rgba(20,14,12,0.88)';
+        context.fillRect(0, 0, layer.canvas.width, layer.canvas.height);
+      }
+      context.fillStyle = xrPerf ? '#ffe8bd' : '#4a3020';
+      context.font = xrPerf ? '27px Arial, sans-serif' : small ? '22px Arial, sans-serif' : 'italic 34px "Playfair Display", Georgia, serif';
       context.textAlign = small ? 'left' : 'center';
       context.textBaseline = 'middle';
       context.fillText(text, small ? 12 : layer.canvas.width / 2, layer.canvas.height / 2);
