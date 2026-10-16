@@ -320,9 +320,11 @@ export class ScreenPainter {
       new MeshBasicMaterial({ map: this.texture, toneMapped: false }));
     this.paperMesh.name = 'Paper';
     this.root.add(this.paperMesh);
-    this.shadowMesh = this.overlay(1, new PlaneGeometry(SCREEN_W, SCREEN_H));
-    this.glowMesh = this.overlay(2, new PlaneGeometry(1, 1), true);
-    this.cutMesh = this.overlay(3, new PlaneGeometry(1, 1));
+    // Back to front: the cut-out's glow and hole, then the live shadow over them (a hand that
+    // covers the hole blocks the light through it, so a fitted shadow fills the shape), then creatures.
+    this.glowMesh = this.overlay(1, new PlaneGeometry(1, 1), true);
+    this.cutMesh = this.overlay(2, new PlaneGeometry(1, 1));
+    this.shadowMesh = this.overlay(3, new PlaneGeometry(SCREEN_W, SCREEN_H));
     this.shadowMesh.material.map = this.softTexture;
     this.shadowMesh.material.color.set(INK);
     for (let index = 0; index < TARGETS.length + 2; index++) {

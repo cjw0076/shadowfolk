@@ -829,8 +829,10 @@ export class TheaterSystem extends createSystem({
           hand.joints[offset + 2] - L.z);
       }
       distance = Math.max(0.15, distance / JOINT_COUNT);
-      const penumbraMetres = 0.038 * Math.max(0, screenDistance - distance) / distance;
-      p.shadow(hand.flat, Math.min(24, Math.max(1, penumbraMetres * 256)));
+      // Penumbra width W = flame radius * (paper - hand) / hand; Gaussian sigma ~ W/3.
+      // A 2.4 cm effective flame keeps a mid-distance hand readable and still blooms near the lantern.
+      const penumbraMetres = 0.024 * Math.max(0, screenDistance - distance) / distance;
+      p.shadow(hand.flat, Math.min(12, Math.max(0.8, (penumbraMetres * 256) / 3)));
     }
     p.flushShadows(this.phase === Phase.Wake ? 0.35 : 0.9);
     if (this.phase !== Phase.Finale) p.progress(this.step, NIGHT_LENGTH);
