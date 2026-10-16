@@ -21,6 +21,7 @@ import { RigAnchor } from './anchor.js';
 import { LANTERN_ON_TABLE, Surface, TableFit, WallFit, fitPinWall, fitTable, fitWall } from './room.js';
 import { GhostHand, Lantern, PaperScreen, RoomDim, buildLantern, buildRoomDim, buildScreen } from './stage.js';
 import { captureControl } from '../capture.js';
+import { Moon, isFullMoon, moonPhase } from './moon.js';
 import { PreviewRoom } from './preview-room.js';
 import { WallLayer } from './wall.js';
 import { xrRenderStatusLine } from './xr-render.js';
@@ -172,6 +173,8 @@ export class TheaterSystem extends createSystem({
   private oneHand = 0; // seconds a two-hand creature has seen only one shadow
   private fresh = -1; // index into TARGETS of tonight's newly joined creature
   private nightTitle = '';
+  private moon = new Moon();
+  private fullMoon = false;
   // Inventing a creature of your own after the finale.
   private inventStencils = new Map<string, Stencil>();
   private inventStable = 0;
@@ -268,6 +271,9 @@ export class TheaterSystem extends createSystem({
     this.ghostPose = basePoses.relaxed();
     this.ghostPose2 = basePoses.relaxed();
     this.wall.onSettle = () => this.audio.settle();
+    // Tonight's moon sits in the paper's top-left corner, under the shadows.
+    this.moon.mesh.position.set(-SCREEN_W / 2 + 0.09, SCREEN_H / 2 - 0.085, 0.0002);
+    this.painter.root.add(this.moon.mesh);
     const cap = captureControl();
     if (cap) this.audio.onCue = (kind, arg) => cap.cues.push({ t: cap.time, kind, arg });
     if (cap) {
@@ -373,6 +379,9 @@ export class TheaterSystem extends createSystem({
     }
     const key = nights === 0 ? 'first' : this.fresh >= 0 ? TARGETS[this.fresh].id : '';
     this.nightTitle = `Night ${nights + 1} \u00b7 ${NIGHT_NAMES[key] ?? 'Old Friends'}`;
+    const phase = moonPhase();
+    this.moon.setPhase(phase);
+    this.fullMoon = isFullMoon(phase);
     this.nightTitleAt = -1;
     this.step = 0;
     this.enter(Phase.Seek);
@@ -1154,6 +1163,7 @@ export class TheaterSystem extends createSystem({
       if (this.nightTitleAt < 0) this.nightTitleAt = time;
       const a = time - this.nightTitleAt;
       if (a < 4.2) this.painter.caption(this.nightTitle, Math.min(ease(a / 0.7), 1 - ease((a - 3.4) / 0.8)), 0.27);
+      if (this.fullMoon && a > 1 && a < 5.5) this.painter.caption('A full moon tonight. Everyone is awake a little longer.', Math.min(ease((a - 1) / 0.6), 1 - ease((a - 4.7) / 0.8)), -0.27);
     }
     // Once, after the first creature of a session: the theater can be carried by hand.
     if (this.immersive && this.step === 1 && !this.saved.carried && this.phaseTime > 1 && this.phaseTime < 6) {
