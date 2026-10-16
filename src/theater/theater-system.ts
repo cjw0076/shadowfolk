@@ -5,7 +5,7 @@
  * and it wakes, blinks and walks off into the night's story.
  */
 import {
-  Box3, Color, Matrix4, MeshBasicMaterial, Quaternion, Vector3, VisibilityState, XRMesh, XRPlane, createSystem,
+  Box3, Color, Matrix4, MeshBasicMaterial, PointLight, Quaternion, Vector3, VisibilityState, XRMesh, XRPlane, createSystem,
 } from '@iwsdk/core';
 import {
   HandPose, JOINT_COUNT, JOINT_NAMES, basePoses, mirror,
@@ -123,6 +123,8 @@ export class TheaterSystem extends createSystem({
   private wall = new WallLayer();
   private preview = new PreviewRoom(); // stand-in room for the browser preview
   private dim!: RoomDim; // theater lights down over the passthrough room
+  /** The lantern really lights the props near it (stand, frame, preview table and wall). */
+  private glowLight = new PointLight(new Color('#ffb46e'), 0, 4, 2);
   private rigAnchor = new RigAnchor();
   private table: TableFit | null = null;
   private mode: RigMode = 'float';
@@ -198,7 +200,7 @@ export class TheaterSystem extends createSystem({
     this.puppeteer = new GhostHand('DemoHand', '#c99877', true);
     this.puppeteer2 = new GhostHand('DemoHand2', '#c99877', true);
     for (const o of [this.lantern.root, this.screen.root, this.ghost.root, this.ghost2.root,
-      this.puppeteer.root, this.puppeteer2.root, this.wall.root, this.preview.root, this.dim.mesh]) {
+      this.puppeteer.root, this.puppeteer2.root, this.wall.root, this.preview.root, this.dim.mesh, this.glowLight]) {
       this.world.createTransformEntity(o);
     }
     this.baked = TARGETS.map(bakeTarget);
@@ -770,6 +772,8 @@ export class TheaterSystem extends createSystem({
     this.lantern.bodyMat.color.setRGB(glow, 0.81 * glow, 0.54 * glow);
     this.lantern.halo.scale.setScalar((0.12 + 0.12 * this.lit) + 0.02 * flick);
     (this.lantern.pool.material as MeshBasicMaterial).opacity = 0.32 * this.lit * flick;
+    this.glowLight.position.copy(this.lanternPos);
+    this.glowLight.intensity = (0.12 + 0.95 * this.lit) * flick;
     // The room dims as the lantern blooms (passthrough only; the preview room is already dark).
     // House lights go down first, then the lantern blooms.
     const houseDown = this.immersive ? ease((this.animationTime - Math.max(0, this.sessionAt)) / 2.5) : 0;
