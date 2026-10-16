@@ -4,6 +4,7 @@ import { signal } from '@preact/signals-core';
 import { TheaterSystem } from '../src/theater/theater-system';
 import { TheaterAudio } from '../src/theater/audio';
 import { JOINT_NAMES } from '../src/shadow/hand-model';
+import { drawHand } from '../src/shadow/silhouette';
 
 export async function run(): Promise<string[]> {
   const passed: string[] = [];
@@ -31,6 +32,11 @@ export async function run(): Promise<string[]> {
     const { system: saved } = make();
     check(saved.saved.nights === 2 && saved.saved.woken.rabbit === 3 && Object.keys(saved.saved.woken).length === 1, 'valid counts preserved');
     saved.destroy();
+    localStorage.setItem('shadow-theater.v1', '{"nights":1,"woken":{},"oneHand":"yes","oneHandAdaptations":-1,"deferred":["butterfly","bogus","butterfly"]}');
+    const { system: invalidAccess } = make();
+    check(!invalidAccess.saved.oneHand && invalidAccess.saved.oneHandAdaptations === 0
+      && JSON.stringify(invalidAccess.saved.deferred) === '["butterfly"]', 'one-hand save fields validated');
+    invalidAccess.destroy();
     const descriptor = Object.getOwnPropertyDescriptor(window, 'localStorage');
     Object.defineProperty(window, 'localStorage', { configurable: true, get() { throw new DOMException('blocked', 'SecurityError'); } });
     try { const { system } = make(); check(system.saved.nights === 0, 'blocked storage fallback'); system.destroy(); }
@@ -150,6 +156,111 @@ export async function run(): Promise<string[]> {
       passed.push('PASS: last wake, six-creature finale painting, and next night');
     } finally { delete (document as any).hidden; s.destroy(); }
     check(disposed === 1, 'audio teardown registered');
+
+    localStorage.removeItem('shadow-theater.v1');
+    const { system: adapted } = make();
+    adapted.init();
+    adapted.demo = false;
+    try {
+      const butterfly = adapted.baked.findIndex((target: any) => target.def.id === 'butterfly');
+      adapted.order = [butterfly, 0, 1, 2, 3];
+      adapted.step = 0;
+      adapted.enter(0);
+      adapted.oneHandSeen = true;
+      adapted.oneHand = 7.95;
+      adapted.stuck = 7.95;
+      adapted.seek(adapted.baked[butterfly], adapted.stencils[butterfly], 1, .06, 10);
+      const replacement = adapted.order[0];
+      check(replacement !== butterfly && !adapted.baked[replacement].partner
+        && new Set(adapted.order).size === 5 && adapted.saved.deferred.includes('butterfly'), 'butterfly reforms into a unique one-hand target');
+      const cuts: { id: number; reveal: number }[] = [];
+      const captions: string[] = [];
+      adapted.painter.target = (stencil: any, _x: number, _y: number, _glow: number, _time: number, reveal: number) => {
+        cuts.push({ id: adapted.stencils.indexOf(stencil), reveal });
+      };
+      adapted.painter.caption = (caption: string) => captions.push(caption);
+      adapted.seek(adapted.baked[replacement], adapted.stencils[replacement], 1, .2, 10.2);
+      adapted.seek(adapted.baked[replacement], adapted.stencils[replacement], 1, .5, 10.7);
+      check(cuts[0].id === butterfly && cuts[0].reveal < 1 && cuts[1].id === replacement
+        && cuts[1].reveal > 0 && captions.includes('One hand is enough tonight.'), 'old cut-out burns away and new one burns in with caption');
+      adapted.reform.elapsed = 1.5;
+      adapted.matcher.score = () => 1;
+      for (let slot = 0; slot < 5; slot++) {
+        if (slot > 0) adapted.enter(0);
+        const index = adapted.order[slot];
+        adapted.score = 1; adapted.hold = .54;
+        adapted.seek(adapted.baked[index], adapted.stencils[index], 1, .02, 20 + slot);
+        check(adapted.phase === 1, `one-hand creature ${slot} wakes`);
+        adapted.phaseTime = 3.3;
+        adapted.wake(adapted.baked[index], adapted.stencils[index], 21 + slot);
+      }
+      check(adapted.phase === 3 && adapted.saved.nights === 1, 'one-hand night completes into finale');
+      adapted.phaseTime = 9.1;
+      adapted.finale(40);
+      check(adapted.phase === 4, 'one-hand finale enters invent');
+      adapted.live.clear();
+      drawHand(adapted.live, adapted.baked[replacement].flat);
+      adapted.hands[0].valid = true;
+      adapted.hands[0].flat.x.set(adapted.baked[replacement].flat.x);
+      adapted.hands[0].flat.y.set(adapted.baked[replacement].flat.y);
+      adapted.hands[0].flat.r.set(adapted.baked[replacement].flat.r);
+      adapted.hands[0].flat.valid = true;
+      for (let frameIndex = 0; frameIndex < 40 && !adapted.inventBorn; frameIndex++) {
+        adapted.phaseTime = 1.6 + frameIndex * .05;
+        adapted.invent(.05, 41 + frameIndex * .05, 1);
+      }
+      check(adapted.inventBorn && adapted.saved.invented.length === 1
+        && adapted.saved.invented[0].hands.length === 1, 'one hand invents a creature after the finale');
+      adapted.newNight();
+      check(adapted.order.includes(butterfly), 'skipped butterfly is offered on a later night');
+      passed.push('PASS: butterfly adapts after eight seek seconds, burn-in/caption, one-hand night/finale/invent, skipped target returns');
+    } finally { adapted.destroy(); }
+
+    localStorage.removeItem('shadow-theater.v1');
+    const { system: twoHands } = make();
+    twoHands.init();
+    twoHands.demo = false;
+    try {
+      const butterfly = twoHands.baked.findIndex((target: any) => target.def.id === 'butterfly');
+      twoHands.order[0] = butterfly;
+      twoHands.enter(0);
+      twoHands.oneHandSeen = true; twoHands.oneHand = 7.99; twoHands.stuck = 8;
+      twoHands.matcher.score = () => 0;
+      twoHands.seek(twoHands.baked[butterfly], twoHands.stencils[butterfly], 2, .05, 10);
+      check(twoHands.order[0] === butterfly && twoHands.oneHand === 0 && !twoHands.reform,
+        'two tracked hands do not adapt');
+      twoHands.stuck = 8;
+      twoHands.seek(twoHands.baked[butterfly], twoHands.stencils[butterfly], 0, 8, 10.1);
+      check(twoHands.order[0] === butterfly, 'empty room does not trigger one-hand adaptation');
+      twoHands.order = [butterfly, 7, 0, 1, 2];
+      for (const slot of [0, 1]) {
+        twoHands.step = slot; twoHands.enter(0);
+        twoHands.oneHandSeen = true; twoHands.oneHand = 7.99; twoHands.stuck = 8;
+        const index = twoHands.order[slot];
+        twoHands.seek(twoHands.baked[index], twoHands.stencils[index], 1, .05, 11 + slot);
+      }
+      check(twoHands.saved.oneHand && twoHands.saved.oneHandAdaptations === 2
+        && twoHands.order.slice(1, 5).every((index: number) => !twoHands.baked[index].partner), 'second adaptation remembers one-hand preference and removes remaining two-hand targets');
+      const stored = JSON.parse(localStorage.getItem('shadow-theater.v1')!);
+      check(stored.oneHand === true && stored.oneHandAdaptations === 2, 'one-hand preference survives storage round-trip');
+      const { system: reloaded } = make();
+      reloaded.init();
+      try {
+        check(reloaded.saved.oneHand && reloaded.saved.oneHandAdaptations === 2, 'one-hand preference reloads');
+        reloaded.order = [butterfly, 7, 0, 1, 2];
+        reloaded.beginSession();
+        check(reloaded.order.slice(0, 5).every((index: number) => !reloaded.baked[index].partner)
+          && !reloaded.reform, 'remembered preference hides two-hand targets before they appear');
+      } finally { reloaded.destroy(); }
+      twoHands.immersive = true;
+      twoHands.endSession(); twoHands.beginSession();
+      twoHands.observeSessionHands(3, 2.9);
+      check(twoHands.saved.oneHand && twoHands.twoHandsSeen, 'both hands permit targets but do not clear preference early');
+      twoHands.observeSessionHands(3, .11);
+      check(!twoHands.saved.oneHand && twoHands.saved.oneHandAdaptations === 0
+        && JSON.parse(localStorage.getItem('shadow-theater.v1')!).oneHand === false, 'three seconds of both hands in later session clears preference');
+      passed.push('PASS: two hands retain original target; second adaptation persists preference; later-session three-second clear');
+    } finally { twoHands.destroy(); }
 
     const NativeAudio = window.AudioContext;
     try {
