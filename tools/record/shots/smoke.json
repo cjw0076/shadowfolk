@@ -1,0 +1,3 @@
+{ "seconds": 8, "fps": 15, "width": 640, "height": 360, "params": "demo&day=20378", "warmup": 2.0,
+  "storage": { "shadow-theater.v1": { "nights": 2, "woken": { "peacock": 1, "rabbit": 1, "snail": 1, "fish": 1, "duck": 1, "butterfly": 1 }, "order": ["peacock","rabbit","snail","fish","duck","butterfly"] } },
+  "camera": [ { "t": 0, "pos": [0.5, 1.48, 0.95], "look": [0, 1.2, -1.0], "fov": 50 } ] }
