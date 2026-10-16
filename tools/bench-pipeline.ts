@@ -5,6 +5,9 @@ import { FlatHand, Mask, Matcher, STAGE, drawHand, projectFromLight, ScreenFrame
 import { TARGETS, bakeTarget } from '../src/shadow/targets';
 
 const FRAMES = 2000, WARMUP = 300;
+const mode = process.argv[2] ?? 'one-hand';
+if (!['one-hand', 'two-hands', 'near-light'].includes(mode)) throw new Error('Use one-hand, two-hands, or near-light');
+const handCount = mode === 'one-hand' ? 1 : 2;
 const baked = TARGETS.map(bakeTarget);
 const screen: ScreenFrame = {
   ox: 0, oy: STAGE.lightDrop - 0.02, oz: -STAGE.lightToScreen,
@@ -19,7 +22,7 @@ const poses = Array.from({ length: 120 }, (_, k) => {
   const center = [0, 0, 0];
   for (let j = 0; j < JOINT_COUNT; j++) for (let c = 0; c < 3; c++) center[c] += pose.mats[j * 16 + 12 + c];
   for (let c = 0; c < 3; c++) center[c] /= JOINT_COUNT;
-  const dist = STAGE.lightToHand + 0.06 * Math.sin(k * 0.3);
+  const dist = mode === 'near-light' ? 0.015 : STAGE.lightToHand + 0.06 * Math.sin(k * 0.3);
   const joints = new Float32Array(JOINT_COUNT * 3);
   for (let j = 0; j < JOINT_COUNT; j++) {
     joints[j * 3] = pose.mats[j * 16 + 12] - center[0] + Math.sin(k) * 0.04;
@@ -32,9 +35,12 @@ const mask = new Mask(170, 120, -0.68, -0.48, 0.008);
 const flat = new FlatHand(), matcher = new Matcher();
 function frame(k: number): number {
   const p = poses[k % poses.length];
-  projectFromLight(p.joints, p.radii, 0, 0, 0, screen, flat);
   mask.clear();
-  drawHand(mask, flat);
+  for (let h = 0; h < handCount; h++) {
+    const hand = poses[(k + h * 37) % poses.length];
+    projectFromLight(hand.joints, hand.radii, 0, 0, 0, screen, flat);
+    drawHand(mask, flat);
+  }
   return matcher.score(mask, p.template);
 }
 for (let k = 0; k < WARMUP; k++) frame(k);
@@ -46,6 +52,6 @@ for (let k = 0; k < FRAMES; k++) {
   sum += (samples[k] = performance.now() - start);
 }
 samples.sort();
-console.log(`project -> raster -> Matcher.score: ${FRAMES} frames (${WARMUP} warmup)`);
+console.log(`project -> raster -> Matcher.score: ${FRAMES} frames (${WARMUP} warmup; ${mode})`);
 console.log(`mean ${(sum / FRAMES).toFixed(4)} ms/frame; p95 ${samples[Math.ceil(FRAMES * 0.95) - 1].toFixed(4)} ms/frame`);
 console.log(`score checksum ${checksum.toFixed(9)}`);
