@@ -169,6 +169,7 @@ export class TheaterSystem extends createSystem({
   private demoDepth = typeof location !== 'undefined' && new URLSearchParams(location.search).has('demoDepth');
   private lit = 1; // lantern brightness 0..1
   private litTarget = 1;
+  private paperDim = 0;
   private awaitingLight = false;
   private sessionAt = -1;
   private voiced = false;
@@ -1088,7 +1089,11 @@ export class TheaterSystem extends createSystem({
     // House lights go down first, then the lantern blooms.
     const houseDown = this.immersive ? ease((this.animationTime - Math.max(0, this.sessionAt)) / 2.5) : 0;
     this.dim.update(this.camera.getWorldPosition(this.v0), this.lanternPos, (0.38 + 0.1 * this.lit) * houseDown);
-    const paperTone = 0.32 + 0.68 * this.lit;
+    const finaleDim = this.phase === Phase.Finale
+      ? ease((this.phaseTime - FINALE_TIME + 2.2) / 2.2) : this.phase === Phase.Invent ? 0.45 : 0;
+    this.paperDim += (finaleDim - this.paperDim) * Math.min(1, dt * 2.5);
+    const brightPaper = 0.32 + 0.68 * this.lit;
+    const paperTone = brightPaper + (0.32 + 0.68 * EMBER - brightPaper) * this.paperDim;
     this.painter.setTone(paperTone);
 
     // Shadows: project every hand from the lantern onto the paper.
@@ -1157,7 +1162,7 @@ export class TheaterSystem extends createSystem({
     this.audio.setHold(casting ? close * close : 0);
 
     const glow = close * close + (this.hold > 0 ? 0.4 * this.hold / HOLD_TO_WAKE : 0);
-    this.painter.target(stencil, 0, TARGET_CY, glow, time);
+    this.painter.target(stencil, 0, TARGET_CY, glow, time, ease(this.phaseTime / 0.9));
 
     // First moment of the first night: light and shadow speak first; words only if nothing happens.
     if (this.saved.nights === 0 && this.step === 0) {
@@ -1241,22 +1246,40 @@ export class TheaterSystem extends createSystem({
       }
     }
     const walk = ease((t - WALK_AT) / WALK_TIME);
-    let x = this.follow.x + walk * (SCREEN_W / 2 + stencil.w / 2 + 0.03 - this.follow.x * 0.5), y = TARGET_CY + this.follow.y * (1 - walk);
-    let rot = Math.max(-0.25, Math.min(0.25, -this.follow.vx * 6)), sc = 1;
+    const fill = ease((t - 0.25) / 0.65);
+    if (t < 0.9) this.painter.target(stencil, 0, TARGET_CY, 1, time, 1 - fill, 1 - ease(t / 0.25));
+    let x = this.follow.x + walk * (SCREEN_W / 2 + stencil.w / 2 + 0.03 - this.follow.x * 0.5);
+    let y = TARGET_CY + this.follow.y * (1 - walk);
+    let rot = Math.max(-0.25, Math.min(0.25, -this.follow.vx * 6));
+    let stretchX = 1, stretchY = 1;
     switch (target.def.motion) {
-      case 'hop': y += Math.abs(Math.sin(Math.max(0, t - 0.4) * Math.PI * 1.6)) * 0.05; break;
-      case 'swim': y += Math.sin(t * 4) * 0.018; rot = Math.cos(t * 4) * 0.08; break;
-      case 'crawl': sc = 1 + 0.025 * Math.sin(t * 7); x *= 0.85; break;
-      case 'bob': y += Math.sin(t * 5) * 0.014; rot = Math.sin(t * 5) * 0.07; break;
-      case 'fan': sc = 1 + 0.07 * Math.sin(t * 3) * (1 - walk); rot = Math.sin(t * 2) * 0.04; break;
-      case 'flap': y += 0.03 * Math.sin(t * 5) + walk * 0.12; sc = 1 + 0.06 * Math.sin(t * 10); rot = 0.06 * Math.sin(t * 5); break;
-      case 'stalk': y += Math.abs(Math.sin(t * 2.2)) * 0.012; rot = -0.04 + 0.04 * Math.sin(t * 2.2); x *= 0.9; break;
-      case 'scuttle': x += 0.012 * Math.sin(t * 22); y += 0.004 * Math.abs(Math.sin(t * 22)); break;
+      case 'hop': {
+        const leap = Math.abs(Math.sin(Math.max(0, t - 0.4) * Math.PI * 1.6));
+        const landing = (1 - leap) * (1 - leap) * Math.max(0, 1 - walk);
+        y += leap * 0.05;
+        stretchX = 1 - 0.07 * leap + 0.11 * landing;
+        stretchY = 1 + 0.12 * leap - 0.14 * landing;
+        break;
+      }
+      case 'swim': y += Math.sin(t * 4) * 0.018; rot += Math.cos(t * 4) * 0.08;
+        stretchX = 1 + 0.045 * Math.sin(t * 6); stretchY = 1 - 0.025 * Math.sin(t * 6); break;
+      case 'crawl': x = x * 0.85 + 0.012 * Math.sin(t * 3.5);
+        stretchX = 1 + 0.055 * Math.sin(t * 3.5); stretchY = 1 - 0.045 * Math.sin(t * 3.5); break;
+      case 'bob': y += Math.sin(t * 5) * 0.014; rot += Math.sin(t * 5) * 0.07; break;
+      case 'fan': stretchX = 1 + 0.1 * Math.sin(t * 3) * (1 - walk); rot += Math.sin(t * 2) * 0.04; break;
+      case 'flap': y += 0.03 * Math.sin(t * 5) + walk * 0.12;
+        stretchX = 1 + 0.16 * Math.sin(t * 10); stretchY = 1 - 0.05 * Math.sin(t * 10);
+        rot += 0.06 * Math.sin(t * 5); break;
+      case 'stalk': y += Math.abs(Math.sin(t * 2.2)) * 0.018;
+        rot += -0.04 + 0.06 * Math.sin(t * 2.2); x *= 0.9; break;
+      case 'scuttle': x += 0.016 * Math.sin(t * 22); y += 0.004 * Math.abs(Math.sin(t * 22));
+        rot += 0.045 * Math.sin(t * 22); break;
     }
     const onWall = this.wall.active;
     const alpha = onWall ? 1 : t < 2.3 ? 1 : 1 - ease((t - 2.3) / 0.5);
-    const blink = (t > 0.9 && t < 1.02) || (t > 1.9 && t < 1.98);
-    this.painter.creature(stencil, x, y, sc, rot, false, blink, alpha, Math.max(0, 1 - t / 1.5), time);
+    const blink = t < 0.87 || (t > 1.35 && t < 1.44) || (t > 2.12 && t < 2.2);
+    this.painter.creature(stencil, x, y, 1, rot, false, blink, alpha, Math.max(0, 1 - t / 1.5), time,
+      stretchX, stretchY, fill);
     if (!this.leapt && t >= WALK_AT + WALK_TIME * 0.82) {
       this.leapt = true;
       if (onWall) this.wall.leap(target.def.id, stencil, time);
@@ -1289,7 +1312,8 @@ export class TheaterSystem extends createSystem({
       this.finaleX[k] = x;
     }
     const a = Math.min(ease(t / 0.8), 1 - ease((t - FINALE_TIME + 1) / 1));
-    this.wall.cheer(a);
+    const eyePulse = ease((t - FINALE_TIME + 1.4) / 0.35) * (1 - ease((t - FINALE_TIME + 0.35) / 0.35));
+    this.wall.cheer(a, eyePulse);
     this.painter.caption(FINALE_CAPTION, a, 0.2);
     const next = this.nextNewcomer();
     if (next >= 0 && t > FINALE_TIME * 0.45) {

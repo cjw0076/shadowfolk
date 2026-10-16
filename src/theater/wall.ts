@@ -59,6 +59,7 @@ export class WallLayer {
   private start: [number, number] = [0, 0];
   private startScale = 1;
   private celebrate = 0;
+  private eyePulse = 0;
   /** Woken shadows grow with the wall's distance behind the paper. */
   private scale = 1;
   private soft = new Map<Stencil, WallInk>();
@@ -282,7 +283,10 @@ export class WallLayer {
   }
 
   /** Finale: the whole wall wakes up for a moment. */
-  cheer(level: number): void { this.celebrate = level; }
+  cheer(level: number, eyePulse = 0): void {
+    this.celebrate = level;
+    this.eyePulse = eyePulse;
+  }
 
   update(time: number): void {
     if (!this.fit) return;
@@ -368,6 +372,11 @@ export class WallLayer {
     sprite.group.rotation.z = -rot;
     sprite.group.scale.set(stencil.w * scale, stencil.h * scale, 1);
     const blink = Math.sin(time * 0.7 + seed * 5.1) > 0.985;
+    const brightness = 1 + 1.1 * this.eyePulse;
+    sprite.eyesOpen.material.color.setScalar(brightness);
+    sprite.eyesBlink.material.color.setScalar(brightness);
+    sprite.eyesOpen.scale.setScalar(1 + 0.16 * this.eyePulse);
+    sprite.eyesBlink.scale.setScalar(1 + 0.16 * this.eyePulse);
     sprite.eyesOpen.material.opacity = blink ? 0 : 0.95;
     sprite.eyesBlink.material.opacity = blink ? 0.95 : 0;
     sprite.group.visible = true;
