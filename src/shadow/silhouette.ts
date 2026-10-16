@@ -97,12 +97,16 @@ export class Mask {
     for (let j = j0; j <= j1; j++) {
       const py = y0 + (j + 0.5) * cell;
       for (let i = i0; i <= i1; i++) {
+        const index = j * w + i;
+        // Capsules only add ink. Overlapping palms/fingers cannot change ink
+        // already in the union, especially when magnified near the lantern.
+        if (data[index] === 1) continue;
         const px = x0 + (i + 0.5) * cell;
         let t = ((px - ax) * ex + (py - ay) * ey) / len2;
         t = t < 0 ? 0 : t > 1 ? 1 : t;
         const dx = px - (ax + ex * t), dy = py - (ay + ey * t);
         const r = ra + (rb - ra) * t;
-        if (dx * dx + dy * dy <= r * r) data[j * w + i] = 1;
+        if (dx * dx + dy * dy <= r * r) data[index] = 1;
       }
     }
   }
@@ -229,6 +233,21 @@ export function iou(a: Uint8Array, b: Uint8Array): number {
   return uni ? inter / uni : 0;
 }
 
+/** Same weighted accumulation order as iou, reading a horizontally mirrored. */
+function mirroredIou(a: Uint8Array, b: Uint8Array): number {
+  let inter = 0, uni = 0;
+  for (let j = 0; j < NORM; j++) {
+    const row = j * NORM;
+    for (let i = 0; i < NORM; i++) {
+      const k = row + i;
+      const x = a[row + NORM - 1 - i], y = b[k], w = WEIGHTS[k];
+      if (x & y) inter += w;
+      if (x | y) uni += w;
+    }
+  }
+  return uni ? inter / uni : 0;
+}
+
 /** Rotations tried when matching (radians): ±30° in 10° steps. */
 export const MATCH_ROTATIONS = [-30, -20, -10, 0, 10, 20, 30].map((d) => (d * Math.PI) / 180);
 
@@ -237,7 +256,7 @@ export const MATCH_ROTATIONS = [-30, -20, -10, 0, 10, 20, 30].map((d) => (d * Ma
  * rotations and mirror (either hand may make any shape).
  */
 export class Matcher {
-  private buf = new Uint8Array(NORM * NORM);
+  private rotated = MATCH_ROTATIONS.map(() => new Uint8Array(NORM * NORM));
   private mo: Moments = { area: 0, cx: 0, cy: 0 };
   bestRot = 0;
   bestMirror = false;
@@ -246,10 +265,14 @@ export class Matcher {
     moments(live, this.mo);
     if (this.mo.area < 4) return 0;
     let best = 0;
-    for (const mirrorX of [false, true]) {
-      for (const rot of MATCH_ROTATIONS) {
-        normalise(live, this.mo, this.buf, rot, mirrorX);
-        const v = iou(this.buf, template);
+    for (let mirror = 0; mirror < 2; mirror++) {
+      const mirrorX = mirror === 1;
+      for (let r = 0; r < MATCH_ROTATIONS.length; r++) {
+        const rot = MATCH_ROTATIONS[r], buf = this.rotated[r];
+        // Mirroring normalise's u coordinate is exactly a row reversal. Keep
+        // rotation/mirror and IoU accumulation order so ties remain identical.
+        if (!mirrorX) normalise(live, this.mo, buf, rot, false);
+        const v = mirrorX ? mirroredIou(buf, template) : iou(buf, template);
         if (v > best) { best = v; this.bestRot = rot; this.bestMirror = mirrorX; }
       }
     }

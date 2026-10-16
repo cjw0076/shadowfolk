@@ -15,6 +15,7 @@ import {
 } from '../shadow/silhouette.js';
 import { BakedTarget, TARGETS, bakeTarget } from '../shadow/targets.js';
 import { TheaterAudio } from './audio.js';
+import { runtimePerf as perf } from './perf.js';
 import { SCREEN_H, SCREEN_W, ScreenPainter, Stencil, makeStencil } from './painter.js';
 import { RigAnchor } from './anchor.js';
 import { LANTERN_ON_TABLE, Surface, TableFit, WallFit, fitPinWall, fitTable, fitWall } from './room.js';
@@ -41,6 +42,7 @@ const REST_TIME = 0.9;
 const FINALE_TIME = 9;
 const HINT_AFTER = 7;
 const NIGHT_LENGTH = TARGETS.length;
+const FINALE_CAPTION = `${NIGHT_LENGTH} shadows woke tonight.`;
 const STORE_KEY = 'shadow-theater.v1';
 
 enum Phase { Seek, Wake, Rest, Finale }
@@ -58,7 +60,21 @@ interface Saved { nights: number; woken: Record<string, number>; order?: string[
 function loadSaved(): Saved {
   try {
     const raw = localStorage.getItem(STORE_KEY);
-    if (raw) return JSON.parse(raw) as Saved;
+    if (raw) {
+      const value: unknown = JSON.parse(raw);
+      if (value && typeof value === 'object' && !Array.isArray(value)) {
+        const candidate = value as Partial<Saved>;
+        const nights = Number.isSafeInteger(candidate.nights) && candidate.nights! >= 0 ? candidate.nights! : 0;
+        const woken: Record<string, number> = {};
+        if (candidate.woken && typeof candidate.woken === 'object' && !Array.isArray(candidate.woken)) {
+          for (const target of TARGETS) {
+            const count = candidate.woken[target.id];
+            if (Number.isSafeInteger(count) && count >= 0) woken[target.id] = count;
+          }
+        }
+        return { nights, woken };
+      }
+    }
   } catch { /* private mode: play without memory */ }
   return { nights: 0, woken: {} };
 }
@@ -134,6 +150,10 @@ export class TheaterSystem extends createSystem({
   private saved: Saved = loadSaved();
   private demo = false;
   private immersive = false;
+  private visible = true;
+  private resumeFrame = false;
+  private handMask = 0;
+  private animationTime = 0;
   private night = new Color('#140e0c');
 
   // Scratch, allocated once.
@@ -181,26 +201,60 @@ export class TheaterSystem extends createSystem({
     this.ghostPose = basePoses.relaxed();
     this.ghostPose2 = basePoses.relaxed();
     this.newNight();
-    if (import.meta.env.DEV) (window as unknown as { __theater: unknown }).__theater = this;
+    if (import.meta.env?.DEV) (window as unknown as { __theater: unknown }).__theater = this;
 
     this.cleanupFuncs.push(
       this.world.visibilityState.subscribe((state) => {
+        const wasImmersive = this.immersive;
         this.immersive = state !== VisibilityState.NonImmersive;
         // Night backdrop for the browser preview; passthrough shows the room in XR.
         this.scene.background = this.immersive ? null : this.night;
-        if (state === VisibilityState.Visible) {
-          this.audio.start();
-          if (this.restore === 'idle') this.beginSession();
-        } else if (state === VisibilityState.NonImmersive) {
-          this.placed = false;
-          this.placeAt = 0;
-          this.endSession();
+        if (this.immersive !== wasImmersive) {
+          this.resetTracking();
+          this.handsSeenAt = -1;
+          this.resumeFrame = true;
+          if (this.immersive) {
+            this.beginSession();
+          } else {
+            this.placed = false;
+            this.placeAt = 0;
+            this.endSession();
+          }
         }
+        this.syncVisibility();
       }),
     );
-    const unlock = () => this.audio.start();
+    const onVisibility = () => this.syncVisibility();
+    document.addEventListener('visibilitychange', onVisibility);
+    this.cleanupFuncs.push(() => document.removeEventListener('visibilitychange', onVisibility));
+    const unlock = () => { if (this.visible) this.audio.start(); };
     window.addEventListener('pointerdown', unlock);
-    this.cleanupFuncs.push(() => window.removeEventListener('pointerdown', unlock));
+    this.cleanupFuncs.push(() => window.removeEventListener('pointerdown', unlock), () => this.audio.dispose());
+  }
+
+  /** System menus and background tabs pause the night without moving the rig. */
+  private syncVisibility(): void {
+    const state = this.world.visibilityState.peek();
+    const visible = !document.hidden && (state === VisibilityState.NonImmersive || state === VisibilityState.Visible);
+    if (visible === this.visible) {
+      if (visible && this.immersive) this.audio.start();
+      return;
+    }
+    this.visible = visible;
+    this.resumeFrame = true;
+    this.resetTracking();
+    if (visible) this.audio.start(); else this.audio.pause();
+  }
+
+  private resetTracking(): void {
+    this.hold = 0;
+    this.score = 0;
+    this.handMask = 0;
+    this.drift = 0;
+    for (const hand of this.allHands) { hand.valid = false; hand.flat.valid = false; }
+    this.ghost.opacity = this.ghost2.opacity = 0;
+    this.puppeteer.opacity = this.puppeteer2.opacity = 0;
+    this.audio.setHold(0);
   }
 
   /** Seeded order for tonight; the very first night opens with the open hand. */
@@ -233,10 +287,10 @@ export class TheaterSystem extends createSystem({
   }
 
   private beginSession(): void {
-    const now = this.now;
+    // Deadlines are set by the next update, in the world's clock domain.
     this.placed = false;
-    this.placeAt = now + 0.5;
-    this.visibleAt = now;
+    this.placeAt = -1;
+    this.visibleAt = -1;
     this.anchored = false;
     const session = this.renderer.xr.getSession?.();
     if (session && this.rigAnchor.hasSaved) {
@@ -324,7 +378,8 @@ export class TheaterSystem extends createSystem({
   /** Planes and table meshes from the room model, as plain surfaces. */
   private surfaces(): Surface[] {
     const out: Surface[] = [];
-    for (const e of this.queries.planes.entities) {
+    const q = this.queries as Partial<typeof this.queries> | undefined;
+    for (const e of q?.planes?.entities ?? []) {
       const plane = e.getValue(XRPlane, '_plane') as XRPlane | undefined;
       const o = e.object3D;
       if (!plane || !o) continue;
@@ -333,7 +388,7 @@ export class TheaterSystem extends createSystem({
         orientation: plane.orientation === 'horizontal' ? 'horizontal' : plane.orientation === 'vertical' ? 'vertical' : 'unknown',
       });
     }
-    for (const e of this.queries.meshes.entities) {
+    for (const e of q?.meshes?.entities ?? []) {
       const o = e.object3D;
       if (!o || !e.getValue(XRMesh, 'isBounded3D')) continue;
       const label = (e.getValue(XRMesh, 'semanticLabel') as string) ?? '';
@@ -510,18 +565,27 @@ export class TheaterSystem extends createSystem({
     this.player.updateMatrixWorld(true);
     const e = this.player.matrixWorld.elements;
     for (const src of frame.session.inputSources) {
-      if (!src.hand) continue;
+      if (!src.hand || (src.handedness !== 'left' && src.handedness !== 'right')) continue;
       const h = this.hands[src.handedness === 'left' ? 0 : 1];
       let ok = true;
-      for (let j = 0; j < JOINT_COUNT; j++) {
-        const space = src.hand.get(JOINT_NAMES[j] as XRHandJoint);
-        const pose = space ? frame.getJointPose(space, ref) : undefined;
-        if (!pose) { ok = false; break; }
-        const p = pose.transform.position;
-        h.joints[j * 3] = e[0] * p.x + e[4] * p.y + e[8] * p.z + e[12];
-        h.joints[j * 3 + 1] = e[1] * p.x + e[5] * p.y + e[9] * p.z + e[13];
-        h.joints[j * 3 + 2] = e[2] * p.x + e[6] * p.y + e[10] * p.z + e[14];
-        h.radii[j] = pose.radius ?? 0.01;
+      try {
+        for (let j = 0; j < JOINT_COUNT; j++) {
+          const space = src.hand.get(JOINT_NAMES[j] as XRHandJoint);
+          const pose = space ? frame.getJointPose(space, ref) : undefined;
+          if (!pose) { ok = false; break; }
+          const p = pose.transform.position;
+          const radius = pose.radius ?? 0.01;
+          if (!Number.isFinite(p.x) || !Number.isFinite(p.y) || !Number.isFinite(p.z) || !Number.isFinite(radius) || radius <= 0) {
+            ok = false; break;
+          }
+          h.joints[j * 3] = e[0] * p.x + e[4] * p.y + e[8] * p.z + e[12];
+          h.joints[j * 3 + 1] = e[1] * p.x + e[5] * p.y + e[9] * p.z + e[13];
+          h.joints[j * 3 + 2] = e[2] * p.x + e[6] * p.y + e[10] * p.z + e[14];
+          h.radii[j] = radius;
+        }
+      } catch {
+        // A source/reference space can become stale as a session ends.
+        ok = false;
       }
       h.valid = ok;
       if (ok) h.lastSeen = time;
@@ -576,8 +640,22 @@ export class TheaterSystem extends createSystem({
   }
 
   update(delta: number, time: number): void {
-    const dt = Math.min(delta, 0.05);
+    const started = perf?.beginFrame();
+    try {
+      this.updateFrame(delta, time);
+    } finally {
+      if (started !== undefined) perf!.endFrame(started, this.phase);
+    }
+  }
+
+  private updateFrame(delta: number, time: number): void {
     this.now = time;
+    if (!this.visible) return;
+    const dt = this.resumeFrame ? 0 : Math.max(0, Math.min(delta, 0.05));
+    this.resumeFrame = false;
+    this.animationTime += dt;
+    if (this.placeAt < 0) this.placeAt = time + 0.5;
+    if (this.visibleAt < 0) this.visibleAt = time;
     if (!this.placed && time >= this.placeAt) this.place(time);
     if (!this.placed) return;
     if (this.immersive) {
@@ -589,21 +667,30 @@ export class TheaterSystem extends createSystem({
     }
 
     this.readHands(time);
-    const anyReal = this.hands[0].valid || this.hands[1].valid;
+    const handMask = (this.hands[0].valid ? 1 : 0) | (this.hands[1].valid ? 2 : 0);
+    if (this.handMask & ~handMask) {
+      // Tracking loss breaks a continuous hold, including loss of just one hand.
+      this.score = 0;
+      this.hold = 0;
+      this.audio.setHold(0);
+    }
+    this.handMask = handMask;
+    const anyReal = handMask !== 0;
     if (anyReal) this.handsSeenAt = time;
+    else if (this.handsSeenAt < 0) this.handsSeenAt = time;
     const useDemo = this.demo || (!this.immersive && !anyReal);
     this.phaseTime += dt;
 
     const target = this.baked[this.order[this.step % this.order.length]];
     const stencil = this.stencils[this.order[this.step % this.order.length]];
-    if (useDemo) this.driveDemo(target, time); else this.demoHand.valid = this.demoHand2.valid = false;
+    if (useDemo) this.driveDemo(target, this.animationTime); else this.demoHand.valid = this.demoHand2.valid = false;
     this.puppeteer.opacity = this.demoHand.valid ? 1 : 0;
     if (this.demoHand.valid) this.puppeteer.update(this.demoHand.joints, this.demoHand.radii);
     this.puppeteer2.opacity = this.demoHand2.valid ? 1 : 0;
     if (this.demoHand2.valid) this.puppeteer2.update(this.demoHand2.joints, this.demoHand2.radii);
 
     // Lantern flicker.
-    const flick = 0.92 + 0.05 * Math.sin(time * 7.3) + 0.03 * Math.sin(time * 17.1);
+    const flick = 0.92 + 0.05 * Math.sin(this.animationTime * 7.3) + 0.03 * Math.sin(this.animationTime * 17.1);
     this.lantern.bodyMat.color.setRGB(1 * flick, 0.81 * flick, 0.54 * flick);
     this.lantern.halo.scale.setScalar(0.24 + 0.02 * flick);
 
@@ -622,12 +709,12 @@ export class TheaterSystem extends createSystem({
     }
 
     switch (this.phase) {
-      case Phase.Seek: this.seek(target, stencil, casters, dt, time); break;
-      case Phase.Wake: this.wake(target, stencil, time); break;
+      case Phase.Seek: this.seek(target, stencil, casters, dt, this.animationTime); break;
+      case Phase.Wake: this.wake(target, stencil, this.animationTime); break;
       case Phase.Rest:
         if (this.phaseTime >= REST_TIME) this.enter(Phase.Seek);
         break;
-      case Phase.Finale: this.finale(time); break;
+      case Phase.Finale: this.finale(this.animationTime); break;
     }
 
     for (const h of this.allHands) if (h.valid && h.flat.valid) p.shadow(h.flat);
@@ -638,7 +725,7 @@ export class TheaterSystem extends createSystem({
       p.caption('Set the controllers down. Just your hands.', 1, 0.27);
     }
     p.end();
-    this.wall.update(time);
+    this.wall.update(this.animationTime);
   }
 
   private seek(target: BakedTarget, stencil: Stencil, casters: number, dt: number, time: number): void {
@@ -647,7 +734,8 @@ export class TheaterSystem extends createSystem({
     const raw = casters >= (target.partner ? 2 : 1) ? this.matcher.score(this.live, target.template) : 0;
     this.score += (raw - this.score) * Math.min(1, dt * 10);
     const close = Math.max(0, Math.min(1, (this.score - 0.3) / (target.pass - 0.3)));
-    if (this.score >= target.pass) this.hold += dt;
+    if (!casting) { this.score = 0; this.hold = 0; }
+    if (casting && this.score >= target.pass) this.hold += dt;
     else this.hold = Math.max(0, this.hold - dt * 1.5);
     this.audio.setHold(casting ? close * close : 0);
 
@@ -738,7 +826,7 @@ export class TheaterSystem extends createSystem({
     }
     const a = Math.min(ease(t / 0.8), 1 - ease((t - FINALE_TIME + 1) / 1));
     this.wall.cheer(a);
-    this.painter.caption(`${n} shadows woke tonight.`, a, 0.2);
+    this.painter.caption(FINALE_CAPTION, a, 0.2);
     this.painter.caption(this.wall.active ? 'They will wait for you on the wall.' : 'Come back after dark for new shapes.', a * 0.8, -0.24);
     if (t >= FINALE_TIME) this.wall.cheer(0);
     if (t >= FINALE_TIME) this.newNight();

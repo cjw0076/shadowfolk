@@ -8,10 +8,21 @@ export class TheaterAudio {
   private master?: GainNode;
   private hum?: { osc: OscillatorNode; gain: GainNode };
   private noise?: AudioBuffer;
+  private paused = false;
 
   /** Must be called from a user gesture (XR session start, click). */
   start(): void {
-    if (this.ctx) { void this.ctx.resume(); return; }
+    this.paused = false;
+    if (this.ctx?.state === 'closed') this.ctx = undefined;
+    if (this.ctx) {
+      if (this.ctx.state !== 'running') void this.ctx.resume().catch(() => {});
+      return;
+    }
+    // Audio is optional: unsupported/denied contexts must not stop the night.
+    try { this.initialize(); } catch { this.dispose(); }
+  }
+
+  private initialize(): void {
     const ctx = new AudioContext();
     this.ctx = ctx;
     const master = ctx.createGain();
@@ -53,11 +64,27 @@ export class TheaterAudio {
     this.noise = ctx.createBuffer(1, len, ctx.sampleRate);
     const d = this.noise.getChannelData(0);
     for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / len);
+    if (ctx.state !== 'running') void ctx.resume().catch(() => {});
+  }
+
+  pause(): void {
+    this.setHold(0);
+    this.paused = true;
+    if (this.ctx && this.ctx.state !== 'closed') void this.ctx.suspend().catch(() => {});
+  }
+
+  dispose(): void {
+    const ctx = this.ctx;
+    this.ctx = undefined;
+    this.master = undefined;
+    this.hum = undefined;
+    this.noise = undefined;
+    if (ctx && ctx.state !== 'closed') void ctx.close().catch(() => {});
   }
 
   /** 0..1 closeness of the shadow to the cut-out. */
   setHold(level: number): void {
-    if (!this.ctx || !this.hum) return;
+    if (!this.ctx || this.ctx.state !== 'running' || !this.hum || this.paused) return;
     const t = this.ctx.currentTime;
     this.hum.gain.gain.setTargetAtTime(level > 0 ? 0.015 + 0.05 * level : 0, t, 0.08);
     this.hum.osc.frequency.setTargetAtTime(262 + 260 * level, t, 0.1);
@@ -65,7 +92,7 @@ export class TheaterAudio {
 
   rustle(): void {
     const ctx = this.ctx;
-    if (!ctx || !this.noise || !this.master) return;
+    if (!ctx || ctx.state !== 'running' || this.paused || !this.noise || !this.master) return;
     const src = ctx.createBufferSource();
     src.buffer = this.noise;
     const bp = ctx.createBiquadFilter();
@@ -80,7 +107,7 @@ export class TheaterAudio {
 
   chime(step = 0): void {
     const ctx = this.ctx;
-    if (!ctx || !this.master) return;
+    if (!ctx || ctx.state !== 'running' || this.paused || !this.master) return;
     const scale = [0, 2, 4, 7, 9, 12, 14, 16];
     const base = 523.25;
     const t0 = ctx.currentTime;

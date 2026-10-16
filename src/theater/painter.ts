@@ -4,9 +4,10 @@
  * the woken creature's shadow animation. Everything is a 2D canvas uploaded
  * as one texture per frame.
  */
-import { CanvasTexture, SRGBColorSpace } from '@iwsdk/core';
+import { CanvasTexture, LinearFilter, SRGBColorSpace } from '@iwsdk/core';
 import { BONES, PALM } from '../shadow/hand-model.js';
 import { FlatHand } from '../shadow/silhouette.js';
+import { runtimePerf as perf } from './perf.js';
 
 export const SCREEN_W = 1.0; // metres
 export const SCREEN_H = 0.66;
@@ -16,6 +17,7 @@ const PX = CW / SCREEN_W; // canvas px per screen metre
 const SOFT = 4; // shadow layer downscale (penumbra softness)
 
 const INK = '#1c1316';
+const SPARK_COLORS = Array.from({ length: 18 }, (_, k) => `rgb(255,${180 + ((k * 13) % 60)},90)`);
 
 function canvas(w: number, h: number): [HTMLCanvasElement, CanvasRenderingContext2D] {
   const c = document.createElement('canvas');
@@ -134,6 +136,10 @@ export class ScreenPainter {
     this.paper = this.paintPaper(0, -0.2);
     this.texture = new CanvasTexture(this.canvas);
     this.texture.colorSpace = SRGBColorSpace;
+    // The moving canvas is sampled close up; rebuilding a mip chain every frame
+    // adds GPU work and memory traffic without helping this paper-sized surface.
+    this.texture.generateMipmaps = false;
+    this.texture.minFilter = LinearFilter;
   }
 
   /** Washi paper with fibres, warmly lit around the lantern's footprint. */
@@ -164,15 +170,18 @@ export class ScreenPainter {
   }
 
   begin(): void {
+    const started = perf ? performance.now() : 0;
     this.ctx.globalAlpha = 1;
     this.ctx.drawImage(this.paper, 0, 0);
     const s = this.sctx;
     s.setTransform(1, 0, 0, 1, 0, 0);
     s.clearRect(0, 0, this.soft.width, this.soft.height);
+    perf?.endCall('begin', started);
   }
 
   /** Cut-out of the creature to match, glowing with closeness. */
   target(st: Stencil, cx: number, cy: number, glow: number, time: number): void {
+    const started = perf ? performance.now() : 0;
     const g = this.ctx;
     const w = st.w * PX, h = st.h * PX;
     const x = CW / 2 + (cx + st.cx) * PX - w / 2, y = CH / 2 - (cy + st.cy) * PX - h / 2;
@@ -183,21 +192,25 @@ export class ScreenPainter {
     g.drawImage(st.glow, x, y, w, h);
     g.globalCompositeOperation = 'source-over';
     g.globalAlpha = 1;
+    perf?.endCall('target', started);
   }
 
   /** Accumulate a live hand shadow (screen-metre coordinates). */
   shadow(f: FlatHand): void {
     if (!f.valid) return;
+    const started = perf ? performance.now() : 0;
     const s = this.sctx, k = PX / SOFT;
     s.setTransform(k, 0, 0, -k, this.soft.width / 2, this.soft.height / 2);
     s.fillStyle = s.strokeStyle = INK;
     s.lineCap = 'round';
     s.lineJoin = 'round';
     handPath(s, f);
+    perf?.endCall('shadow', started);
   }
 
   /** Composite the soft shadow layer onto the paper. */
   flushShadows(alpha: number): void {
+    const started = perf ? performance.now() : 0;
     const g = this.ctx;
     g.globalAlpha = alpha;
     g.imageSmoothingEnabled = true;
@@ -205,10 +218,12 @@ export class ScreenPainter {
     // Upscaling the quarter-res layer gives the penumbra; no per-frame filter.
     g.drawImage(this.soft, 0, 0, CW, CH);
     g.globalAlpha = 1;
+    perf?.endCall('flushShadows', started);
   }
 
   /** A woken creature: ink silhouette with a blinking eye. */
   creature(st: Stencil, cx: number, cy: number, scale: number, rot: number, flipX: boolean, blink: boolean, alpha: number): void {
+    const started = perf ? performance.now() : 0;
     const g = this.ctx;
     const w = st.w * PX * scale, h = st.h * PX * scale;
     g.save();
@@ -226,24 +241,31 @@ export class ScreenPainter {
       g.fill();
     }
     g.restore();
+    perf?.endCall('creature', started);
   }
 
   /** Little sparks of lantern light (wake moment). */
   sparks(cx: number, cy: number, t: number, alpha: number): void {
+    const started = perf ? performance.now() : 0;
     const g = this.ctx;
+    const previousAlpha = g.globalAlpha;
+    g.globalAlpha = previousAlpha * alpha * (1 - t);
     g.globalCompositeOperation = 'lighter';
     for (let k = 0; k < 18; k++) {
       const a = k * 2.399 + t * 0.6, r = (40 + 260 * t) * (0.5 + ((k * 37) % 10) / 20);
-      g.fillStyle = `rgba(255,${180 + ((k * 13) % 60)},90,${alpha * (1 - t)})`;
+      g.fillStyle = SPARK_COLORS[k];
       g.beginPath();
       g.arc(CW / 2 + cx * PX + Math.cos(a) * r, CH / 2 - cy * PX + Math.sin(a) * r, 3 + (k % 3), 0, Math.PI * 2);
       g.fill();
     }
     g.globalCompositeOperation = 'source-over';
+    g.globalAlpha = previousAlpha;
+    perf?.endCall('sparks', started);
   }
 
   caption(text: string, alpha: number, y = -0.27): void {
     if (alpha <= 0 || !text) return;
+    const started = perf ? performance.now() : 0;
     const g = this.ctx;
     g.globalAlpha = alpha;
     g.fillStyle = '#4a3626';
@@ -252,10 +274,12 @@ export class ScreenPainter {
     g.textBaseline = 'middle';
     g.fillText(text, CW / 2, CH / 2 - y * PX);
     g.globalAlpha = 1;
+    perf?.endCall('caption', started);
   }
 
   /** Small counter of woken creatures (top-right), drawn as dots. */
   progress(done: number, total: number): void {
+    const started = perf ? performance.now() : 0;
     const g = this.ctx;
     for (let k = 0; k < total; k++) {
       g.fillStyle = k < done ? 'rgba(60,40,30,0.85)' : 'rgba(60,40,30,0.18)';
@@ -263,9 +287,12 @@ export class ScreenPainter {
       g.arc(CW - 40 - (total - 1 - k) * 26, 36, 8, 0, Math.PI * 2);
       g.fill();
     }
+    perf?.endCall('progress', started);
   }
 
   end(): void {
+    const started = perf ? performance.now() : 0;
     this.texture.needsUpdate = true;
+    perf?.endCall('end', started);
   }
 }
