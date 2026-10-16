@@ -52,11 +52,16 @@ function texture(source: HTMLCanvasElement): CanvasTexture {
   return result;
 }
 
-function canvas(w: number, h: number): [HTMLCanvasElement, CanvasRenderingContext2D] {
+/**
+ * Bake-once canvases are CPU-backed (`willReadFrequently`): their WebGL upload then comes from plain
+ * memory instead of a GPU canvas-to-texture copy, which on a busy shared GPU sometimes produced
+ * opaque white sprite rectangles. Canvases redrawn every frame pass `cpu = false`.
+ */
+function canvas(w: number, h: number, cpu = true): [HTMLCanvasElement, CanvasRenderingContext2D] {
   const c = document.createElement('canvas');
   c.width = w;
   c.height = h;
-  return [c, c.getContext('2d')!];
+  return [c, c.getContext('2d', { willReadFrequently: cpu })!];
 }
 
 /** Trace palm polygon + finger capsules of a flat hand into the current path. */
@@ -347,8 +352,8 @@ export class ScreenPainter {
 
   constructor(private readonly xrStatusLine: () => string) {
     [this.canvas, this.ctx] = canvas(CW, CH);
-    [this.soft, this.sctx] = canvas(CW / SOFT, Math.round(CH / SOFT));
-    [this.handCanvas, this.handContext] = canvas(this.soft.width, this.soft.height);
+    [this.soft, this.sctx] = canvas(CW / SOFT, Math.round(CH / SOFT), false);
+    [this.handCanvas, this.handContext] = canvas(this.soft.width, this.soft.height, false);
     this.texture = texture(this.canvas);
     this.softTexture = texture(this.soft);
     this.paperMesh = new Mesh(new PlaneGeometry(SCREEN_W, SCREEN_H),

@@ -53,7 +53,7 @@ export interface Lantern {
 function glowTexture(): CanvasTexture {
   const c = document.createElement('canvas');
   c.width = c.height = 128;
-  const g = c.getContext('2d')!;
+  const g = c.getContext('2d', { willReadFrequently: true })!;
   const grad = g.createRadialGradient(64, 64, 4, 64, 64, 64);
   grad.addColorStop(0, 'rgba(255,220,150,1)');
   grad.addColorStop(0.3, 'rgba(255,180,90,0.45)');

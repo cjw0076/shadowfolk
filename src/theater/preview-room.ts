@@ -17,7 +17,7 @@ const WALL_Z = -1.85;
 function surfaceTexture(kind: 'wood' | 'plaster', size = 512): CanvasTexture {
   const c = document.createElement('canvas');
   c.width = c.height = size;
-  const g = c.getContext('2d')!;
+  const g = c.getContext('2d', { willReadFrequently: true })!;
   let seed = kind === 'wood' ? 97 : 131;
   const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
   if (kind === 'wood') {

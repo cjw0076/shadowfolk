@@ -207,7 +207,7 @@ export class WallLayer {
     this.mesh.scale.set(this.wM, this.hM, 1);
 
     // Background: lantern light pooling on the wall, the paper's own shadow inside it.
-    const g = this.bg.getContext('2d')!;
+    const g = this.bg.getContext('2d', { willReadFrequently: true })!;
     g.clearRect(0, 0, this.bg.width, this.bg.height);
     const beamX = shadow.length === 4 ? shadow.reduce((sum, point) => sum + point[0], 0) / 4 : 0;
     const beamY = shadow.length === 4 ? shadow.reduce((sum, point) => sum + point[1], 0) / 4 : 0;
@@ -323,14 +323,14 @@ export class WallLayer {
     ink.width = st.ink.width;
     ink.height = st.ink.height;
     ink.dataset.shadowfolkWallUpload = 'sprite';
-    const inkContext = ink.getContext('2d')!;
+    const inkContext = ink.getContext('2d', { willReadFrequently: true })!;
     inkContext.filter = 'blur(4px)';
     inkContext.drawImage(st.ink, 0, 0);
     const eyes = document.createElement('canvas');
     eyes.width = st.ink.width * 2;
     eyes.height = st.ink.height;
     eyes.dataset.shadowfolkWallUpload = 'sprite';
-    const eyeContext = eyes.getContext('2d')!;
+    const eyeContext = eyes.getContext('2d', { willReadFrequently: true })!;
     for (const [u, v] of st.eyes) {
       for (let blink = 0; blink < 2; blink++) {
         const x = (u + blink) * st.ink.width;

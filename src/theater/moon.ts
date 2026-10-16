@@ -36,7 +36,7 @@ export class Moon {
 
   /** Paint the phase once (each night): lit part as light through the paper, the rest a faint scorched ring. */
   setPhase(p: number): void {
-    const c = this.canvas, g = c.getContext('2d')!, N = c.width, R = N * 0.31, cx = N / 2, cy = N / 2;
+    const c = this.canvas, g = c.getContext('2d', { willReadFrequently: true })!, N = c.width, R = N * 0.31, cx = N / 2, cy = N / 2;
     g.clearRect(0, 0, N, N);
     const glow = g.createRadialGradient(cx, cy, R * 0.6, cx, cy, N / 2);
     glow.addColorStop(0, `rgba(255,236,190,${0.25 + 0.35 * (1 - Math.cos(p * Math.PI * 2)) / 2})`);
