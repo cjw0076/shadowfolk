@@ -33,6 +33,8 @@ export interface Lantern {
   body: Mesh;
   bodyMat: MeshBasicMaterial;
   halo: Sprite;
+  /** Wooden stand under the lantern, shown when it rests on a real table. */
+  setStand(height: number): void;
 }
 
 function glowTexture(): CanvasTexture {
@@ -80,12 +82,32 @@ export function buildLantern(): Lantern {
   }));
   halo.scale.setScalar(0.26);
   root.add(halo);
-  return { root, body, bodyMat, halo };
+
+  // Stand: a turned post and a round foot, scaled to reach the table top.
+  const stand = new Group();
+  stand.name = 'LanternStand';
+  const woodMat = new MeshStandardMaterial({ color: new Color('#3a2418'), roughness: 0.55 });
+  const post = new Mesh(new CylinderGeometry(0.009, 0.012, 1, 12), woodMat);
+  const foot = new Mesh(new CylinderGeometry(0.04, 0.045, 0.008, 24), woodMat);
+  stand.add(post, foot);
+  stand.visible = false;
+  root.add(stand);
+  const setStand = (h: number) => {
+    stand.visible = h > 0.012;
+    if (!stand.visible) return;
+    const top = -0.053; // under the bottom cap
+    post.scale.y = h - 0.008;
+    post.position.y = top - (h - 0.008) / 2;
+    foot.position.y = top - h + 0.004;
+  };
+  return { root, body, bodyMat, halo, setStand };
 }
 
 export interface PaperScreen {
   root: Group;
   paper: Mesh;
+  /** Pinned to a real wall: no frame or feet, two strips of tape instead. */
+  setPinned(on: boolean): void;
 }
 
 /** Framed paper screen facing +Z, centred on its origin. */
@@ -99,6 +121,8 @@ export function buildScreen(texture: CanvasTexture): PaperScreen {
   paper.name = 'Paper';
   root.add(paper);
   const wood = new MeshStandardMaterial({ color: new Color('#3a2418'), roughness: 0.55, metalness: 0.05 });
+  const frame = new Group();
+  root.add(frame);
   const t = 0.022, d = 0.02;
   const bars: [number, number, number, number][] = [
     [0, SCREEN_H / 2 + t / 2, SCREEN_W + 2 * t, t],
@@ -109,15 +133,27 @@ export function buildScreen(texture: CanvasTexture): PaperScreen {
   for (const [x, y, w, h] of bars) {
     const bar = new Mesh(new BoxGeometry(w, h, d), wood);
     bar.position.set(x, y, -d / 2 + 0.004);
-    root.add(bar);
+    frame.add(bar);
   }
   // Two short feet so the screen reads as an object standing on the table.
   for (const x of [-SCREEN_W / 2 + 0.06, SCREEN_W / 2 - 0.06]) {
     const foot = new Mesh(new BoxGeometry(0.03, 0.02, 0.16), wood);
     foot.position.set(x, -SCREEN_H / 2 - t - 0.01, 0);
-    root.add(foot);
+    frame.add(foot);
   }
-  return { root, paper };
+  // Washi tape for the pinned-to-the-wall look.
+  const tapeMat = new MeshBasicMaterial({ color: new Color('#d9c7a3'), transparent: true, opacity: 0.85, toneMapped: false });
+  const tape = new Group();
+  for (const x of [-1, 1]) {
+    const strip = new Mesh(new PlaneGeometry(0.11, 0.035), tapeMat);
+    strip.position.set(x * (SCREEN_W / 2 - 0.03), SCREEN_H / 2 - 0.005, 0.002);
+    strip.rotation.z = x * -0.6;
+    tape.add(strip);
+  }
+  tape.visible = false;
+  root.add(tape);
+  const setPinned = (on: boolean) => { frame.visible = !on; tape.visible = on; };
+  return { root, paper, setPinned };
 }
 
 /** Translucent hand (joint spheres + bone cylinders) used as a pose hint. */

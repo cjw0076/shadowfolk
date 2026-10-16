@@ -4,7 +4,9 @@
  * creature waiting for the right shadow: hold your hands so the shadow fits
  * and it wakes, blinks and walks off into the night's story.
  */
-import { Color, Matrix4, Quaternion, Vector3, VisibilityState, createSystem } from '@iwsdk/core';
+import {
+  Box3, Color, Matrix4, Quaternion, Vector3, VisibilityState, XRMesh, XRPlane, createSystem,
+} from '@iwsdk/core';
 import {
   HandPose, JOINT_COUNT, JOINT_NAMES, basePoses, mirror,
 } from '../shadow/hand-model.js';
@@ -14,14 +16,27 @@ import {
 import { BakedTarget, TARGETS, bakeTarget } from '../shadow/targets.js';
 import { TheaterAudio } from './audio.js';
 import { SCREEN_H, SCREEN_W, ScreenPainter, Stencil, makeStencil } from './painter.js';
+import { RigAnchor } from './anchor.js';
+import { LANTERN_ON_TABLE, Surface, TableFit, WallFit, fitPinWall, fitTable, fitWall } from './room.js';
 import { GhostHand, Lantern, PaperScreen, buildLantern, buildScreen } from './stage.js';
+import { WallLayer } from './wall.js';
 
 const TARGET_CY = 0.02;
 /** Lantern placement relative to the seated head: ahead and below the eyes. */
 const LANTERN_AHEAD = 0.25;
 const LANTERN_DROP = 0.25;
 const HOLD_TO_WAKE = 0.55; // seconds the fit must hold
-const WAKE_TIME = 3.6;
+const WAKE_TIME = 3.2;
+/** Wake timeline: the creature comes alive in place, then walks off the paper. */
+const WALK_AT = 1.5;
+const WALK_TIME = 1.2;
+const SETTLE_TIME = 0.9;
+/** Seconds after entering XR during which the room may still reshape the stage. */
+const FIT_WINDOW = 6;
+/** Pinned paper hangs this far in front of the real wall. */
+const PIN_STANDOFF = 0.015;
+const LANTERN_STAND = LANTERN_ON_TABLE - 0.053;
+type RigMode = 'float' | 'table' | 'pinned';
 const REST_TIME = 0.9;
 const FINALE_TIME = 9;
 const HINT_AFTER = 7;
@@ -38,7 +53,7 @@ interface LiveHand {
   lastSeen: number;
 }
 
-interface Saved { nights: number; woken: Record<string, number> }
+interface Saved { nights: number; woken: Record<string, number>; order?: string[] }
 
 function loadSaved(): Saved {
   try {
@@ -54,7 +69,10 @@ function save(s: Saved): void {
 
 const ease = (t: number) => (t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t));
 
-export class TheaterSystem extends createSystem({}) {
+export class TheaterSystem extends createSystem({
+  planes: { required: [XRPlane] },
+  meshes: { required: [XRMesh] },
+}) {
   private painter!: ScreenPainter;
   private audio = new TheaterAudio();
   private lantern!: Lantern;
@@ -66,11 +84,33 @@ export class TheaterSystem extends createSystem({}) {
 
   private frame: ScreenFrame = { ox: 0, oy: 0, oz: 0, rx: 1, ry: 0, rz: 0, ux: 0, uy: 1, uz: 0, nx: 0, ny: 0, nz: 1 };
   private lanternPos = new Vector3();
+  private screenCentre = new Vector3();
+  private fwd = new Vector3(0, 0, -1);
+  private right = new Vector3(1, 0, 0);
   private anchor = new Vector3(); // where a hand naturally casts a centred shadow
   private placed = false;
   private placeAt = 0;
   private placedHead = new Vector3();
   private drift = 0; // seconds the head has been far from where the stage was placed
+  private paperKey = NaN;
+
+  // Room awareness: a table to stand on, a wall to live on, an anchor to return to.
+  private wall = new WallLayer();
+  private rigAnchor = new RigAnchor();
+  private table: TableFit | null = null;
+  private mode: RigMode = 'float';
+  private pinWall: WallFit | null = null;
+  private defaultLantern = new Vector3();
+  private settle: { from: Vector3; to: Vector3; fromFwd: Vector3; toFwd: Vector3; t0: number } | null = null;
+  private fitUntil = 0;
+  private nextFit = 0;
+  private visibleAt = 0;
+  private restore: 'idle' | 'pending' | 'ready' | 'none' = 'idle';
+  private anchored = false;
+  private leapt = false;
+  private now = 0;
+  private aPos = new Vector3();
+  private aQuat = new Quaternion();
 
   private hands: LiveHand[] = [];
   private allHands: LiveHand[] = [];
@@ -96,6 +136,8 @@ export class TheaterSystem extends createSystem({}) {
   private v0 = new Vector3();
   private v1 = new Vector3();
   private v2 = new Vector3();
+  private v3 = new Vector3();
+  private q1v = new Vector3();
   private q0 = new Quaternion();
   private m0 = new Matrix4();
   private posePositions = new Float32Array(JOINT_COUNT * 3);
@@ -109,7 +151,7 @@ export class TheaterSystem extends createSystem({}) {
     this.screen = buildScreen(this.painter.texture);
     this.ghost = new GhostHand();
     this.puppeteer = new GhostHand('DemoHand', '#c99877', true);
-    for (const o of [this.lantern.root, this.screen.root, this.ghost.root, this.puppeteer.root]) {
+    for (const o of [this.lantern.root, this.screen.root, this.ghost.root, this.puppeteer.root, this.wall.root]) {
       this.world.createTransformEntity(o);
     }
     this.baked = TARGETS.map(bakeTarget);
@@ -126,6 +168,7 @@ export class TheaterSystem extends createSystem({}) {
     this.demoFrom = basePoses.relaxed();
     this.ghostPose = basePoses.relaxed();
     this.newNight();
+    if (import.meta.env.DEV) (window as unknown as { __theater: unknown }).__theater = this;
 
     this.cleanupFuncs.push(
       this.world.visibilityState.subscribe((state) => {
@@ -134,11 +177,11 @@ export class TheaterSystem extends createSystem({}) {
         this.scene.background = this.immersive ? null : this.night;
         if (state === VisibilityState.Visible) {
           this.audio.start();
-          this.placed = false;
-          this.placeAt = performance.now() / 1000 + 0.5;
+          if (this.restore === 'idle') this.beginSession();
         } else if (state === VisibilityState.NonImmersive) {
           this.placed = false;
           this.placeAt = 0;
+          this.endSession();
         }
       }),
     );
@@ -176,8 +219,65 @@ export class TheaterSystem extends createSystem({}) {
     if (p === Phase.Seek) this.audio.rustle();
   }
 
+  private beginSession(): void {
+    const now = this.now;
+    this.placed = false;
+    this.placeAt = now + 0.5;
+    this.visibleAt = now;
+    this.anchored = false;
+    const session = this.renderer.xr.getSession?.();
+    if (session && this.rigAnchor.hasSaved) {
+      this.restore = 'pending';
+      void this.rigAnchor.restore(session).then((ok) => {
+        if (this.restore === 'pending') this.restore = ok ? 'ready' : 'none';
+      });
+    } else {
+      this.restore = 'none';
+    }
+  }
+
+  private endSession(): void {
+    this.rigAnchor.endSession();
+    this.restore = 'idle';
+    this.anchored = false;
+    this.table = null;
+    this.mode = 'float';
+    this.screen.setPinned(false);
+    this.settle = null;
+    this.fitUntil = 0;
+    this.wall.layout(null, this.lanternPos, this.v0, [], this.v1, 1, 0);
+  }
+
+  /** Lay the rigid rig out from the lantern position and the facing direction. */
+  private layout(lantern: Vector3, fwd: Vector3): void {
+    this.fwd.copy(fwd);
+    const up = this.v2.set(0, 1, 0);
+    this.right.crossVectors(this.fwd, up).normalize();
+    this.lanternPos.copy(lantern);
+    const centre = this.screenCentre.copy(lantern).addScaledVector(this.fwd, STAGE.lightToScreen)
+      .addScaledVector(up, STAGE.lightDrop - TARGET_CY);
+    this.lantern.root.position.copy(lantern);
+    this.screen.root.position.copy(centre);
+    this.screen.root.lookAt(this.v1.copy(centre).sub(this.fwd));
+    const f = this.frame, r = this.right;
+    f.ox = centre.x; f.oy = centre.y; f.oz = centre.z;
+    f.rx = r.x; f.ry = r.y; f.rz = r.z;
+    f.ux = 0; f.uy = 1; f.uz = 0;
+    f.nx = -this.fwd.x; f.ny = -this.fwd.y; f.nz = -this.fwd.z;
+    // Natural hand spot: on the lantern-to-cut-out line, at the baked distance.
+    const cut = this.v1.copy(centre).addScaledVector(up, TARGET_CY);
+    this.anchor.copy(lantern).lerp(cut, STAGE.lightToHand / STAGE.lightToScreen);
+    const lx = (lantern.x - f.ox) * f.rx + (lantern.y - f.oy) * f.ry + (lantern.z - f.oz) * f.rz;
+    const ly = lantern.y - f.oy;
+    const key = Math.round(lx * 1000) * 10000 + Math.round(ly * 1000);
+    if (key !== this.paperKey) {
+      this.paperKey = key;
+      this.painter.paintPaper(lx, ly);
+    }
+  }
+
   /** Put the stage in front of the viewer: lantern near, screen beyond. */
-  private place(): void {
+  private place(time: number): void {
     const cam = this.camera;
     cam.updateMatrixWorld(true);
     const head = cam.getWorldPosition(this.v0);
@@ -192,26 +292,199 @@ export class TheaterSystem extends createSystem({}) {
     }
     this.placedHead.copy(head);
     this.drift = 0;
-    const up = this.v2.set(0, 1, 0);
-    const right = new Vector3().crossVectors(fwd, up).normalize();
-    const centre = head.clone().addScaledVector(fwd, LANTERN_AHEAD + STAGE.lightToScreen)
-      .addScaledVector(up, -LANTERN_DROP + STAGE.lightDrop - TARGET_CY);
-    this.lanternPos.copy(head).addScaledVector(fwd, LANTERN_AHEAD).addScaledVector(up, -LANTERN_DROP);
-    this.lantern.root.position.copy(this.lanternPos);
-    this.screen.root.position.copy(centre);
-    this.screen.root.lookAt(centre.clone().sub(fwd));
-    const f = this.frame;
-    f.ox = centre.x; f.oy = centre.y; f.oz = centre.z;
-    f.rx = right.x; f.ry = right.y; f.rz = right.z;
-    f.ux = 0; f.uy = 1; f.uz = 0;
-    f.nx = -fwd.x; f.ny = -fwd.y; f.nz = -fwd.z;
-    // Natural hand spot: on the lantern-to-cut-out line, at the baked distance.
-    const cut = centre.clone().addScaledVector(up, TARGET_CY);
-    this.anchor.copy(this.lanternPos).lerp(cut, STAGE.lightToHand / STAGE.lightToScreen);
-    const lx = (this.lanternPos.x - f.ox) * f.rx + (this.lanternPos.y - f.oy) * f.ry + (this.lanternPos.z - f.oz) * f.rz;
-    const ly = (this.lanternPos.y - f.oy);
-    this.painter.paintPaper(lx, ly);
+    this.defaultLantern.copy(head).addScaledVector(fwd, LANTERN_AHEAD);
+    this.defaultLantern.y -= LANTERN_DROP;
+    this.layout(this.defaultLantern, this.v3.copy(fwd));
+    this.table = null;
+    this.mode = 'float';
+    this.pinWall = null;
+    this.screen.setPinned(false);
+    this.settle = null;
+    this.anchored = false;
+    this.lantern.setStand(0);
+    this.wall.layout(null, this.lanternPos, head, [], this.v1, 1, 0);
     this.placed = true;
+    this.fitUntil = this.immersive ? time + FIT_WINDOW : 0;
+    this.nextFit = time + 0.3;
+  }
+
+  /** Planes and table meshes from the room model, as plain surfaces. */
+  private surfaces(): Surface[] {
+    const out: Surface[] = [];
+    for (const e of this.queries.planes.entities) {
+      const plane = e.getValue(XRPlane, '_plane') as XRPlane | undefined;
+      const o = e.object3D;
+      if (!plane || !o) continue;
+      out.push({
+        label: plane.semanticLabel ?? '', object: o, polygon: plane.polygon,
+        orientation: plane.orientation === 'horizontal' ? 'horizontal' : plane.orientation === 'vertical' ? 'vertical' : 'unknown',
+      });
+    }
+    for (const e of this.queries.meshes.entities) {
+      const o = e.object3D;
+      if (!o || !e.getValue(XRMesh, 'isBounded3D')) continue;
+      const label = (e.getValue(XRMesh, 'semanticLabel') as string) ?? '';
+      if (label !== 'table') continue;
+      out.push({ label, object: o, box: new Box3().setFromObject(o), orientation: 'horizontal' });
+    }
+    return out;
+  }
+
+  /**
+   * Fit the rigid rig to the room. A wall straight ahead at the right
+   * distance takes the paper itself; otherwise a table under the lantern
+   * takes the whole theater; otherwise it floats where it was placed.
+   */
+  private tryFit(time: number): void {
+    // Give a saved anchor a moment to come back before choosing a new spot.
+    if (this.restore === 'pending' && time < this.visibleAt + 2.5) return;
+    const final = time >= this.fitUntil - 0.01;
+    const surfaces = this.surfaces();
+    const head = this.placedHead, def = this.defaultLantern;
+    const paperY = def.y + STAGE.lightDrop - TARGET_CY;
+    const pin = fitPinWall(surfaces, head, this.fwd, paperY, STAGE.lightToScreen, 0.14, 0.5, PIN_STANDOFF);
+    if (pin) {
+      const fwd = pin.wall.normal.clone().negate();
+      const to = head.clone().addScaledVector(fwd, pin.depth - PIN_STANDOFF - STAGE.lightToScreen);
+      to.y = def.y;
+      const right = new Vector3().crossVectors(fwd, this.v2.set(0, 1, 0)).normalize();
+      this.table = fitTable(surfaces, to, fwd, right, SCREEN_W / 2 - 0.06, STAGE.lightToScreen, [0]);
+      if (this.table) to.y = this.table.top + LANTERN_ON_TABLE;
+      this.mode = 'pinned';
+      this.pinWall = pin.wall;
+      this.screen.setPinned(true);
+      this.startSettle(to, fwd, time);
+      return;
+    }
+    const fit = fitTable(surfaces, def, this.fwd, this.right, SCREEN_W / 2 - 0.06, STAGE.lightToScreen);
+    if (fit) {
+      this.table = fit;
+      this.mode = 'table';
+      const to = def.clone().addScaledVector(this.fwd, fit.shift);
+      to.y = fit.top + LANTERN_ON_TABLE;
+      this.startSettle(to, this.fwd.clone(), time);
+    } else if (final) {
+      this.fitUntil = 0;
+      this.finishLayout(false);
+    }
+  }
+
+  private startSettle(to: Vector3, toFwd: Vector3, time: number): void {
+    this.fitUntil = 0;
+    this.lantern.setStand(this.table ? LANTERN_STAND : 0);
+    this.settle = { from: this.lanternPos.clone(), to, fromFwd: this.fwd.clone(), toFwd, t0: time };
+  }
+
+  /** Stage is final: lay out the wall, seat the residents, anchor a table rig. */
+  private finishLayout(createAnchor: boolean): void {
+    const head = this.camera.getWorldPosition(this.v0);
+    let wall: WallFit | null = null;
+    if (this.mode === 'pinned' && this.pinWall) {
+      wall = { ...this.pinWall, point: this.screenCentre.clone().addScaledVector(this.fwd, PIN_STANDOFF), distance: PIN_STANDOFF };
+    } else if (this.immersive) {
+      wall = fitWall(this.surfaces(), this.lanternPos, this.screenCentre, this.fwd);
+    }
+    const c = this.screenCentre, r = this.right, hw = SCREEN_W / 2, hh = SCREEN_H / 2;
+    const corners = [[-hw, hh], [hw, hh], [hw, -hh], [-hw, -hh]].map(([x, y]) =>
+      c.clone().addScaledVector(r, x).add(new Vector3(0, y, 0)));
+    const exit = c.clone().addScaledVector(r, hw).add(new Vector3(0, TARGET_CY, 0));
+    const cell = { w: Math.max(...this.stencils.map((st) => st.w)), h: Math.max(...this.stencils.map((st) => st.h)) };
+    this.wall.layout(wall, this.lanternPos, head, corners, exit, 1, TARGETS.length, cell);
+    this.wall.setResidents(this.firstWoken().map((id) => ({ id, st: this.stencilOf(id) })));
+    if (createAnchor) {
+      const frame = this.renderer.xr.getFrame?.() as XRFrame | undefined;
+      const ref = this.renderer.xr.getReferenceSpace?.();
+      if (frame && ref) {
+        this.player.updateMatrixWorld(true);
+        this.aQuat.setFromUnitVectors(this.v1.set(0, 0, -1), this.fwd);
+        void this.rigAnchor.create(frame, ref, this.player.matrixWorld, this.lanternPos, this.aQuat)
+          .then(() => { if (this.rigAnchor.ready) this.anchored = true; });
+      }
+    }
+  }
+
+  /** Bring the stage back to where the player left it last time. */
+  private adoptAnchor(frame: XRFrame, ref: XRReferenceSpace): void {
+    this.restore = 'none';
+    this.player.updateMatrixWorld(true);
+    if (!this.rigAnchor.pose(frame, ref, this.player.matrixWorld, this.aPos, this.aQuat)) return;
+    const head = this.camera.getWorldPosition(this.v0);
+    const dir = this.v1.subVectors(this.aPos, head);
+    const drop = -dir.y;
+    dir.y = 0;
+    const dist = dir.length();
+    const look = this.v2.set(0, 0, -1).applyQuaternion(this.camera.getWorldQuaternion(this.q0));
+    look.y = 0;
+    look.normalize();
+    // Only if the old spot is within reach and in front of the player's seat.
+    if (dist < 0.12 || dist > 1.3 || drop < 0 || drop > 0.9 || dir.normalize().dot(look) < 0.3) {
+      this.rigAnchor.release();
+      return;
+    }
+    const fwd = this.v3.set(0, 0, -1).applyQuaternion(this.aQuat);
+    fwd.y = 0;
+    fwd.normalize();
+    this.defaultLantern.copy(this.aPos);
+    this.layout(this.aPos, fwd);
+    const surfaces = this.surfaces();
+    this.table = fitTable(surfaces, this.aPos, this.fwd, this.right, SCREEN_W / 2 - 0.06, STAGE.lightToScreen, [0]);
+    const pinned = fitWall(surfaces, this.lanternPos, this.screenCentre, this.fwd, -0.05);
+    this.pinWall = pinned && pinned.distance < 0.06 ? pinned : null;
+    this.mode = this.pinWall ? 'pinned' : this.table ? 'table' : 'float';
+    this.screen.setPinned(this.mode === 'pinned');
+    this.lantern.setStand(this.table ? LANTERN_STAND : 0);
+    this.settle = null;
+    this.fitUntil = 0;
+    this.anchored = true;
+    this.finishLayout(false);
+  }
+
+  private firstWoken(): string[] {
+    const order = this.saved.order ?? Object.keys(this.saved.woken);
+    return order.filter((id) => (this.saved.woken[id] ?? 0) > 0 && TARGETS.some((t) => t.id === id));
+  }
+
+  private stencilOf(id: string): Stencil {
+    return this.stencils[TARGETS.findIndex((t) => t.id === id)];
+  }
+
+  /** Per frame: follow the anchor, animate settling, keep fitting while the room loads. */
+  private tendStage(dt: number, time: number): void {
+    if (!this.immersive) return;
+    const xr = this.renderer.xr;
+    const frame = xr.getFrame?.() as XRFrame | undefined;
+    const ref = xr.getReferenceSpace?.();
+    if (this.restore === 'ready' && frame && ref) this.adoptAnchor(frame, ref);
+    if (this.settle) {
+      const k = ease((time - this.settle.t0) / SETTLE_TIME);
+      const f = this.v2.copy(this.settle.fromFwd).lerp(this.settle.toFwd, k).normalize();
+      this.layout(this.v3.copy(this.settle.from).lerp(this.settle.to, k), this.q1v.copy(f));
+      if (k >= 1) {
+        this.settle = null;
+        this.finishLayout(true);
+      }
+    } else if (this.fitUntil > 0 && time >= this.nextFit) {
+      this.nextFit = time + 0.5;
+      this.tryFit(time);
+    }
+    if (this.anchored && !this.settle && frame && ref) {
+      this.player.updateMatrixWorld(true);
+      if (this.rigAnchor.pose(frame, ref, this.player.matrixWorld, this.aPos, this.aQuat)
+        && this.aPos.distanceToSquared(this.lanternPos) > 1e-5) {
+        this.layout(this.aPos, this.fwd);
+      }
+    }
+    // Seated play: if the player settles somewhere else, bring the stage along.
+    const head = this.camera.getWorldPosition(this.v0);
+    if (this.mode !== 'float') {
+      const far = head.distanceTo(this.lanternPos) > 1.4;
+      this.drift = far ? this.drift + dt : 0;
+      if (this.drift > 5) this.place(time);
+    } else {
+      const d = head.distanceTo(this.placedHead);
+      this.drift = d > 0.3 ? this.drift + dt : 0;
+      if (this.drift > 1.5 && !this.settle) this.place(time);
+    }
   }
 
   /** Copy tracked hand joints (world space) from the current XR frame. */
@@ -277,13 +550,11 @@ export class TheaterSystem extends createSystem({}) {
 
   update(delta: number, time: number): void {
     const dt = Math.min(delta, 0.05);
-    if (!this.placed && time >= this.placeAt) this.place();
+    this.now = time;
+    if (!this.placed && time >= this.placeAt) this.place(time);
     if (!this.placed) return;
     if (this.immersive) {
-      // Seated play: if the player settles somewhere else, bring the stage along.
-      const d = this.camera.getWorldPosition(this.v0).distanceTo(this.placedHead);
-      this.drift = d > 0.3 ? this.drift + dt : 0;
-      if (this.drift > 1.5) this.place();
+      this.tendStage(dt, time);
     } else {
       // Browser preview keeps a fixed theater-seat view.
       this.camera.position.set(0.3, 1.34, 0.42);
@@ -338,6 +609,7 @@ export class TheaterSystem extends createSystem({}) {
       p.caption('Set the controllers down. Just your hands.', 1, 0.27);
     }
     p.end();
+    this.wall.update(time);
   }
 
   private seek(target: BakedTarget, stencil: Stencil, casting: boolean, dt: number, time: number): void {
@@ -370,7 +642,10 @@ export class TheaterSystem extends createSystem({}) {
     if (this.hold >= HOLD_TO_WAKE) {
       this.audio.setHold(0);
       this.audio.chime(this.step);
-      this.saved.woken[target.def.id] = (this.saved.woken[target.def.id] ?? 0) + 1;
+      const id = target.def.id;
+      this.saved.woken[id] = (this.saved.woken[id] ?? 0) + 1;
+      const order = this.saved.order ?? (this.saved.order = Object.keys(this.saved.woken).filter((k) => k !== id));
+      if (!order.includes(id)) order.push(id);
       save(this.saved);
       this.ghost.opacity = 0;
       this.enter(Phase.Wake);
@@ -379,19 +654,27 @@ export class TheaterSystem extends createSystem({}) {
 
   private wake(target: BakedTarget, stencil: Stencil, time: number): void {
     const t = this.phaseTime;
-    let x = 0, y = TARGET_CY, rot = 0, sc = 1;
+    if (t < 0.02) this.leapt = false;
+    // It comes alive in place, then walks off the paper's right edge (onto the wall, if there is one).
+    const walk = ease((t - WALK_AT) / WALK_TIME);
+    let x = walk * (SCREEN_W / 2 + stencil.w / 2 + 0.03), y = TARGET_CY, rot = 0, sc = 1;
     switch (target.def.motion) {
-      case 'hop': x = Math.max(0, t - 0.9) * 0.16; y += Math.abs(Math.sin(Math.max(0, t - 0.9) * Math.PI * 1.6)) * 0.07; break;
-      case 'swim': x = Math.max(0, t - 0.8) * 0.2; y += Math.sin(t * 4) * 0.018; rot = Math.cos(t * 4) * 0.08; break;
-      case 'crawl': x = Math.max(0, t - 0.8) * 0.07; sc = 1 + 0.025 * Math.sin(t * 7); break;
-      case 'bob': x = Math.max(0, t - 0.8) * 0.06; y += Math.sin(t * 5) * 0.014; rot = Math.sin(t * 5) * 0.07; break;
-      case 'fan': sc = 1 + 0.07 * Math.sin(t * 3); rot = Math.sin(t * 2) * 0.04; break;
+      case 'hop': y += Math.abs(Math.sin(Math.max(0, t - 0.4) * Math.PI * 1.6)) * 0.05; break;
+      case 'swim': y += Math.sin(t * 4) * 0.018; rot = Math.cos(t * 4) * 0.08; break;
+      case 'crawl': sc = 1 + 0.025 * Math.sin(t * 7); x *= 0.85; break;
+      case 'bob': y += Math.sin(t * 5) * 0.014; rot = Math.sin(t * 5) * 0.07; break;
+      case 'fan': sc = 1 + 0.07 * Math.sin(t * 3) * (1 - walk); rot = Math.sin(t * 2) * 0.04; break;
     }
-    const alpha = t < 2.8 ? 1 : 1 - ease((t - 2.8) / 0.8);
-    const blink = (t > 1.3 && t < 1.42) || (t > 2.3 && t < 2.38);
+    const onWall = this.wall.active;
+    const alpha = onWall ? 1 : t < 2.3 ? 1 : 1 - ease((t - 2.3) / 0.5);
+    const blink = (t > 0.9 && t < 1.02) || (t > 1.9 && t < 1.98);
     this.painter.creature(stencil, x, y, sc, rot, false, blink, alpha);
+    if (!this.leapt && t >= WALK_AT + WALK_TIME * 0.82) {
+      this.leapt = true;
+      if (onWall) this.wall.leap(target.def.id, stencil, time);
+    }
     if (t < 1.2) this.painter.sparks(0, TARGET_CY, t / 1.2, 1);
-    const capA = Math.min(ease((t - 0.4) / 0.5), 1 - ease((t - 3.0) / 0.6));
+    const capA = Math.min(ease((t - 0.3) / 0.5), 1 - ease((t - 2.6) / 0.6));
     this.painter.caption(target.def.line, capA);
     if (t >= WAKE_TIME) {
       this.step++;
@@ -403,7 +686,6 @@ export class TheaterSystem extends createSystem({}) {
         this.enter(Phase.Rest);
       }
     }
-    void time;
   }
 
   private finale(time: number): void {
@@ -416,10 +698,11 @@ export class TheaterSystem extends createSystem({}) {
       this.painter.creature(st, x, y, 0.42, 0, false, Math.sin(time * 2 + k * 1.7) > 0.97, 0.9);
     }
     const a = Math.min(ease(t / 0.8), 1 - ease((t - FINALE_TIME + 1) / 1));
+    this.wall.cheer(a);
     this.painter.caption(`${n} shadows woke tonight.`, a, 0.2);
-    this.painter.caption('Come back after dark for new shapes.', a * 0.8, -0.24);
+    this.painter.caption(this.wall.active ? 'They will wait for you on the wall.' : 'Come back after dark for new shapes.', a * 0.8, -0.24);
+    if (t >= FINALE_TIME) this.wall.cheer(0);
     if (t >= FINALE_TIME) this.newNight();
   }
 }
 
-void SCREEN_H;
