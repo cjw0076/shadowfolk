@@ -721,6 +721,13 @@ export class TheaterSystem extends createSystem({
     } else {
       // Browser preview keeps a fixed theater-seat view: lantern, paper and the wall above it.
       this.tickSettle(time);
+      // Filming: keep the 2D welcome panel out of the frame (its screen-space system re-shows it).
+      if (captureControl()) {
+        const panel = this.world.getSceneObject('welcome-panel');
+        if (panel) panel.visible = false;
+        // Screen-space UI is re-parented under the camera; hide that copy too.
+        for (const c of this.camera.children) c.visible = false;
+      }
       const cam = captureControl()?.camera;
       if (cam) {
         this.camera.position.set(...cam.pos);

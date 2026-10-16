@@ -60,6 +60,7 @@ export function installCapture(world: World): void {
     renderAudio: async (duration: number) => wavBase64(await TheaterAudio.renderOffline(control.cues, duration)),
   };
   (globalThis as unknown as { __capture: CaptureControl }).__capture = control;
+  (globalThis as unknown as { __captureWorld: World }).__captureWorld = world; // inspection while filming
   // A clean frame: only the 3D canvas.
   const style = document.createElement('style');
   style.textContent = 'body > *:not(#scene-container){display:none!important} #scene-container > *:not(canvas){display:none!important}';
