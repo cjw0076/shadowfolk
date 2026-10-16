@@ -11,7 +11,7 @@ import {
   FlatHand, Mask, NORM, STAGE, ScreenFrame, drawHand, moments, normalise, projectFromLight,
 } from './silhouette.js';
 
-export type Motion = 'swim' | 'hop' | 'crawl' | 'bob' | 'fan';
+export type Motion = 'swim' | 'hop' | 'crawl' | 'bob' | 'fan' | 'flap' | 'stalk' | 'scuttle';
 
 export interface TargetDef {
   id: string;

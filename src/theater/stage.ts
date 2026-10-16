@@ -33,6 +33,8 @@ export interface Lantern {
   body: Mesh;
   bodyMat: MeshBasicMaterial;
   halo: Sprite;
+  /** Warm pool of light on the table top around the lantern's foot. */
+  pool: Mesh;
   /** Wooden stand under the lantern, shown when it rests on a real table. */
   setStand(height: number): void;
 }
@@ -92,15 +94,28 @@ export function buildLantern(): Lantern {
   stand.add(post, foot);
   stand.visible = false;
   root.add(stand);
+  const pool = new Mesh(
+    new PlaneGeometry(0.9, 0.9),
+    new MeshBasicMaterial({
+      map: glowTexture(), transparent: true, depthWrite: false, blending: AdditiveBlending, opacity: 0.35, toneMapped: false,
+    }),
+  );
+  pool.name = 'LanternPool';
+  pool.rotation.x = -Math.PI / 2;
+  pool.renderOrder = -2;
+  pool.visible = false;
+  root.add(pool);
   const setStand = (h: number) => {
     stand.visible = h > 0.012;
+    pool.visible = stand.visible;
     if (!stand.visible) return;
+    pool.position.y = -0.053 - h + 0.002;
     const top = -0.053; // under the bottom cap
     post.scale.y = h - 0.008;
     post.position.y = top - (h - 0.008) / 2;
     foot.position.y = top - h + 0.004;
   };
-  return { root, body, bodyMat, halo, setStand };
+  return { root, body, bodyMat, halo, pool, setStand };
 }
 
 export interface PaperScreen {

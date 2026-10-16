@@ -1,8 +1,10 @@
 /**
  * Tiny WebAudio synth: a warm lantern drone, a rising hum while a shape is
- * held, a paper rustle when a new cut-out appears, and a pentatonic chime
- * when a creature wakes. No audio files, nothing to license.
+ * held, a paper rustle when a new cut-out appears, a pentatonic chime when a
+ * creature wakes, a small voice for each creature, and the lantern's bloom
+ * when the first hand enters its light. No audio files, nothing to license.
  */
+export type Voice = 'swim' | 'hop' | 'crawl' | 'bob' | 'fan' | 'flap' | 'stalk' | 'scuttle';
 export class TheaterAudio {
   private ctx?: AudioContext;
   private master?: GainNode;
@@ -103,6 +105,81 @@ export class TheaterAudio {
     g.gain.value = 0.12;
     src.connect(bp).connect(g).connect(this.master);
     src.start();
+  }
+
+  private live(): AudioContext | null {
+    const ctx = this.ctx;
+    return ctx && ctx.state === 'running' && !this.paused && this.master ? ctx : null;
+  }
+
+  /** One enveloped tone: sine/triangle, optional glide, starting `at` seconds from now. */
+  private tone(f0: number, f1: number, at: number, dur: number, peak: number, type: OscillatorType = 'sine'): void {
+    const ctx = this.live();
+    if (!ctx) return;
+    const t = ctx.currentTime + at;
+    const o = ctx.createOscillator();
+    const g = ctx.createGain();
+    o.type = type;
+    o.frequency.setValueAtTime(f0, t);
+    if (f1 !== f0) o.frequency.exponentialRampToValueAtTime(f1, t + dur * 0.8);
+    g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(peak, t + Math.min(0.02, dur * 0.2));
+    g.gain.exponentialRampToValueAtTime(0.0005, t + dur);
+    o.connect(g).connect(this.master!);
+    o.start(t);
+    o.stop(t + dur + 0.05);
+  }
+
+  /** A short filtered noise burst (paper, wood, water). */
+  private burst(freq: number, q: number, at: number, dur: number, peak: number): void {
+    const ctx = this.live();
+    if (!ctx || !this.noise) return;
+    const t = ctx.currentTime + at;
+    const src = ctx.createBufferSource();
+    src.buffer = this.noise;
+    const bp = ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.value = freq;
+    bp.Q.value = q;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(peak, t);
+    g.gain.exponentialRampToValueAtTime(0.0005, t + dur);
+    src.connect(bp).connect(g).connect(this.master!);
+    src.start(t);
+    src.stop(t + dur + 0.05);
+  }
+
+  /** The lantern blooms when the first hand enters its light. */
+  bloom(): void {
+    for (const [k, f] of [196, 246.9, 293.7, 392].entries()) this.tone(f, f, k * 0.06, 2.6, 0.05);
+    this.burst(900, 0.5, 0, 0.7, 0.05);
+  }
+
+  /** Each creature's small voice as it wakes. */
+  voice(kind: Voice): void {
+    switch (kind) {
+      case 'hop': this.tone(140, 70, 0, 0.16, 0.16); this.tone(140, 70, 0.32, 0.16, 0.12); break;
+      case 'fan': for (let k = 0; k < 6; k++) this.tone(1568 * Math.pow(2, (k % 3) / 12), 1568, k * 0.05, 0.5, 0.025); this.burst(5000, 0.8, 0, 0.35, 0.05); break;
+      case 'crawl': this.tone(600, 900, 0, 0.7, 0.03); this.tone(750, 1120, 0.05, 0.7, 0.02); break;
+      case 'swim': this.tone(380, 620, 0, 0.1, 0.12); this.tone(420, 700, 0.35, 0.09, 0.07); break;
+      case 'bob': this.burst(950, 6, 0, 0.06, 0.25); this.burst(780, 6, 0.12, 0.06, 0.2); break;
+      case 'flap': for (let k = 0; k < 3; k++) this.burst(1400, 1.2, k * 0.22, 0.15, 0.12); break;
+      case 'stalk': this.tone(330, 290, 0, 1.2, 0.04, 'triangle'); this.burst(600, 2, 0.1, 0.4, 0.05); break;
+      case 'scuttle': for (let k = 0; k < 5; k++) this.burst(2600, 4, k * 0.07, 0.03, 0.15); break;
+    }
+  }
+
+  /** A single parade note (finale), from the same pentatonic scale as the chimes. */
+  note(k: number): void {
+    const scale = [0, 2, 4, 7, 9, 12, 14, 16];
+    const f = 392 * Math.pow(2, scale[k % scale.length] / 12);
+    this.tone(f, f, 0, 0.9, 0.06, 'triangle');
+  }
+
+  /** A shadow settling on the wall: soft paper tap. */
+  settle(): void {
+    this.burst(1800, 1.5, 0, 0.12, 0.08);
+    this.tone(880, 880, 0, 0.5, 0.025);
   }
 
   chime(step = 0): void {

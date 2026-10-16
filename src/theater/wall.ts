@@ -66,6 +66,9 @@ export class WallLayer {
     this.root.visible = false;
   }
 
+  /** Called when a leaping shadow reaches its place on the wall. */
+  onSettle?: () => void;
+
   get active(): boolean { return this.fit !== null; }
 
   /** Wall-local coordinates of the ray from `from` through `through` (null if it misses). */
@@ -223,6 +226,7 @@ export class WallLayer {
       if (k >= 1) {
         this.leaper = null;
         this.dirty = true;
+        this.onSettle?.();
       } else {
         const e = ease(k);
         const x = L.fx + (L.r.x - L.fx) * e;

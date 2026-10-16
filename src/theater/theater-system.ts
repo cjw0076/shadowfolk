@@ -5,7 +5,7 @@
  * and it wakes, blinks and walks off into the night's story.
  */
 import {
-  Box3, Color, Matrix4, Quaternion, Vector3, VisibilityState, XRMesh, XRPlane, createSystem,
+  Box3, Color, Matrix4, MeshBasicMaterial, Quaternion, Vector3, VisibilityState, XRMesh, XRPlane, createSystem,
 } from '@iwsdk/core';
 import {
   HandPose, JOINT_COUNT, JOINT_NAMES, basePoses, mirror,
@@ -41,8 +41,12 @@ type RigMode = 'float' | 'table' | 'pinned';
 const REST_TIME = 0.9;
 const FINALE_TIME = 9;
 const HINT_AFTER = 7;
-const NIGHT_LENGTH = TARGETS.length;
+/** Shapes per night; a new creature joins each night until all are known. */
+const NIGHT_LENGTH = Math.min(5, TARGETS.length);
+const FIRST_NIGHT = NIGHT_LENGTH;
 const FINALE_CAPTION = `${NIGHT_LENGTH} shadows woke tonight.`;
+/** Lantern brightness before the first hand reaches its light. */
+const EMBER = 0.18;
 const STORE_KEY = 'shadow-theater.v1';
 
 enum Phase { Seek, Wake, Rest, Finale }
@@ -128,6 +132,13 @@ export class TheaterSystem extends createSystem({
   private anchored = false;
   private leapt = false;
   private now = 0;
+  private lit = 1; // lantern brightness 0..1
+  private litTarget = 1;
+  private awaitingLight = false;
+  private sessionAt = -1;
+  private voiced = false;
+  private fresh = -1; // index into TARGETS of tonight's newly joined creature
+  private finaleX = new Float32Array(16);
   private aPos = new Vector3();
   private aQuat = new Quaternion();
 
@@ -200,6 +211,7 @@ export class TheaterSystem extends createSystem({
     this.demoFrom2 = mirror(basePoses.relaxed());
     this.ghostPose = basePoses.relaxed();
     this.ghostPose2 = basePoses.relaxed();
+    this.wall.onSettle = () => this.audio.settle();
     this.newNight();
     if (import.meta.env?.DEV) (window as unknown as { __theater: unknown }).__theater = this;
 
@@ -257,28 +269,52 @@ export class TheaterSystem extends createSystem({
     this.audio.setHold(0);
   }
 
-  /** Seeded order for tonight; the very first night opens with the open hand. */
+  /**
+   * Tonight's shapes. Creatures join in TARGETS order: the first night knows
+   * five, and every later night brings one newcomer (saved for last) until
+   * all are known. The rest of the order is seeded by date and night.
+   */
   private newNight(): void {
-    const n = TARGETS.length;
-    const idx = Array.from({ length: n }, (_, i) => i);
-    let seed = (Math.floor(Date.now() / 86400000) * 7919 + this.saved.nights * 104729) % 2147483647 || 1;
+    const nights = this.saved.nights;
+    const known = Math.min(TARGETS.length, FIRST_NIGHT + nights);
+    let seed = (Math.floor(Date.now() / 86400000) * 7919 + nights * 104729) % 2147483647 || 1;
     const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
-    for (let i = n - 1; i > 0; i--) {
-      const j = Math.floor(rnd() * (i + 1));
-      [idx[i], idx[j]] = [idx[j], idx[i]];
+    const shuffle = (a: number[]) => {
+      for (let i = a.length - 1; i > 0; i--) {
+        const j = Math.floor(rnd() * (i + 1));
+        [a[i], a[j]] = [a[j], a[i]];
+      }
+      return a;
+    };
+    const pool = Array.from({ length: known }, (_, i) => i);
+    this.fresh = -1;
+    if (nights === 0) {
+      // First night: the open hand first, so the very first try already works.
+      const rest = shuffle(pool.slice(1));
+      this.order = [0, ...rest].slice(0, NIGHT_LENGTH);
+    } else {
+      const newcomer = FIRST_NIGHT + nights - 1 < TARGETS.length ? known - 1 : -1;
+      const others = shuffle(pool.filter((i) => i !== newcomer));
+      if (newcomer >= 0 && !(this.saved.woken[TARGETS[newcomer].id] > 0)) {
+        this.fresh = newcomer;
+        this.order = [...others.slice(0, NIGHT_LENGTH - 1), newcomer];
+      } else {
+        this.order = others.slice(0, NIGHT_LENGTH);
+      }
     }
-    if (this.saved.nights === 0) {
-      const open = TARGETS.findIndex((t) => t.id === 'peacock');
-      idx.splice(idx.indexOf(open), 1);
-      idx.unshift(open);
-    }
-    this.order = idx.slice(0, NIGHT_LENGTH);
     this.step = 0;
     this.enter(Phase.Seek);
   }
 
+  /** The creature that will join on the next night, if any. */
+  private nextNewcomer(): number {
+    const i = FIRST_NIGHT + this.saved.nights - 1;
+    return i < TARGETS.length ? i : -1;
+  }
+
   private enter(p: Phase): void {
     this.phase = p;
+    this.leapt = this.voiced = false;
     this.phaseTime = 0;
     this.hold = 0;
     this.stuck = 0;
@@ -289,6 +325,9 @@ export class TheaterSystem extends createSystem({
   private beginSession(): void {
     // Deadlines are set by the next update, in the world's clock domain.
     this.placed = false;
+    this.lit = this.litTarget = EMBER;
+    this.awaitingLight = true;
+    this.sessionAt = -1;
     this.placeAt = -1;
     this.visibleAt = -1;
     this.anchored = false;
@@ -656,6 +695,7 @@ export class TheaterSystem extends createSystem({
     this.animationTime += dt;
     if (this.placeAt < 0) this.placeAt = time + 0.5;
     if (this.visibleAt < 0) this.visibleAt = time;
+    if (this.sessionAt < 0) this.sessionAt = this.animationTime;
     if (!this.placed && time >= this.placeAt) this.place(time);
     if (!this.placed) return;
     if (this.immersive) {
@@ -689,10 +729,15 @@ export class TheaterSystem extends createSystem({
     this.puppeteer2.opacity = this.demoHand2.valid ? 1 : 0;
     if (this.demoHand2.valid) this.puppeteer2.update(this.demoHand2.joints, this.demoHand2.radii);
 
-    // Lantern flicker.
+    // Lantern: a dim ember until a hand reaches its light, then a warm flicker.
+    this.lit += (this.litTarget - this.lit) * Math.min(1, dt * 3.5);
     const flick = 0.92 + 0.05 * Math.sin(this.animationTime * 7.3) + 0.03 * Math.sin(this.animationTime * 17.1);
-    this.lantern.bodyMat.color.setRGB(1 * flick, 0.81 * flick, 0.54 * flick);
-    this.lantern.halo.scale.setScalar(0.24 + 0.02 * flick);
+    const glow = (0.3 + 0.7 * this.lit) * flick;
+    this.lantern.bodyMat.color.setRGB(glow, 0.81 * glow, 0.54 * glow);
+    this.lantern.halo.scale.setScalar((0.12 + 0.12 * this.lit) + 0.02 * flick);
+    (this.lantern.pool.material as MeshBasicMaterial).opacity = 0.32 * this.lit * flick;
+    const paperTone = 0.32 + 0.68 * this.lit;
+    (this.screen.paper.material as MeshBasicMaterial).color.setScalar(paperTone);
 
     // Shadows: project every hand from the lantern onto the paper.
     const p = this.painter;
@@ -706,6 +751,11 @@ export class TheaterSystem extends createSystem({
       if (!h.flat.valid) continue;
       drawHand(this.live, h.flat);
       casters++;
+    }
+    if (this.awaitingLight && casters > 0) {
+      this.awaitingLight = false;
+      this.litTarget = 1;
+      this.audio.bloom();
     }
 
     switch (this.phase) {
@@ -742,9 +792,16 @@ export class TheaterSystem extends createSystem({
     const glow = close * close + (this.hold > 0 ? 0.4 * this.hold / HOLD_TO_WAKE : 0);
     this.painter.target(stencil, 0, TARGET_CY, glow, time);
 
-    // First moment of the first night: one short invitation, no menus.
+    // First moment of the first night: light and shadow speak first; words only if nothing happens.
     if (this.saved.nights === 0 && this.step === 0) {
-      this.painter.caption(casting ? 'Fit your shadow to the shape.' : 'Lift a hand into the lantern light.', 1);
+      const quiet = this.animationTime - Math.max(0, this.sessionAt);
+      if (!casting && quiet > 5) this.painter.caption('Lift a hand into the lantern light.', ease((quiet - 5) / 0.8));
+      else if (casting && this.phaseTime > 6 && close < 0.6) this.painter.caption('Fit your shadow to the shape.', 1);
+    }
+    // A newcomer shimmers the first time it appears.
+    if (this.baked.indexOf(target) === this.fresh) {
+      this.painter.sparks(0, TARGET_CY, (time * 0.35) % 1, 0.5);
+      if (this.phaseTime < 3.5) this.painter.caption('Someone new is waiting.', 1 - ease((this.phaseTime - 2.5) / 1), 0.27);
     }
 
     // Stuck? Fade in the ghost hand that shows the shape.
@@ -781,7 +838,10 @@ export class TheaterSystem extends createSystem({
 
   private wake(target: BakedTarget, stencil: Stencil, time: number): void {
     const t = this.phaseTime;
-    if (t < 0.02) this.leapt = false;
+    if (!this.voiced && t >= 0.35) {
+      this.voiced = true;
+      this.audio.voice(target.def.motion);
+    }
     // It comes alive in place, then walks off the paper's right edge (onto the wall, if there is one).
     const walk = ease((t - WALK_AT) / WALK_TIME);
     let x = walk * (SCREEN_W / 2 + stencil.w / 2 + 0.03), y = TARGET_CY, rot = 0, sc = 1;
@@ -823,13 +883,29 @@ export class TheaterSystem extends createSystem({
       const x = -SCREEN_W / 2 - 0.1 + ((t * 0.18 + k * (SCREEN_W + 0.2) / n) % (SCREEN_W + 0.2));
       const y = -0.02 + Math.abs(Math.sin(t * 3 + k)) * 0.02;
       this.painter.creature(st, x, y, 0.42, 0, false, Math.sin(time * 2 + k * 1.7) > 0.97, 0.9);
+      // Each shadow sings one note as it crosses the middle of the paper.
+      if (t > 0.05 && this.finaleX[k] < 0 && x >= 0) this.audio.note(k + this.step);
+      this.finaleX[k] = x;
     }
     const a = Math.min(ease(t / 0.8), 1 - ease((t - FINALE_TIME + 1) / 1));
     this.wall.cheer(a);
     this.painter.caption(FINALE_CAPTION, a, 0.2);
-    this.painter.caption(this.wall.active ? 'They will wait for you on the wall.' : 'Come back after dark for new shapes.', a * 0.8, -0.24);
-    if (t >= FINALE_TIME) this.wall.cheer(0);
-    if (t >= FINALE_TIME) this.newNight();
+    const next = this.nextNewcomer();
+    if (next >= 0 && t > FINALE_TIME * 0.45) {
+      // Tease the next night's newcomer: a dark shape with blinking eyes peeking in at the left edge.
+      const st = this.stencils[next];
+      const peek = ease((t - FINALE_TIME * 0.45) / 1.2) * (1 - ease((t - FINALE_TIME + 0.8) / 0.8));
+      this.painter.creature(st, -SCREEN_W / 2 - st.w * 0.5 + st.w * 0.45 * peek, -0.05, 0.6, 0.1, false, Math.sin(time * 3) > 0.9, 0.85 * peek);
+      this.painter.caption('Someone new waits for the next night.', a * 0.8, -0.24);
+    } else {
+      this.painter.caption(this.wall.active ? 'They will wait for you on the wall.' : 'Come back after dark for new shapes.', a * 0.8, -0.24);
+    }
+    if (t >= FINALE_TIME) {
+      this.wall.cheer(0);
+      this.finaleX.fill(0);
+      this.newNight();
+    }
   }
+
 }
 
