@@ -141,6 +141,7 @@ export class TheaterSystem extends createSystem({
   private now = 0;
   private reported = new Set<string>();
   private emberShown = false;
+  private demoDelay = Number(new URLSearchParams(typeof location !== 'undefined' ? location.search : '').get('demoDelay')) || 0;
   private lit = 1; // lantern brightness 0..1
   private litTarget = 1;
   private awaitingLight = false;
@@ -696,7 +697,8 @@ export class TheaterSystem extends createSystem({
 
   /** Browser/demo hands: ease from relaxed hands into tonight's shape. */
   private driveDemo(target: BakedTarget, t: number): void {
-    const k = this.phase === Phase.Seek ? ease((this.phaseTime - 1.0) / 2.2) : 1;
+    // `?demoDelay=N` (filming): the puppet hesitates N extra seconds, long enough for the ghost-hand hint.
+    const k = this.phase === Phase.Seek ? ease((this.phaseTime - 1.0 - this.demoDelay) / 2.2) : 1;
     // While the lantern waits as an ember, the demo hand first rises into its light from below.
     const rise = this.awaitingLight ? -0.32 * (1 - ease((this.phaseTime - 0.6) / 1.6)) : 0;
     const lift = (this.phase === Phase.Seek ? rise : -ease(this.phaseTime / 0.8) * 0.25) + 0.012 * Math.sin(t * 1.3);
@@ -906,7 +908,8 @@ export class TheaterSystem extends createSystem({
     // Stuck? Fade in the ghost hand that shows the shape.
     if (close < 0.85) this.stuck += dt; else this.stuck = Math.max(0, this.stuck - dt);
     const hint = ease((this.stuck - HINT_AFTER) / 1.5);
-    if (hint > 0 && !this.demo) {
+    const hintsAllowed = !this.demo || this.demoDelay > 0;
+    if (hint > 0 && hintsAllowed) {
       if (target.partner) {
         this.poseToWorld(target.pose, this.posePositions, 0.0, target.shifts[0]);
         this.ghost.update(this.posePositions, target.pose.radii);
@@ -919,7 +922,7 @@ export class TheaterSystem extends createSystem({
         this.ghost.update(this.posePositions, pose.radii);
       }
     }
-    this.ghost.opacity = this.demo ? 0 : hint * (0.28 + 0.08 * Math.sin(time * 3));
+    this.ghost.opacity = hintsAllowed ? hint * (0.28 + 0.08 * Math.sin(time * 3)) : 0;
     this.ghost2.opacity = target.partner ? this.ghost.opacity : 0;
 
     if (this.hold >= HOLD_TO_WAKE) {
