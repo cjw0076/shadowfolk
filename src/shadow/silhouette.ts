@@ -97,12 +97,16 @@ export class Mask {
     for (let j = j0; j <= j1; j++) {
       const py = y0 + (j + 0.5) * cell;
       for (let i = i0; i <= i1; i++) {
+        const index = j * w + i;
+        // Capsules only add ink. Overlapping palms/fingers cannot change ink
+        // already in the union, especially when magnified near the lantern.
+        if (data[index] === 1) continue;
         const px = x0 + (i + 0.5) * cell;
         let t = ((px - ax) * ex + (py - ay) * ey) / len2;
         t = t < 0 ? 0 : t > 1 ? 1 : t;
         const dx = px - (ax + ex * t), dy = py - (ay + ey * t);
         const r = ra + (rb - ra) * t;
-        if (dx * dx + dy * dy <= r * r) data[j * w + i] = 1;
+        if (dx * dx + dy * dy <= r * r) data[index] = 1;
       }
     }
   }
