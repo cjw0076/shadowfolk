@@ -44,7 +44,21 @@ interface Saved { nights: number; woken: Record<string, number> }
 function loadSaved(): Saved {
   try {
     const raw = localStorage.getItem(STORE_KEY);
-    if (raw) return JSON.parse(raw) as Saved;
+    if (raw) {
+      const value: unknown = JSON.parse(raw);
+      if (value && typeof value === 'object' && !Array.isArray(value)) {
+        const candidate = value as Partial<Saved>;
+        const nights = Number.isSafeInteger(candidate.nights) && candidate.nights! >= 0 ? candidate.nights! : 0;
+        const woken: Record<string, number> = {};
+        if (candidate.woken && typeof candidate.woken === 'object' && !Array.isArray(candidate.woken)) {
+          for (const target of TARGETS) {
+            const count = candidate.woken[target.id];
+            if (Number.isSafeInteger(count) && count >= 0) woken[target.id] = count;
+          }
+        }
+        return { nights, woken };
+      }
+    }
   } catch { /* private mode: play without memory */ }
   return { nights: 0, woken: {} };
 }
