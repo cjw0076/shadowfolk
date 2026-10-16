@@ -288,7 +288,10 @@ export class TheaterSystem extends createSystem({
   private newNight(): void {
     const nights = this.saved.nights;
     const known = Math.min(TARGETS.length, FIRST_NIGHT + nights);
-    let seed = (Math.floor(Date.now() / 86400000) * 7919 + nights * 104729) % 2147483647 || 1;
+    // `?day=N` pins the calendar seed (filming, testing); otherwise tonight's date.
+    const dayParam = Number(new URLSearchParams(location.search).get('day'));
+    const day = Number.isFinite(dayParam) && dayParam > 0 ? dayParam : Math.floor(Date.now() / 86400000);
+    let seed = (day * 7919 + nights * 104729) % 2147483647 || 1;
     const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
     const shuffle = (a: number[]) => {
       for (let i = a.length - 1; i > 0; i--) {
