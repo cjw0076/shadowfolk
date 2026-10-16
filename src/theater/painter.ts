@@ -4,7 +4,7 @@
  * the woken creature's shadow animation. Everything is a 2D canvas uploaded
  * as one texture per frame.
  */
-import { CanvasTexture, SRGBColorSpace } from '@iwsdk/core';
+import { CanvasTexture, LinearFilter, SRGBColorSpace } from '@iwsdk/core';
 import { BONES, PALM } from '../shadow/hand-model.js';
 import { FlatHand } from '../shadow/silhouette.js';
 import { runtimePerf as perf } from './perf.js';
@@ -130,6 +130,10 @@ export class ScreenPainter {
     this.paper = this.paintPaper(0, -0.2);
     this.texture = new CanvasTexture(this.canvas);
     this.texture.colorSpace = SRGBColorSpace;
+    // The moving canvas is sampled close up; rebuilding a mip chain every frame
+    // adds GPU work and memory traffic without helping this paper-sized surface.
+    this.texture.generateMipmaps = false;
+    this.texture.minFilter = LinearFilter;
   }
 
   /** Washi paper with fibres, warmly lit around the lantern's footprint. */
