@@ -65,7 +65,9 @@ export function installCapture(world: World): void {
   };
   (globalThis as unknown as { __capture: CaptureControl }).__capture = control;
   (globalThis as unknown as { __captureWorld: World }).__captureWorld = world; // inspection while filming
-  // A clean frame: only the 3D canvas.
+  // A clean frame: only the 3D canvas (`?capture=keepdom` keeps the page as is, e.g. for
+  // the XR emulator, which composites its view outside the scene container).
+  if (new URLSearchParams(location.search).get('capture') === 'keepdom') return;
   const style = document.createElement('style');
   style.textContent = 'body > *:not(#scene-container){display:none!important} #scene-container > *:not(canvas){display:none!important}';
   document.head.appendChild(style);
