@@ -19,6 +19,7 @@ A paper lantern stands on your real table and a washi-paper screen stands beyond
 - **Wake:** fit and hold. The cut-out flares, the creature fills with ink and opens its eye, follows your hand for a moment, then walks off in its own gait (hop, crawl, swim, flap, stalk, scuttle).
 - **Parade:** after the last shape, the night's creatures parade across the paper and the next newcomer is teased.
 - **Invent your own:** then the paper is blank. Hold any shape still and it is born as a new creature with its own name, and it joins your wall.
+- **One hand is enough:** a player using one hand never meets a two-hand shape they can't make; it re-forms into a single-hand creature, and the preference is remembered.
 - **Tonight's moon:** a moon cut into the paper's corner follows the real lunar phase.
 
 ## How it works
