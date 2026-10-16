@@ -20,6 +20,7 @@ import { SCREEN_H, SCREEN_W, ScreenPainter, Stencil, makeStencil } from './paint
 import { RigAnchor } from './anchor.js';
 import { LANTERN_ON_TABLE, Surface, TableFit, WallFit, fitPinWall, fitTable, fitWall } from './room.js';
 import { GhostHand, Lantern, PaperScreen, buildLantern, buildScreen } from './stage.js';
+import { captureControl } from '../capture.js';
 import { PreviewRoom } from './preview-room.js';
 import { WallLayer } from './wall.js';
 
@@ -214,6 +215,8 @@ export class TheaterSystem extends createSystem({
     this.ghostPose = basePoses.relaxed();
     this.ghostPose2 = basePoses.relaxed();
     this.wall.onSettle = () => this.audio.settle();
+    const cap = captureControl();
+    if (cap) this.audio.onCue = (kind, arg) => cap.cues.push({ t: cap.time, kind, arg });
     this.newNight();
     if (import.meta.env?.DEV) (window as unknown as { __theater: unknown }).__theater = this;
 
@@ -715,8 +718,16 @@ export class TheaterSystem extends createSystem({
     } else {
       // Browser preview keeps a fixed theater-seat view: lantern, paper and the wall above it.
       this.tickSettle(time);
-      this.camera.position.set(0.5, 1.48, 0.95);
-      this.camera.lookAt(0.0, 1.2, -1.0);
+      const cam = captureControl()?.camera;
+      if (cam) {
+        this.camera.position.set(...cam.pos);
+        this.camera.lookAt(...cam.look);
+        const pc = this.camera as unknown as { fov?: number; updateProjectionMatrix?: () => void };
+        if (cam.fov && pc.fov !== cam.fov) { pc.fov = cam.fov; pc.updateProjectionMatrix?.(); }
+      } else {
+        this.camera.position.set(0.5, 1.48, 0.95);
+        this.camera.lookAt(0.0, 1.2, -1.0);
+      }
     }
 
     this.readHands(time);

@@ -5,8 +5,17 @@
  * when the first hand enters its light. No audio files, nothing to license.
  */
 export type Voice = 'swim' | 'hop' | 'crawl' | 'bob' | 'fan' | 'flap' | 'stalk' | 'scuttle';
+export type CueKind = 'bloom' | 'voice' | 'chime' | 'rustle' | 'note' | 'settle' | 'hold';
+/** A sound cue at a time on the night's clock (recorded for offline rendering). */
+export interface Cue { t: number; kind: CueKind; arg?: number | string }
 export class TheaterAudio {
-  private ctx?: AudioContext;
+  /** Every cue is reported here (capture mode records them to render the soundtrack offline). */
+  onCue?: (kind: CueKind, arg?: number | string) => void;
+  private ctx?: BaseAudioContext;
+  private offline = false;
+  /** Absolute schedule time used while replaying cues offline. */
+  private at: number | null = null;
+  private lastHold = -1;
   private master?: GainNode;
   private hum?: { osc: OscillatorNode; gain: GainNode };
   private noise?: AudioBuffer;
@@ -17,15 +26,15 @@ export class TheaterAudio {
     this.paused = false;
     if (this.ctx?.state === 'closed') this.ctx = undefined;
     if (this.ctx) {
-      if (this.ctx.state !== 'running') void this.ctx.resume().catch(() => {});
+      if (this.ctx.state !== 'running') void (this.ctx as AudioContext).resume().catch(() => {});
       return;
     }
     // Audio is optional: unsupported/denied contexts must not stop the night.
     try { this.initialize(); } catch { this.dispose(); }
   }
 
-  private initialize(): void {
-    const ctx = new AudioContext();
+  private initialize(given?: BaseAudioContext): void {
+    const ctx = given ?? new AudioContext();
     this.ctx = ctx;
     const master = ctx.createGain();
     master.gain.value = 0.8;
@@ -66,13 +75,38 @@ export class TheaterAudio {
     this.noise = ctx.createBuffer(1, len, ctx.sampleRate);
     const d = this.noise.getChannelData(0);
     for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / len);
-    if (ctx.state !== 'running') void ctx.resume().catch(() => {});
+    if (!given && ctx.state !== 'running') void (ctx as AudioContext).resume().catch(() => {});
+  }
+
+  private now(): number { return this.at ?? this.ctx!.currentTime; }
+
+  /** Render a recorded cue list with the same synth, for a video soundtrack. */
+  static async renderOffline(cues: readonly Cue[], duration: number, sampleRate = 24000): Promise<AudioBuffer> {
+    const ctx = new OfflineAudioContext(1, Math.ceil(duration * sampleRate), sampleRate);
+    const a = new TheaterAudio();
+    a.offline = true;
+    a.initialize(ctx);
+    for (const c of cues) {
+      if (c.t < 0 || c.t >= duration) continue;
+      a.at = c.t;
+      switch (c.kind) {
+        case 'bloom': a.bloom(); break;
+        case 'voice': a.voice(c.arg as Voice); break;
+        case 'chime': a.chime(Number(c.arg ?? 0)); break;
+        case 'rustle': a.rustle(); break;
+        case 'note': a.note(Number(c.arg ?? 0)); break;
+        case 'settle': a.settle(); break;
+        case 'hold': a.setHold(Number(c.arg ?? 0)); break;
+      }
+    }
+    a.at = null;
+    return ctx.startRendering();
   }
 
   pause(): void {
     this.setHold(0);
     this.paused = true;
-    if (this.ctx && this.ctx.state !== 'closed') void this.ctx.suspend().catch(() => {});
+    if (this.ctx && this.ctx.state !== 'closed' && !this.offline) void (this.ctx as AudioContext).suspend().catch(() => {});
   }
 
   dispose(): void {
@@ -81,20 +115,25 @@ export class TheaterAudio {
     this.master = undefined;
     this.hum = undefined;
     this.noise = undefined;
-    if (ctx && ctx.state !== 'closed') void ctx.close().catch(() => {});
+    if (ctx && ctx.state !== 'closed' && !this.offline) void (ctx as AudioContext).close().catch(() => {});
   }
 
   /** 0..1 closeness of the shadow to the cut-out. */
   setHold(level: number): void {
-    if (!this.ctx || this.ctx.state !== 'running' || !this.hum || this.paused) return;
-    const t = this.ctx.currentTime;
+    if (Math.abs(level - this.lastHold) > 0.02 || (level === 0) !== (this.lastHold === 0)) {
+      this.lastHold = level;
+      this.onCue?.('hold', +level.toFixed(3));
+    }
+    if (!this.live() || !this.hum) return;
+    const t = this.now();
     this.hum.gain.gain.setTargetAtTime(level > 0 ? 0.015 + 0.05 * level : 0, t, 0.08);
     this.hum.osc.frequency.setTargetAtTime(262 + 260 * level, t, 0.1);
   }
 
   rustle(): void {
-    const ctx = this.ctx;
-    if (!ctx || ctx.state !== 'running' || this.paused || !this.noise || !this.master) return;
+    this.onCue?.('rustle');
+    const ctx = this.live();
+    if (!ctx || !this.noise || !this.master) return;
     const src = ctx.createBufferSource();
     src.buffer = this.noise;
     const bp = ctx.createBiquadFilter();
@@ -104,19 +143,19 @@ export class TheaterAudio {
     const g = ctx.createGain();
     g.gain.value = 0.12;
     src.connect(bp).connect(g).connect(this.master);
-    src.start();
+    src.start(this.now());
   }
 
-  private live(): AudioContext | null {
+  private live(): BaseAudioContext | null {
     const ctx = this.ctx;
-    return ctx && ctx.state === 'running' && !this.paused && this.master ? ctx : null;
+    return ctx && (this.offline || ctx.state === 'running') && !this.paused && this.master ? ctx : null;
   }
 
   /** One enveloped tone: sine/triangle, optional glide, starting `at` seconds from now. */
   private tone(f0: number, f1: number, at: number, dur: number, peak: number, type: OscillatorType = 'sine'): void {
     const ctx = this.live();
     if (!ctx) return;
-    const t = ctx.currentTime + at;
+    const t = this.now() + at;
     const o = ctx.createOscillator();
     const g = ctx.createGain();
     o.type = type;
@@ -134,7 +173,7 @@ export class TheaterAudio {
   private burst(freq: number, q: number, at: number, dur: number, peak: number): void {
     const ctx = this.live();
     if (!ctx || !this.noise) return;
-    const t = ctx.currentTime + at;
+    const t = this.now() + at;
     const src = ctx.createBufferSource();
     src.buffer = this.noise;
     const bp = ctx.createBiquadFilter();
@@ -151,12 +190,14 @@ export class TheaterAudio {
 
   /** The lantern blooms when the first hand enters its light. */
   bloom(): void {
+    this.onCue?.('bloom');
     for (const [k, f] of [196, 246.9, 293.7, 392].entries()) this.tone(f, f, k * 0.06, 2.6, 0.05);
     this.burst(900, 0.5, 0, 0.7, 0.05);
   }
 
   /** Each creature's small voice as it wakes. */
   voice(kind: Voice): void {
+    this.onCue?.('voice', kind);
     switch (kind) {
       case 'hop': this.tone(140, 70, 0, 0.16, 0.16); this.tone(140, 70, 0.32, 0.16, 0.12); break;
       case 'fan': for (let k = 0; k < 6; k++) this.tone(1568 * Math.pow(2, (k % 3) / 12), 1568, k * 0.05, 0.5, 0.025); this.burst(5000, 0.8, 0, 0.35, 0.05); break;
@@ -171,6 +212,7 @@ export class TheaterAudio {
 
   /** A single parade note (finale), from the same pentatonic scale as the chimes. */
   note(k: number): void {
+    this.onCue?.('note', k);
     const scale = [0, 2, 4, 7, 9, 12, 14, 16];
     const f = 392 * Math.pow(2, scale[k % scale.length] / 12);
     this.tone(f, f, 0, 0.9, 0.06, 'triangle');
@@ -178,16 +220,18 @@ export class TheaterAudio {
 
   /** A shadow settling on the wall: soft paper tap. */
   settle(): void {
+    this.onCue?.('settle');
     this.burst(1800, 1.5, 0, 0.12, 0.08);
     this.tone(880, 880, 0, 0.5, 0.025);
   }
 
   chime(step = 0): void {
-    const ctx = this.ctx;
-    if (!ctx || ctx.state !== 'running' || this.paused || !this.master) return;
+    this.onCue?.('chime', step);
+    const ctx = this.live();
+    if (!ctx || !this.master) return;
     const scale = [0, 2, 4, 7, 9, 12, 14, 16];
     const base = 523.25;
-    const t0 = ctx.currentTime;
+    const t0 = this.now();
     for (let k = 0; k < 4; k++) {
       const note = scale[(step + k * 2) % scale.length];
       const o = ctx.createOscillator();
