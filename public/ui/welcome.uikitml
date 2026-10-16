@@ -1,79 +1,109 @@
 <!--
-  Panel, Divider, Button, ButtonIcon, and ButtonLabel come from the bundled
-  Horizon kit. RectangleGoggles and LogIn are bundled Lucide icon components.
+  Welcome panel (browser): night card, serif title, amber pill button.
+  Palette from collab/visual/ref-07-ui.png: night #0B1220, paper #F4E7D0,
+  lantern #F7B25A, amber #D98F3F.
 -->
 <style>
   .panel-root {
     flex-direction: column;
-    width: 344px;
-  }
-
-  .panel-content {
     align-items: center;
-    flex-direction: column;
-    padding-top: 16px;
-    padding-left: 24px;
-    padding-right: 24px;
+    width: 360px;
+    padding-top: 26px;
+    padding-bottom: 24px;
+    padding-left: 26px;
+    padding-right: 26px;
+    border-radius: 22px;
+    background-color: rgba(1, 2, 5, 0.95);
+    border-width: 1px;
+    border-color: rgba(217, 143, 63, 0.55);
   }
 
-  .heading {
-    height: 48px;
+  .title {
+    font-family: playfair-display;
+    font-size: 40px;
+    line-height: 44px;
+    color: #f4e7d0;
     text-align: center;
-    font-size: 24px;
-    font-weight: 700;
-    line-height: 24px;
-    letter-spacing: -0.5px;
-    color: #272727;
   }
 
-  .heading:dark {
-    color: rgba(255, 255, 255, 0.9);
+  .kicker {
+    font-family: playfair-display;
+    font-size: 11px;
+    letter-spacing: 3px;
+    color: #d98f3f;
+    margin-top: 6px;
+    text-align: center;
   }
 
-  .sub-heading {
-    color: #272727;
-    font-size: 14px;
-    font-weight: 500;
-    line-height: 18px;
-    width: 100%;
-    margin-top: 10px;
-  }
-
-  .sub-heading:dark {
-    color: rgba(255, 255, 255, 0.9);
-  }
-
-  .button {
-    justify-content: flex-start;
-    margin-left: 24px;
-    margin-right: 24px;
+  .rule {
+    width: 120px;
+    height: 1px;
     margin-top: 16px;
-    margin-bottom: 24px;
+    margin-bottom: 16px;
+    background-color: rgba(217, 143, 63, 0.45);
   }
 
-  .button-label {
-    transform-translate-y: 1px;
+  .line {
+    font-family: playfair-display;
+    font-size: 15px;
+    line-height: 21px;
+    color: rgba(244, 231, 208, 0.86);
+    text-align: center;
+    width: 100%;
+  }
+
+  .hint {
+    font-family: playfair-display;
+    font-size: 12px;
+    line-height: 17px;
+    color: rgba(244, 231, 208, 0.55);
+    text-align: center;
+    width: 100%;
+    margin-top: 8px;
+  }
+
+  .pill {
+    flex-direction: row;
+    align-items: center;
+    justify-content: center;
+    margin-top: 20px;
+    padding-top: 11px;
+    padding-bottom: 11px;
+    padding-left: 30px;
+    padding-right: 30px;
+    border-radius: 999px;
+    background-color: #f7b25a;
+    cursor: pointer;
+  }
+
+  .pill:hover {
+    background-color: #ffc778;
+  }
+
+  .pill-label {
+    font-family: playfair-display;
+    font-size: 16px;
+    color: #1a1208;
+  }
+
+  .ghost {
+    background-color: rgba(244, 231, 208, 0.12);
+  }
+
+  .ghost-label {
+    color: #f4e7d0;
   }
 </style>
-<Panel class="panel-root">
-  <div class="panel-content">
-    <div class="heading">Shadowfolk</div>
-    <Divider></Divider>
-    <div class="sub-heading">
-      A hand-shadow theater. Raise your hands to the lantern: when your
-      shadow fits the cut-out on the paper, the creature wakes up.
-    </div>
+<div class="panel-root">
+  <div class="title">Shadowfolk</div>
+  <div class="kicker">A HAND-SHADOW THEATER</div>
+  <div class="rule"></div>
+  <div class="line">Raise your hands into the lantern light. When your shadow fits the shape on the paper, a creature wakes.</div>
+  <div class="hint">For Meta Quest. Hands only, seated, about five minutes a night.</div>
+  <div id="xr-button" class="pill">
+    <div class="pill-label">Light the lantern</div>
   </div>
-  <Button id="xr-button" class="button">
-    <ButtonIcon>
-      <RectangleGoggles></RectangleGoggles>
-    </ButtonIcon>
-    <ButtonLabel class="button-label">Light the lantern</ButtonLabel>
-  </Button>
-  <Button id="exit-button" class="button" style="display: none">
-    <ButtonIcon>
-      <LogIn></LogIn>
-    </ButtonIcon>
-    <ButtonLabel class="button-label">Exit to Browser</ButtonLabel>
-  </Button>
-</Panel>
+  <div id="exit-button" class="pill ghost" style="display: none">
+    <div class="pill-label ghost-label">Back to the browser</div>
+  </div>
+</div>
