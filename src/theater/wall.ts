@@ -77,6 +77,15 @@ export class WallLayer {
       new PlaneGeometry(1, 1),
       new MeshBasicMaterial({ map: this.texture, transparent: true, depthWrite: false, toneMapped: false }),
     );
+    this.mesh.material.onBeforeCompile = shader => {
+      shader.vertexShader = `varying vec2 vWallUv;\n${shader.vertexShader}`
+        .replace('#include <begin_vertex>', '#include <begin_vertex>\n vWallUv = uv;');
+      shader.fragmentShader = `varying vec2 vWallUv;\n${shader.fragmentShader}`
+        .replace('#include <map_fragment>', `#include <map_fragment>
+          float edgeFade = smoothstep(0.0, 0.06, vWallUv.x) * smoothstep(0.0, 0.06, vWallUv.y)
+            * smoothstep(0.0, 0.06, 1.0 - vWallUv.x) * smoothstep(0.0, 0.06, 1.0 - vWallUv.y);
+          diffuseColor.a *= edgeFade;`);
+    };
     this.mesh.renderOrder = -1;
     this.frame.add(this.mesh);
     this.root.add(this.frame);
@@ -98,7 +107,7 @@ export class WallLayer {
     eyesOpen.position.z = eyesBlink.position.z = 0.0008;
     ink.renderOrder = order;
     eyesOpen.renderOrder = eyesBlink.renderOrder = order + 1;
-    ink.material.opacity = 0.6;
+    ink.material.opacity = 0.78;
     eyesOpen.material.opacity = eyesBlink.material.opacity = 0;
     group.add(ink, eyesOpen, eyesBlink);
     group.visible = false;
@@ -204,11 +213,13 @@ export class WallLayer {
     // Background: lantern light pooling on the wall, the paper's own shadow inside it.
     const g = this.bg.getContext('2d')!;
     g.clearRect(0, 0, this.bg.width, this.bg.height);
-    const [gx, gy] = this.toPx(0, 0);
-    const pool = g.createRadialGradient(gx, gy, 10, gx, gy, PX * 1.5);
-    pool.addColorStop(0, 'rgba(255,196,120,0.22)');
-    pool.addColorStop(0.5, 'rgba(255,170,90,0.10)');
-    pool.addColorStop(1, 'rgba(255,150,70,0)');
+    const beamX = shadow.length === 4 ? shadow.reduce((sum, point) => sum + point[0], 0) / 4 : 0;
+    const beamY = shadow.length === 4 ? shadow.reduce((sum, point) => sum + point[1], 0) / 4 : 0;
+    const [gx, gy] = this.toPx(beamX, beamY + 0.28);
+    const pool = g.createRadialGradient(gx, gy, 10, gx, gy, PX * 1.35);
+    pool.addColorStop(0, 'rgba(247,178,90,0.50)');
+    pool.addColorStop(0.5, 'rgba(247,178,90,0.43)');
+    pool.addColorStop(1, 'rgba(247,178,90,0)');
     g.fillStyle = pool;
     g.fillRect(0, 0, this.bg.width, this.bg.height);
     if (shadow.length === 4) {

@@ -778,7 +778,8 @@ export class TheaterSystem extends createSystem({
     const flick = 0.92 + 0.05 * Math.sin(this.animationTime * 7.3) + 0.03 * Math.sin(this.animationTime * 17.1);
     const glow = (0.3 + 0.7 * this.lit) * flick;
     this.lantern.bodyMat.color.setRGB(glow, 0.81 * glow, 0.54 * glow);
-    this.lantern.halo.scale.setScalar((0.12 + 0.12 * this.lit) + 0.02 * flick);
+    this.lantern.halo.scale.setScalar((0.14 + 0.16 * this.lit) * (0.96 + 0.04 * flick));
+    this.lantern.halo.material.opacity = (0.38 + 0.18 * this.lit) * flick;
     (this.lantern.pool.material as MeshBasicMaterial).opacity = 0.32 * this.lit * flick;
     this.audio.tick(dt, this.lit);
     this.glowLight.position.copy(this.lanternPos);
@@ -924,12 +925,12 @@ export class TheaterSystem extends createSystem({
     const onWall = this.wall.active;
     const alpha = onWall ? 1 : t < 2.3 ? 1 : 1 - ease((t - 2.3) / 0.5);
     const blink = (t > 0.9 && t < 1.02) || (t > 1.9 && t < 1.98);
-    this.painter.creature(stencil, x, y, sc, rot, false, blink, alpha);
+    this.painter.creature(stencil, x, y, sc, rot, false, blink, alpha, Math.max(0, 1 - t / 1.5), time);
     if (!this.leapt && t >= WALK_AT + WALK_TIME * 0.82) {
       this.leapt = true;
       if (onWall) this.wall.leap(target.def.id, stencil, time);
     }
-    if (t < 1.2) this.painter.sparks(0, TARGET_CY, t / 1.2, 1);
+    if (t < 1.5) this.painter.sparks(0, TARGET_CY, t / 1.5, 1);
     const capA = Math.min(ease((t - 0.3) / 0.5), 1 - ease((t - 2.6) / 0.6));
     this.painter.caption(target.def.line, capA);
     if (t >= WAKE_TIME) {
