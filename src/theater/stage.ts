@@ -158,7 +158,8 @@ export class GhostHand {
       this.m.compose(this.a, this.q.identity(), this.s);
       this.joints.setMatrixAt(j, this.m);
     }
-    BONES.forEach(([ia, ib], k) => {
+    for (let k = 0; k < BONES.length; k++) {
+      const [ia, ib] = BONES[k];
       this.a.set(pos[ia * 3], pos[ia * 3 + 1], pos[ia * 3 + 2]);
       this.b.set(pos[ib * 3], pos[ib * 3 + 1], pos[ib * 3 + 2]);
       const len = this.a.distanceTo(this.b);
@@ -168,7 +169,7 @@ export class GhostHand {
       this.a.add(this.b).multiplyScalar(0.5);
       this.m.compose(this.a, this.q, this.s);
       this.bones.setMatrixAt(k, this.m);
-    });
+    }
     this.joints.instanceMatrix.needsUpdate = true;
     this.bones.instanceMatrix.needsUpdate = true;
   }

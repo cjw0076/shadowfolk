@@ -17,6 +17,7 @@ const PX = CW / SCREEN_W; // canvas px per screen metre
 const SOFT = 4; // shadow layer downscale (penumbra softness)
 
 const INK = '#1c1316';
+const SPARK_COLORS = Array.from({ length: 18 }, (_, k) => `rgb(255,${180 + ((k * 13) % 60)},90)`);
 
 function canvas(w: number, h: number): [HTMLCanvasElement, CanvasRenderingContext2D] {
   const c = document.createElement('canvas');
@@ -242,15 +243,18 @@ export class ScreenPainter {
   sparks(cx: number, cy: number, t: number, alpha: number): void {
     const started = perf ? performance.now() : 0;
     const g = this.ctx;
+    const previousAlpha = g.globalAlpha;
+    g.globalAlpha = previousAlpha * alpha * (1 - t);
     g.globalCompositeOperation = 'lighter';
     for (let k = 0; k < 18; k++) {
       const a = k * 2.399 + t * 0.6, r = (40 + 260 * t) * (0.5 + ((k * 37) % 10) / 20);
-      g.fillStyle = `rgba(255,${180 + ((k * 13) % 60)},90,${alpha * (1 - t)})`;
+      g.fillStyle = SPARK_COLORS[k];
       g.beginPath();
       g.arc(CW / 2 + cx * PX + Math.cos(a) * r, CH / 2 - cy * PX + Math.sin(a) * r, 3 + (k % 3), 0, Math.PI * 2);
       g.fill();
     }
     g.globalCompositeOperation = 'source-over';
+    g.globalAlpha = previousAlpha;
     perf?.endCall('sparks', started);
   }
 

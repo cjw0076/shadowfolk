@@ -27,6 +27,7 @@ const REST_TIME = 0.9;
 const FINALE_TIME = 9;
 const HINT_AFTER = 7;
 const NIGHT_LENGTH = TARGETS.length;
+const FINALE_CAPTION = `${NIGHT_LENGTH} shadows woke tonight.`;
 const STORE_KEY = 'shadow-theater.v1';
 
 enum Phase { Seek, Wake, Rest, Finale }
@@ -497,7 +498,7 @@ export class TheaterSystem extends createSystem({}) {
       this.painter.creature(st, x, y, 0.42, 0, false, Math.sin(time * 2 + k * 1.7) > 0.97, 0.9);
     }
     const a = Math.min(ease(t / 0.8), 1 - ease((t - FINALE_TIME + 1) / 1));
-    this.painter.caption(`${n} shadows woke tonight.`, a, 0.2);
+    this.painter.caption(FINALE_CAPTION, a, 0.2);
     this.painter.caption('Come back after dark for new shapes.', a * 0.8, -0.24);
     if (t >= FINALE_TIME) this.newNight();
   }
