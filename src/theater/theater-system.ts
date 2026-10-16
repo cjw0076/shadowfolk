@@ -24,6 +24,7 @@ import { captureControl } from '../capture.js';
 import { Moon, isFullMoon, moonPhase } from './moon.js';
 import { PreviewRoom } from './preview-room.js';
 import { WallLayer } from './wall.js';
+import { LightRays } from './rays.js';
 import { xrRenderStatusLine } from './xr-render.js';
 
 const TARGET_CY = 0.02;
@@ -167,6 +168,8 @@ export class TheaterSystem extends createSystem({
   private demoDelay = Number(new URLSearchParams(typeof location !== 'undefined' ? location.search : '').get('demoDelay')) || 0;
   /** `?demoDepth` (filming): before forming a shape, the demo hand moves toward the lantern and back. */
   private demoDepth = typeof location !== 'undefined' && new URLSearchParams(location.search).has('demoDepth');
+  /** `?rays` (explainer): draw the lantern's light rays through each hand onto the paper. */
+  private rays = typeof location !== 'undefined' && new URLSearchParams(location.search).has('rays') ? new LightRays() : null;
   private lit = 1; // lantern brightness 0..1
   private litTarget = 1;
   private awaitingLight = false;
@@ -255,6 +258,7 @@ export class TheaterSystem extends createSystem({
       this.puppeteer.root, this.puppeteer2.root, this.wall.root, this.preview.root, this.dim.mesh, this.glowLight]) {
       this.world.createTransformEntity(o);
     }
+    if (this.rays) this.world.createTransformEntity(this.rays.lines);
     this.baked = TARGETS.map(bakeTarget);
     this.stencils = this.baked.map((b) =>
       makeStencil(b.flats, 1, b.def.eyes));
@@ -1097,13 +1101,16 @@ export class TheaterSystem extends createSystem({
     this.live.clear();
     let casters = 0;
     const L = this.lanternPos;
+    this.rays?.begin();
     for (const h of this.allHands) {
       if (!h.valid) continue;
       projectFromLight(h.joints, h.radii, L.x, L.y, L.z, this.frame, h.flat);
       if (!h.flat.valid) continue;
       drawHand(this.live, h.flat);
+      this.rays?.add(h.joints, L, this.frame, this.phase === Phase.Seek ? 1 : 0.35);
       casters++;
     }
+    this.rays?.end();
     if (this.awaitingLight && casters > 0 && this.shadowOnPaper()) {
       this.awaitingLight = false;
       this.litTarget = 1;
