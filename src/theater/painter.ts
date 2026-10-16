@@ -84,6 +84,7 @@ export interface Stencil {
   inkBlink: CanvasTexture;
   cutTexture: CanvasTexture;
   glowTexture: CanvasTexture;
+  revealTexture: CanvasTexture;
   /** Sprite size in screen metres; sprite centre in screen metres. */
   w: number;
   h: number;
@@ -208,6 +209,34 @@ export function makeStencil(hands: FlatHand | FlatHand[], scale: number, eyes: r
     }
   }
   cctx.putImageData(charPixels, 0, 0);
+  const [reveal, revealContext] = canvas(w, h);
+  let weightedX = 0, weightedY = 0, weight = 0;
+  for (let row = 0; row < h; row++) for (let column = 0; column < w; column++) {
+    const alpha = charPixels.data[(row * w + column) * 4 + 3];
+    if (alpha < 128) continue;
+    weightedX += column * alpha;
+    weightedY += row * alpha;
+    weight += alpha;
+  }
+  const centreX = weight ? weightedX / weight : w / 2;
+  const centreY = weight ? weightedY / weight : h / 2;
+  let maxRadius = 1;
+  for (let row = 0; row < h; row++) for (let column = 0; column < w; column++) {
+    if (charPixels.data[(row * w + column) * 4 + 3] < 128) continue;
+    maxRadius = Math.max(maxRadius, Math.hypot(column - centreX, row - centreY));
+  }
+  const revealPixels = revealContext.createImageData(w, h);
+  for (let row = 0; row < h; row++) for (let column = 0; column < w; column++) {
+    const distance = Math.min(255, 255 * Math.hypot(column - centreX, row - centreY) / maxRadius);
+    const pixel = (row * w + column) * 4;
+    revealPixels.data[pixel] = revealPixels.data[pixel + 1] = revealPixels.data[pixel + 2] = distance;
+    revealPixels.data[pixel + 3] = 255;
+  }
+  revealContext.putImageData(revealPixels, 0, 0);
+  const revealTexture = new CanvasTexture(reveal);
+  revealTexture.generateMipmaps = false;
+  revealTexture.minFilter = LinearFilter;
+  revealTexture.magFilter = LinearFilter;
   const [glow, gctx] = canvas(w, h);
   gctx.filter = 'blur(16px)';
   gctx.drawImage(ink, 0, 0);
@@ -260,7 +289,7 @@ export function makeStencil(hands: FlatHand | FlatHand[], scale: number, eyes: r
     cx: ((minX + maxX) / 2) * scale, cy: ((minY + maxY) / 2) * scale,
     eyes: eyePts,
     inkOpen: openTexture, inkBlink: texture(eyeSprite(true)),
-    cutTexture: texture(cut), glowTexture: texture(glow),
+    cutTexture: texture(cut), glowTexture: texture(glow), revealTexture,
   };
 }
 
@@ -270,6 +299,8 @@ interface CreatureLayer {
   turn: Vector2;
   wake: { value: number };
   time: { value: number };
+  fill: { value: number };
+  field: { value: CanvasTexture | null };
 }
 
 interface CaptionLayer {
@@ -296,6 +327,9 @@ export class ScreenPainter {
   private shadowMesh: Mesh<PlaneGeometry, MeshBasicMaterial>;
   private cutMesh: Mesh<PlaneGeometry, MeshBasicMaterial>;
   private glowMesh: Mesh<PlaneGeometry, MeshBasicMaterial>;
+  private reveal = { value: 1 };
+  private flare = { value: 0 };
+  private revealMap: { value: CanvasTexture | null } = { value: null };
   private creatures: CreatureLayer[] = [];
   private creatureCount = 0;
   private captions: CaptionLayer[] = [];
@@ -325,6 +359,25 @@ export class ScreenPainter {
     // covers the hole blocks the light through it, so a fitted shadow fills the shape), then creatures.
     this.glowMesh = this.overlay(1, new PlaneGeometry(1, 1), true);
     this.cutMesh = this.overlay(2, new PlaneGeometry(1, 1));
+    for (const mesh of [this.glowMesh, this.cutMesh]) {
+      const glowing = mesh === this.glowMesh;
+      mesh.material.onBeforeCompile = shader => {
+        shader.uniforms.burnProgress = this.reveal;
+        shader.uniforms.burnFlare = this.flare;
+        shader.uniforms.burnField = this.revealMap;
+        shader.vertexShader = `varying vec2 vBurnUv;\n${shader.vertexShader}`
+          .replace('#include <begin_vertex>', '#include <begin_vertex>\n            vBurnUv = uv;');
+        shader.fragmentShader = `varying vec2 vBurnUv;\nuniform float burnProgress;\nuniform float burnFlare;\nuniform sampler2D burnField;\n${shader.fragmentShader}`
+          .replace('#include <map_fragment>', `#include <map_fragment>
+            float burnDistance = texture2D(burnField, vBurnUv).r;
+            float burnGrain = fract(sin(dot(floor(vBurnUv * vec2(191.0, 137.0)), vec2(127.1, 311.7))) * 43758.5453);
+            float burnFront = burnDistance + (burnGrain - 0.5) * 0.055;
+            float burnVisible = burnProgress >= 0.999 ? 1.0 : 1.0 - smoothstep(burnProgress - 0.025, burnProgress + 0.025, burnFront);
+            float burnEdge = burnProgress >= 0.999 ? 0.0 : 1.0 - smoothstep(0.0, 0.045, abs(burnFront - burnProgress));
+            diffuseColor.a *= ${glowing ? 'max(burnVisible, burnEdge * 0.85)' : 'burnVisible'};
+            diffuseColor.rgb += vec3(1.2, 0.55, 0.12) * (burnEdge * ${glowing ? '0.75' : '0.35'} + burnFlare * ${glowing ? '1.5' : '0.45'});`);
+      };
+    }
     this.shadowMesh = this.overlay(3, new PlaneGeometry(SCREEN_W, SCREEN_H));
     this.shadowMesh.material.map = this.softTexture;
     this.shadowMesh.material.color.set(INK);
@@ -334,18 +387,22 @@ export class ScreenPainter {
       const turn = new Vector2(1, 0);
       const wake = { value: 0 };
       const time = { value: 0 };
+      const fill = { value: 1 };
+      const field: { value: CanvasTexture | null } = { value: null };
       mesh.material.onBeforeCompile = shader => {
         shader.uniforms.paperClip = { value: clip };
         shader.uniforms.paperTurn = { value: turn };
         shader.uniforms.inkWake = wake;
         shader.uniforms.inkTime = time;
+        shader.uniforms.inkFill = fill;
+        shader.uniforms.inkField = field;
         shader.vertexShader = `uniform vec4 paperClip;\nuniform vec2 paperTurn;\nvarying vec2 vPaperPoint;\nvarying vec2 vInkUv;\n${shader.vertexShader}`
           .replace('#include <begin_vertex>', `#include <begin_vertex>
             vInkUv = uv;
             vec2 spritePoint = position.xy * paperClip.zw;
             vPaperPoint = paperClip.xy + vec2(spritePoint.x * paperTurn.x - spritePoint.y * paperTurn.y,
               spritePoint.x * paperTurn.y + spritePoint.y * paperTurn.x);`);
-        shader.fragmentShader = `varying vec2 vPaperPoint;\nvarying vec2 vInkUv;\nuniform float inkWake;\nuniform float inkTime;\n${shader.fragmentShader}`
+        shader.fragmentShader = `varying vec2 vPaperPoint;\nvarying vec2 vInkUv;\nuniform float inkWake;\nuniform float inkTime;\nuniform float inkFill;\nuniform sampler2D inkField;\n${shader.fragmentShader}`
           .replace('void main() {', `void main() {
             if (abs(vPaperPoint.x) > ${SCREEN_W / 2} || abs(vPaperPoint.y) > ${SCREEN_H / 2}) discard;`)
           .replace('#include <map_fragment>', `#include <map_fragment>
@@ -353,9 +410,13 @@ export class ScreenPainter {
             float grain = fract(sin(dot(floor(vInkUv * vec2(220.0, 160.0)), vec2(127.1, 311.7))) * 43758.5453);
             float drift = 0.5 + 0.25 * sin(vInkUv.x * 149.0 + inkTime * 4.0)
               + 0.25 * sin(vInkUv.y * 233.0 - inkTime * 2.7);
-            diffuseColor.a *= 1.0 - inkWake * edgeBand * smoothstep(0.36, 0.75, grain * 0.5 + drift * 0.5);`);
+            diffuseColor.a *= 1.0 - inkWake * edgeBand * smoothstep(0.36, 0.75, grain * 0.5 + drift * 0.5);
+            if (inkFill < 0.999) {
+              float fillDistance = texture2D(inkField, vInkUv).r;
+              diffuseColor.a *= smoothstep(1.0 - inkFill - 0.035, 1.0 - inkFill + 0.035, fillDistance);
+            }`);
       };
-      this.creatures.push({ mesh, clip, turn, wake, time });
+      this.creatures.push({ mesh, clip, turn, wake, time, fill, field });
     }
     const [sparkCanvas, sparkContext] = canvas(32, 32);
     const sparkGradient = sparkContext.createRadialGradient(16, 16, 0, 16, 16, 16);
@@ -487,8 +548,11 @@ export class ScreenPainter {
   }
 
   /** Cut-out of the creature to match, glowing with closeness. */
-  target(st: Stencil, cx: number, cy: number, glow: number, time: number): void {
+  target(st: Stencil, cx: number, cy: number, glow: number, time: number, reveal = 1, flare = 0): void {
     const started = perf ? performance.now() : 0;
+    this.reveal.value = Math.max(0, Math.min(1, reveal));
+    this.flare.value = Math.max(0, Math.min(1, flare));
+    this.revealMap.value = st.revealTexture;
     this.cutMesh.material.map = st.cutTexture;
     this.cutMesh.material.opacity = 0.8 + 0.12 * Math.sin(time * 1.7);
     this.cutMesh.position.set(cx + st.cx, cy + st.cy, 0.0012);
@@ -531,14 +595,14 @@ export class ScreenPainter {
 
   /** A woken creature: ink silhouette with a blinking eye. */
   creature(st: Stencil, cx: number, cy: number, scale: number, rot: number, flipX: boolean, blink: boolean, alpha: number,
-    wake = 0, time = 0): void {
+    wake = 0, time = 0, stretchX = 1, stretchY = 1, fill = 1): void {
     const started = perf ? performance.now() : 0;
     if (this.creatureCount >= this.creatures.length) return;
     const layer = this.creatures[this.creatureCount++];
-    const width = st.w * scale;
-    const height = st.h * scale;
-    const x = cx + st.cx * scale;
-    const y = cy + st.cy * scale;
+    const width = st.w * scale * stretchX;
+    const height = st.h * scale * stretchY;
+    const x = cx + st.cx * scale * stretchX;
+    const y = cy + st.cy * scale * stretchY;
     const direction = flipX ? -1 : 1;
     layer.mesh.material.map = blink ? st.inkBlink : st.inkOpen;
     layer.mesh.material.opacity = alpha;
@@ -549,6 +613,8 @@ export class ScreenPainter {
     layer.turn.set(Math.cos(rot), -Math.sin(rot));
     layer.wake.value = wake;
     layer.time.value = time;
+    layer.fill.value = fill;
+    layer.field.value = st.revealTexture;
     layer.mesh.visible = alpha > 0;
     perf?.endCall('creature', started);
   }
