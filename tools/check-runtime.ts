@@ -40,11 +40,15 @@ export async function run(): Promise<string[]> {
     localStorage.removeItem('shadow-theater.v1');
     const { system: s, world, state, frame, ref } = make();
     let starts = 0, pauses = 0, disposed = 0;
-    s.audio = { start() { starts++; }, pause() { pauses++; }, setHold() {}, rustle() {}, chime() {}, bloom() {}, voice() {}, note() {}, settle() {}, dispose() { disposed++; } };
+    s.audio = { start() { starts++; }, pause() { pauses++; }, setHold() {}, rustle() {}, bloom() {},
+      chime() {}, voice() {}, note() {}, settle() {}, dispose() { disposed++; } };
     s.init();
     s.demo = false;
     try {
-      check(s.painter.canvas.width === 1024 && s.painter.canvas.height === 676 && !s.painter.texture.generateMipmaps, 'canvas dimensions / no dynamic mip chain');
+      check(s.painter.canvas.width === 1024 && s.painter.canvas.height === 676
+        && s.painter.soft.width === 256 && s.painter.soft.height === 169
+        && s.screen.paper === s.painter.paperMesh && s.painter.root.children.length >= 4
+        && !s.painter.texture.generateMipmaps, 'layered paper dimensions / no dynamic mip chain');
       s.update(1 / 60, 0);
       state.value = VisibilityState.Visible;
       s.update(1 / 60, 10);
