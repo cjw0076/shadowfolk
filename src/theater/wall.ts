@@ -5,7 +5,7 @@
  * lives in the room and grows night after night.
  */
 import {
-  CanvasTexture, Group, Matrix4, Mesh, MeshBasicMaterial, PlaneGeometry, SRGBColorSpace, Vector3,
+  CanvasTexture, Group, LinearFilter, Matrix4, Mesh, MeshBasicMaterial, PlaneGeometry, SRGBColorSpace, Vector3,
 } from '@iwsdk/core';
 import type { Stencil } from './painter.js';
 import { WallFit, wallClearance } from './room.js';
@@ -28,42 +28,94 @@ interface Leaper {
   t0: number;
 }
 
+interface WallInk { ink: CanvasTexture; eyes: CanvasTexture }
+interface WallSprite {
+  group: Group;
+  ink: Mesh<PlaneGeometry, MeshBasicMaterial>;
+  eyesOpen: Mesh<PlaneGeometry, MeshBasicMaterial>;
+  eyesBlink: Mesh<PlaneGeometry, MeshBasicMaterial>;
+  stencil: Stencil | null;
+}
+
 const ease = (t: number) => (t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t));
 
 export class WallLayer {
   readonly root = new Group();
-  private mesh: Mesh;
-  private canvas = document.createElement('canvas');
-  private ctx = this.canvas.getContext('2d')!;
+  private frame = new Group();
+  private mesh: Mesh<PlaneGeometry, MeshBasicMaterial>;
   private bg = document.createElement('canvas');
-  private texture = new CanvasTexture(this.canvas);
+  private texture = new CanvasTexture(this.bg);
+  private inkGeometry = new PlaneGeometry(1, 1);
+  private eyeOpenGeometry = new PlaneGeometry(1, 1);
+  private eyeBlinkGeometry = new PlaneGeometry(1, 1);
+  private sprites: WallSprite[] = [];
+  private leapSprite: WallSprite;
   private fit: WallFit | null = null;
   private x0 = 0; private y1 = 0; private wM = 1; private hM = 1;
+  private cx = 0; private cy = 0;
   private residents: Resident[] = [];
   private slots: [number, number][] = [];
   private leaper: Leaper | null = null;
   private start: [number, number] = [0, 0];
   private startScale = 1;
-  private lastDraw = -1;
-  private dirty = true;
   private celebrate = 0;
   /** Woken shadows grow with the wall's distance behind the paper. */
   private scale = 1;
-  private soft = new Map<Stencil, HTMLCanvasElement>();
+  private soft = new Map<Stencil, WallInk>();
   private v = new Vector3();
   private w = new Vector3();
   private basis = new Matrix4();
 
   constructor() {
     this.root.name = 'WallShadows';
+    this.bg.dataset.shadowfolkWallUpload = 'background';
     this.texture.colorSpace = SRGBColorSpace;
+    this.texture.generateMipmaps = false;
+    this.texture.minFilter = LinearFilter;
+    this.texture.magFilter = LinearFilter;
     this.mesh = new Mesh(
       new PlaneGeometry(1, 1),
       new MeshBasicMaterial({ map: this.texture, transparent: true, depthWrite: false, toneMapped: false }),
     );
     this.mesh.renderOrder = -1;
-    this.root.add(this.mesh);
+    this.frame.add(this.mesh);
+    this.root.add(this.frame);
+    for (let index = 0; index < 4; index++) {
+      this.eyeOpenGeometry.attributes.uv.setX(index, this.eyeOpenGeometry.attributes.uv.getX(index) * 0.5);
+      this.eyeBlinkGeometry.attributes.uv.setX(index, 0.5 + this.eyeBlinkGeometry.attributes.uv.getX(index) * 0.5);
+    }
+    this.leapSprite = this.makeSprite(3);
     this.root.visible = false;
+  }
+
+  private makeSprite(order: number): WallSprite {
+    const group = new Group();
+    const material = () => new MeshBasicMaterial({ transparent: true, depthWrite: false, toneMapped: false });
+    const ink = new Mesh(this.inkGeometry, material());
+    const eyesOpen = new Mesh(this.eyeOpenGeometry, material());
+    const eyesBlink = new Mesh(this.eyeBlinkGeometry, material());
+    ink.position.z = 0.0004;
+    eyesOpen.position.z = eyesBlink.position.z = 0.0008;
+    ink.renderOrder = order;
+    eyesOpen.renderOrder = eyesBlink.renderOrder = order + 1;
+    ink.material.opacity = 0.6;
+    eyesOpen.material.opacity = eyesBlink.material.opacity = 0;
+    group.add(ink, eyesOpen, eyesBlink);
+    group.visible = false;
+    this.frame.add(group);
+    return { group, ink, eyesOpen, eyesBlink, stencil: null };
+  }
+
+  private setStencil(sprite: WallSprite, stencil: Stencil): void {
+    if (sprite.stencil === stencil) return;
+    const textures = this.softInk(stencil);
+    sprite.ink.material.map = textures.ink;
+    sprite.eyesOpen.material.map = textures.eyes;
+    sprite.eyesBlink.material.map = textures.eyes;
+    sprite.ink.material.needsUpdate = true;
+    sprite.eyesOpen.material.needsUpdate = true;
+    sprite.eyesBlink.material.needsUpdate = true;
+    sprite.stencil = stencil;
   }
 
   /** Called when a leaping shadow reaches its place on the wall. */
@@ -137,17 +189,17 @@ export class WallLayer {
       minY = Math.min(minY, y - 0.25); maxY = Math.max(maxY, y + 0.25);
     }
     const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+    this.cx = cx; this.cy = cy;
     this.wM = Math.min(MAX_W, maxX - minX); this.hM = Math.min(MAX_H, maxY - minY);
     this.x0 = cx - this.wM / 2; this.y1 = cy + this.hM / 2;
-    this.canvas.width = this.bg.width = Math.ceil(this.wM * PX);
-    this.canvas.height = this.bg.height = Math.ceil(this.hM * PX);
-    this.texture.dispose();
+    this.bg.width = Math.ceil(this.wM * PX);
+    this.bg.height = Math.ceil(this.hM * PX);
 
     // Mesh sits 8 mm in front of the wall, spanning the canvas bounds.
     const o = this.v.copy(fit.point).addScaledVector(fit.right, cx).addScaledVector(fit.up, cy).addScaledVector(fit.normal, 0.008);
-    this.mesh.position.copy(o);
+    this.frame.position.copy(o);
+    this.frame.quaternion.setFromRotationMatrix(this.basis.makeBasis(fit.right, fit.up, fit.normal));
     this.mesh.scale.set(this.wM, this.hM, 1);
-    this.mesh.quaternion.setFromRotationMatrix(this.basis.makeBasis(fit.right, fit.up, fit.normal));
 
     // Background: lantern light pooling on the wall, the paper's own shadow inside it.
     const g = this.bg.getContext('2d')!;
@@ -168,8 +220,8 @@ export class WallLayer {
       g.fill();
       g.filter = 'none';
     }
+    this.texture.needsUpdate = true;
     this.root.visible = true;
-    this.dirty = true;
   }
 
   private toPx(x: number, y: number): [number, number] {
@@ -181,9 +233,12 @@ export class WallLayer {
     this.residents = [];
     list.forEach(({ id, st }, k) => {
       const slot = this.slots[k];
-      if (slot) this.residents.push({ id, st, x: slot[0], y: slot[1], seed: k * 1.37 });
+      if (!slot) return;
+      this.residents.push({ id, st, x: slot[0], y: slot[1], seed: k * 1.37 });
+      const sprite = this.sprites[k] ?? (this.sprites[k] = this.makeSprite(0));
+      this.setStencil(sprite, st);
     });
-    this.dirty = true;
+    for (let index = this.residents.length; index < this.sprites.length; index++) this.sprites[index].group.visible = false;
   }
 
   has(id: string): boolean { return this.residents.some((r) => r.id === id); }
@@ -197,83 +252,96 @@ export class WallLayer {
       if (!slot) return false;
       r = { id, st, x: slot[0], y: slot[1], seed: this.residents.length * 1.37 };
       this.residents.push(r);
+      const index = this.residents.length - 1;
+      const sprite = this.sprites[index] ?? (this.sprites[index] = this.makeSprite(0));
+      this.setStencil(sprite, st);
     }
+    this.setStencil(this.leapSprite, r.st);
     this.leaper = { r, fx: this.start[0], fy: this.start[1], fromScale: this.startScale, t0: time };
     return true;
   }
 
   /** Finale: the whole wall wakes up for a moment. */
-  cheer(level: number): void { this.celebrate = level; this.dirty = true; }
+  cheer(level: number): void { this.celebrate = level; }
 
   update(time: number): void {
     if (!this.fit) return;
-    const animating = this.leaper !== null || this.celebrate > 0;
-    // Redraw at ~30 Hz while something moves, ~6 Hz for idle blinks.
-    if (!this.dirty && time - this.lastDraw < (animating ? 0.033 : 0.16)) return;
-    this.lastDraw = time;
-    this.dirty = false;
-    const g = this.ctx;
-    g.clearRect(0, 0, this.canvas.width, this.canvas.height);
-    g.drawImage(this.bg, 0, 0);
-    for (const r of this.residents) {
-      if (this.leaper?.r === r) continue;
-      const hop = this.celebrate * Math.abs(Math.sin(time * 4 + r.seed * 3)) * 0.05;
-      this.drawShadow(r.st, r.x, r.y + hop, this.scale, 0, time, r.seed, 0.6);
+    let leaper = this.leaper;
+    if (leaper && time - leaper.t0 >= LEAP_TIME) {
+      this.leaper = leaper = null;
+      this.leapSprite.group.visible = false;
+      this.onSettle?.();
     }
-    const L = this.leaper;
-    if (L) {
-      const k = (time - L.t0) / LEAP_TIME;
-      if (k >= 1) {
-        this.leaper = null;
-        this.dirty = true;
-        this.onSettle?.();
-      } else {
-        const e = ease(k);
-        const x = L.fx + (L.r.x - L.fx) * e;
-        const arc = Math.sin(Math.PI * e) * 0.28 + Math.abs(Math.sin(k * Math.PI * 3)) * 0.04 * (1 - e);
-        const y = L.fy + (L.r.y - L.fy) * e + arc;
-        const s = L.fromScale + (this.scale - L.fromScale) * e;
-        this.drawShadow(L.r.st, x, y, s, Math.sin(k * Math.PI * 2) * 0.12, time, L.r.seed, 0.6);
+    for (let index = 0; index < this.residents.length; index++) {
+      const r = this.residents[index];
+      const sprite = this.sprites[index];
+      if (leaper?.r === r) { sprite.group.visible = false; continue; }
+      const hop = this.celebrate * Math.abs(Math.sin(time * 4 + r.seed * 3)) * 0.05;
+      this.placeSprite(sprite, r.x, r.y + hop, this.scale, 0, time, r.seed);
+    }
+    if (leaper) {
+      const k = (time - leaper.t0) / LEAP_TIME;
+      const e = ease(k);
+      const x = leaper.fx + (leaper.r.x - leaper.fx) * e;
+      const arc = Math.sin(Math.PI * e) * 0.28 + Math.abs(Math.sin(k * Math.PI * 3)) * 0.04 * (1 - e);
+      const y = leaper.fy + (leaper.r.y - leaper.fy) * e + arc;
+      const s = leaper.fromScale + (this.scale - leaper.fromScale) * e;
+      this.placeSprite(this.leapSprite, x, y, s, Math.sin(k * Math.PI * 2) * 0.12, time, leaper.r.seed);
+    }
+    else this.leapSprite.group.visible = false;
+  }
+
+  /** Ink and both eye states are baked once, then only sprite transforms change. */
+  private softInk(st: Stencil): WallInk {
+    let cached = this.soft.get(st);
+    if (cached) return cached;
+    const ink = document.createElement('canvas');
+    ink.width = st.ink.width;
+    ink.height = st.ink.height;
+    ink.dataset.shadowfolkWallUpload = 'sprite';
+    const inkContext = ink.getContext('2d')!;
+    inkContext.filter = 'blur(4px)';
+    inkContext.drawImage(st.ink, 0, 0);
+    const eyes = document.createElement('canvas');
+    eyes.width = st.ink.width * 2;
+    eyes.height = st.ink.height;
+    eyes.dataset.shadowfolkWallUpload = 'sprite';
+    const eyeContext = eyes.getContext('2d')!;
+    eyeContext.fillStyle = '#ffd9a0';
+    const pixelX = st.ink.width / (st.w * PX);
+    const pixelY = st.ink.height / (st.h * PX);
+    for (const [u, v] of st.eyes) {
+      for (let blink = 0; blink < 2; blink++) {
+        eyeContext.beginPath();
+        eyeContext.ellipse(
+          (u + blink) * st.ink.width, v * st.ink.height,
+          (blink ? 2.4 : 2.2) * pixelX, (blink ? 0.6 : 2.2) * pixelY,
+          0, 0, Math.PI * 2,
+        );
+        eyeContext.fill();
       }
     }
-    this.texture.needsUpdate = true;
+    const makeTexture = (source: HTMLCanvasElement): CanvasTexture => {
+      const result = new CanvasTexture(source);
+      result.colorSpace = SRGBColorSpace;
+      result.generateMipmaps = false;
+      result.minFilter = LinearFilter;
+      result.magFilter = LinearFilter;
+      return result;
+    };
+    cached = { ink: makeTexture(ink), eyes: makeTexture(eyes) };
+    this.soft.set(st, cached);
+    return cached;
   }
 
-  /** The creature's ink with a soft penumbra, rendered once per creature. */
-  private softInk(st: Stencil): HTMLCanvasElement {
-    let c = this.soft.get(st);
-    if (!c) {
-      c = document.createElement('canvas');
-      c.width = st.ink.width;
-      c.height = st.ink.height;
-      const g = c.getContext('2d')!;
-      g.filter = 'blur(4px)';
-      g.drawImage(st.ink, 0, 0);
-      this.soft.set(st, c);
-    }
-    return c;
-  }
-
-  private drawShadow(st: Stencil, x: number, y: number, scale: number, rot: number, time: number, seed: number, alpha: number): void {
-    const g = this.ctx;
-    const w = st.w * scale * PX, h = st.h * scale * PX;
-    const [px, py] = this.toPx(x, y);
-    g.save();
-    g.translate(px, py);
-    g.rotate(rot);
-    g.globalAlpha = alpha;
-    g.drawImage(this.softInk(st), -w / 2, -h / 2, w, h);
-    // Eyes: lantern light shining through the cut-out's eye holes.
+  private placeSprite(sprite: WallSprite, x: number, y: number, scale: number, rot: number, time: number, seed: number): void {
+    const stencil = sprite.stencil!;
+    sprite.group.position.set(x - this.cx, y - this.cy, 0);
+    sprite.group.rotation.z = -rot;
+    sprite.group.scale.set(stencil.w * scale, stencil.h * scale, 1);
     const blink = Math.sin(time * 0.7 + seed * 5.1) > 0.985;
-    g.globalAlpha = 0.95;
-    g.fillStyle = '#ffd9a0';
-    for (const [u, v] of st.eyes) {
-      const ex = -w / 2 + u * w, ey = -h / 2 + v * h;
-      g.beginPath();
-      if (blink) g.ellipse(ex, ey, 2.4 * scale, 0.6 * scale, 0, 0, Math.PI * 2);
-      else g.arc(ex, ey, 2.2 * scale, 0, Math.PI * 2);
-      g.fill();
-    }
-    g.restore();
+    sprite.eyesOpen.material.opacity = blink ? 0 : 0.95;
+    sprite.eyesBlink.material.opacity = blink ? 0.95 : 0;
+    sprite.group.visible = true;
   }
 }
