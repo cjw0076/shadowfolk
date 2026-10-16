@@ -3,10 +3,25 @@
   "units": "meters",
   "components": {
     "com.iwsdk.components.IBLGradient": {
-      "sky": [0.32, 0.28, 0.3, 1],
-      "equator": [0.42, 0.33, 0.28, 1],
-      "ground": [0.22, 0.17, 0.15, 1],
-      "intensity": 1
+      "sky": [
+        0.11,
+        0.14,
+        0.24,
+        1
+      ],
+      "equator": [
+        0.16,
+        0.13,
+        0.13,
+        1
+      ],
+      "ground": [
+        0.09,
+        0.07,
+        0.06,
+        1
+      ],
+      "intensity": 0.55
     }
   },
   "resources": {},
@@ -14,11 +29,26 @@
     {
       "id": "welcome-panel",
       "name": "Welcome Panel",
-      "content": { "type": "asset", "asset": "welcome-panel" },
-      "transform": { "position": [0, 1.6, -2], "scale": 0.4 },
+      "content": {
+        "type": "asset",
+        "asset": "welcome-panel"
+      },
+      "transform": {
+        "position": [
+          0,
+          1.6,
+          -2
+        ],
+        "scale": 0.4
+      },
       "components": {
         "RayInteractable": {},
-        "ScreenSpace": { "top": "20px", "left": "20px", "width": "25vw", "height": "40%" }
+        "ScreenSpace": {
+          "top": "20px",
+          "left": "20px",
+          "width": "25vw",
+          "height": "40%"
+        }
       }
     }
   ]
