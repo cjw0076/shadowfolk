@@ -46,15 +46,16 @@ function crabHalf(): HandPose {
   spread(p, 'thumb', 32); spread(p, 'index', 18); spread(p, 'middle', 4); spread(p, 'ring', -10); spread(p, 'pinky', -24);
   return orient(p, [0, 10, 92]);
 }
+// Stag v2 (agy-05): head side-on pointing left, antler hand behind it, fingers up.
 function stagHead(): HandPose {
   const p = shape(basePoses.relaxed(), { thumb: straight, index: straight, middle: straight, ring: 1, pinky: 1 });
-  spread(p, 'thumb', 32); spread(p, 'index', -2); spread(p, 'middle', 2);
-  return orient(p, [0, 25, 85]);
+  spread(p, 'index', 15); spread(p, 'middle', -15); spread(p, 'thumb', 10);
+  return orient(p, [0, 0, 80]);
 }
 function stagAntlers(): HandPose {
-  const p = shape(basePoses.relaxed(), { thumb: straight, index: straight, middle: straight, ring: straight, pinky: straight });
-  spread(p, 'thumb', 35); spread(p, 'index', 20); spread(p, 'ring', -18); spread(p, 'pinky', -32);
-  return orient(p, [0, 10, -25]);
+  const p = shape(basePoses.relaxed(), { thumb: -0.1, index: straight, middle: straight, ring: straight, pinky: straight });
+  spread(p, 'thumb', -10); spread(p, 'index', 18); spread(p, 'middle', 4); spread(p, 'ring', -12); spread(p, 'pinky', -26);
+  return orient(p, [0, 0, 10]);
 }
 
 export const TARGETS: readonly TargetDef[] = [
@@ -147,7 +148,7 @@ export const TARGETS: readonly TargetDef[] = [
     motion: 'stalk',
     eyes: [[5, 10, 0.45, 0]],
     build: stagHead,
-    partner: { build: stagAntlers, offset: [0.055, 0.095, 0.025] },
+    partner: { build: stagAntlers, offset: [0.015, 0.065, 0.025] },
   },
   {
     id: 'crab',

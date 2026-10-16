@@ -20,6 +20,7 @@ import { SCREEN_H, SCREEN_W, ScreenPainter, Stencil, makeStencil } from './paint
 import { RigAnchor } from './anchor.js';
 import { LANTERN_ON_TABLE, Surface, TableFit, WallFit, fitPinWall, fitTable, fitWall } from './room.js';
 import { GhostHand, Lantern, PaperScreen, buildLantern, buildScreen } from './stage.js';
+import { PreviewRoom } from './preview-room.js';
 import { WallLayer } from './wall.js';
 
 const TARGET_CY = 0.02;
@@ -119,6 +120,7 @@ export class TheaterSystem extends createSystem({
 
   // Room awareness: a table to stand on, a wall to live on, an anchor to return to.
   private wall = new WallLayer();
+  private preview = new PreviewRoom(); // stand-in room for the browser preview
   private rigAnchor = new RigAnchor();
   private table: TableFit | null = null;
   private mode: RigMode = 'float';
@@ -192,7 +194,7 @@ export class TheaterSystem extends createSystem({
     this.puppeteer = new GhostHand('DemoHand', '#c99877', true);
     this.puppeteer2 = new GhostHand('DemoHand2', '#c99877', true);
     for (const o of [this.lantern.root, this.screen.root, this.ghost.root, this.ghost2.root,
-      this.puppeteer.root, this.puppeteer2.root, this.wall.root]) {
+      this.puppeteer.root, this.puppeteer2.root, this.wall.root, this.preview.root]) {
       this.world.createTransformEntity(o);
     }
     this.baked = TARGETS.map(bakeTarget);
@@ -221,6 +223,7 @@ export class TheaterSystem extends createSystem({
         this.immersive = state !== VisibilityState.NonImmersive;
         // Night backdrop for the browser preview; passthrough shows the room in XR.
         this.scene.background = this.immersive ? null : this.night;
+        this.preview.root.visible = !this.immersive;
         if (this.immersive !== wasImmersive) {
           this.resetTracking();
           this.handsSeenAt = -1;
@@ -410,12 +413,15 @@ export class TheaterSystem extends createSystem({
     this.lantern.setStand(0);
     this.wall.layout(null, this.lanternPos, head, [], this.v1, 1, 0);
     this.placed = true;
-    this.fitUntil = this.immersive ? time + FIT_WINDOW : 0;
+    this.fitUntil = this.immersive ? time + FIT_WINDOW : time;
     this.nextFit = time + 0.3;
+    // The preview room is known at once: settle on its table straight away.
+    if (!this.immersive) this.tryFit(time);
   }
 
   /** Planes and table meshes from the room model, as plain surfaces. */
   private surfaces(): Surface[] {
+    if (!this.immersive) return this.preview.surfaces;
     const out: Surface[] = [];
     const q = this.queries as Partial<typeof this.queries> | undefined;
     for (const e of q?.planes?.entities ?? []) {
@@ -488,7 +494,7 @@ export class TheaterSystem extends createSystem({
     let wall: WallFit | null = null;
     if (this.mode === 'pinned' && this.pinWall) {
       wall = { ...this.pinWall, point: this.screenCentre.clone().addScaledVector(this.fwd, PIN_STANDOFF), distance: PIN_STANDOFF };
-    } else if (this.immersive) {
+    } else {
       wall = fitWall(this.surfaces(), this.lanternPos, this.screenCentre, this.fwd);
     }
     const c = this.screenCentre, r = this.right, hw = SCREEN_W / 2, hh = SCREEN_H / 2;
@@ -555,6 +561,18 @@ export class TheaterSystem extends createSystem({
     return this.stencils[TARGETS.findIndex((t) => t.id === id)];
   }
 
+  /** Ease the rig onto the surface it was fitted to; lay out the wall when it lands. */
+  private tickSettle(time: number): void {
+    if (!this.settle) return;
+    const k = ease((time - this.settle.t0) / SETTLE_TIME);
+    const f = this.v2.copy(this.settle.fromFwd).lerp(this.settle.toFwd, k).normalize();
+    this.layout(this.v3.copy(this.settle.from).lerp(this.settle.to, k), this.q1v.copy(f));
+    if (k >= 1) {
+      this.settle = null;
+      this.finishLayout(this.immersive);
+    }
+  }
+
   /** Per frame: follow the anchor, animate settling, keep fitting while the room loads. */
   private tendStage(dt: number, time: number): void {
     if (!this.immersive) return;
@@ -563,13 +581,7 @@ export class TheaterSystem extends createSystem({
     const ref = xr.getReferenceSpace?.();
     if (this.restore === 'ready' && frame && ref) this.adoptAnchor(frame, ref);
     if (this.settle) {
-      const k = ease((time - this.settle.t0) / SETTLE_TIME);
-      const f = this.v2.copy(this.settle.fromFwd).lerp(this.settle.toFwd, k).normalize();
-      this.layout(this.v3.copy(this.settle.from).lerp(this.settle.to, k), this.q1v.copy(f));
-      if (k >= 1) {
-        this.settle = null;
-        this.finishLayout(true);
-      }
+      this.tickSettle(time);
     } else if (this.fitUntil > 0 && time >= this.nextFit) {
       this.nextFit = time + 0.5;
       this.tryFit(time);
@@ -701,9 +713,10 @@ export class TheaterSystem extends createSystem({
     if (this.immersive) {
       this.tendStage(dt, time);
     } else {
-      // Browser preview keeps a fixed theater-seat view.
-      this.camera.position.set(0.3, 1.34, 0.42);
-      this.camera.lookAt(0.0, 1.06, -0.62);
+      // Browser preview keeps a fixed theater-seat view: lantern, paper and the wall above it.
+      this.tickSettle(time);
+      this.camera.position.set(0.5, 1.48, 0.95);
+      this.camera.lookAt(0.0, 1.2, -1.0);
     }
 
     this.readHands(time);
