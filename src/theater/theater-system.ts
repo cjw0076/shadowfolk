@@ -66,7 +66,7 @@ interface LiveHand {
   lastSeen: number;
 }
 
-interface Saved { nights: number; woken: Record<string, number>; order?: string[] }
+interface Saved { nights: number; woken: Record<string, number>; order?: string[]; carried?: boolean }
 
 function loadSaved(): Saved {
   try {
@@ -154,6 +154,11 @@ export class TheaterSystem extends createSystem({
   private oneHand = 0; // seconds a two-hand creature has seen only one shadow
   private fresh = -1; // index into TARGETS of tonight's newly joined creature
   private nightTitle = '';
+  // Carrying the theater: pinch the lantern to pick it up, open the pinch to set it down.
+  private carry: LiveHand | null = null;
+  private carryOffset = new Vector3();
+  private carryNear = 0; // 0..1 hover glow when a pinch is close to the lantern
+  private manual = false; // the player chose this spot by hand: never re-place on drift
   private nightTitleAt = -1;
   private finaleX = new Float32Array(16);
   private aPos = new Vector3();
@@ -443,6 +448,8 @@ export class TheaterSystem extends createSystem({
     this.table = null;
     this.mode = 'float';
     this.pinWall = null;
+    this.manual = false;
+    this.carry = null;
     this.screen.setPinned(false);
     this.settle = null;
     this.anchored = false;
@@ -547,7 +554,7 @@ export class TheaterSystem extends createSystem({
     const cell = { w: Math.max(...this.stencils.map((st) => st.w)), h: Math.max(...this.stencils.map((st) => st.h)) };
     this.wall.layout(wall, this.lanternPos, head, corners, exit, 1, TARGETS.length, cell);
     this.wall.setResidents(this.firstWoken().map((id) => ({ id, st: this.stencilOf(id) })));
-    if (createAnchor) {
+    if (createAnchor || (this.manual && this.immersive)) {
       const frame = this.renderer.xr.getFrame?.() as XRFrame | undefined;
       const ref = this.renderer.xr.getReferenceSpace?.();
       if (frame && ref) {
@@ -604,6 +611,87 @@ export class TheaterSystem extends createSystem({
     return this.stencils[TARGETS.findIndex((t) => t.id === id)];
   }
 
+  /** Thumb-tip to index-tip pinch of a tracked hand; returns the pinch point in `out`, or -1. */
+  private pinch(h: LiveHand, out: Vector3): number {
+    const j = h.joints;
+    const ax = j[4 * 3], ay = j[4 * 3 + 1], az = j[4 * 3 + 2];
+    const bx = j[9 * 3], by = j[9 * 3 + 1], bz = j[9 * 3 + 2];
+    out.set((ax + bx) / 2, (ay + by) / 2, (az + bz) / 2);
+    return Math.hypot(ax - bx, ay - by, az - bz);
+  }
+
+  /**
+   * Pinch the lantern to carry the whole theater; open the pinch to set it down.
+   * On release the room is fitted again around the new spot and the anchor is renewed.
+   */
+  private handleCarry(time: number): void {
+    const p = this.v1;
+    if (this.carry) {
+      const h = this.carry;
+      const d = h.valid ? this.pinch(h, p) : 1;
+      if (d > 0.035) {
+        this.carry = null;
+        this.audio.settle();
+        this.setDown(time);
+        return;
+      }
+      const head = this.camera.getWorldPosition(this.v0);
+      const lantern = this.v3.copy(p).add(this.carryOffset);
+      const fwd = this.v2.subVectors(lantern, head);
+      fwd.y = 0;
+      if (fwd.lengthSq() < 1e-4) return;
+      fwd.normalize();
+      this.layout(lantern, this.q1v.copy(fwd));
+      return;
+    }
+    let near = 0;
+    for (const h of this.hands) {
+      if (!h.valid) continue;
+      const d = this.pinch(h, p);
+      const r = p.distanceTo(this.lanternPos);
+      if (r < 0.14) near = Math.max(near, 1 - r / 0.14);
+      if (d < 0.018 && r < 0.07 && this.phase !== Phase.Wake) {
+        this.carry = h;
+        this.carryOffset.subVectors(this.lanternPos, p);
+        this.settle = null;
+        this.fitUntil = 0;
+        this.table = null;
+        this.pinWall = null;
+        this.mode = 'float';
+        this.screen.setPinned(false);
+        this.lantern.setStand(0);
+        this.wall.layout(null, this.lanternPos, this.v0, [], this.v1, 1, 0);
+        this.rigAnchor.release();
+        this.anchored = false;
+        this.audio.rustle();
+        this.saved.carried = true;
+        save(this.saved);
+        return;
+      }
+    }
+    this.carryNear += (near - this.carryNear) * 0.2;
+  }
+
+  /** Fit the room around where the player set the lantern down, then anchor it there. */
+  private setDown(time: number): void {
+    const head = this.camera.getWorldPosition(this.v0);
+    this.placedHead.copy(head);
+    this.defaultLantern.copy(this.lanternPos);
+    this.manual = true;
+    this.drift = 0;
+    const surfaces = this.surfaces();
+    const fit = fitTable(surfaces, this.lanternPos, this.fwd, this.right, SCREEN_W / 2 - 0.06, STAGE.lightToScreen, [0, -0.04, 0.04]);
+    if (fit && Math.abs(fit.top + LANTERN_ON_TABLE - this.lanternPos.y) < 0.12) {
+      this.table = fit;
+      this.mode = 'table';
+      const to = this.lanternPos.clone().addScaledVector(this.fwd, fit.shift);
+      to.y = fit.top + LANTERN_ON_TABLE;
+      this.startSettle(to, this.fwd.clone(), time);
+    } else {
+      this.finishLayout(true);
+    }
+  }
+
   /** Ease the rig onto the surface it was fitted to; lay out the wall when it lands. */
   private tickSettle(time: number): void {
     if (!this.settle) return;
@@ -638,7 +726,8 @@ export class TheaterSystem extends createSystem({
     }
     // Seated play: if the player settles somewhere else, bring the stage along.
     const head = this.camera.getWorldPosition(this.v0);
-    if (this.mode !== 'float') {
+    if (this.carry) return;
+    if (this.mode !== 'float' || this.manual) {
       const far = head.distanceTo(this.lanternPos) > 1.4;
       this.drift = far ? this.drift + dt : 0;
       if (this.drift > 5) this.place(time);
@@ -797,6 +886,7 @@ export class TheaterSystem extends createSystem({
     if (anyReal) this.handsSeenAt = time;
     else if (this.handsSeenAt < 0) this.handsSeenAt = time;
     const useDemo = this.demo || (!this.immersive && !anyReal);
+    if (this.immersive) this.handleCarry(time);
     this.phaseTime += dt;
 
     const target = this.baked[this.order[this.step % this.order.length]];
@@ -812,7 +902,8 @@ export class TheaterSystem extends createSystem({
     const flick = 0.92 + 0.05 * Math.sin(this.animationTime * 7.3) + 0.03 * Math.sin(this.animationTime * 17.1);
     const glow = (0.3 + 0.7 * this.lit) * flick;
     this.lantern.bodyMat.color.setRGB(glow, 0.81 * glow, 0.54 * glow);
-    this.lantern.halo.scale.setScalar((0.14 + 0.16 * this.lit) * (0.96 + 0.04 * flick));
+    // A pinch near the lantern swells its halo: it can be picked up.
+    this.lantern.halo.scale.setScalar((0.14 + 0.16 * this.lit) * (0.96 + 0.04 * flick) * (1 + 0.35 * this.carryNear + (this.carry ? 0.3 : 0)));
     this.lantern.halo.material.opacity = (0.38 + 0.18 * this.lit) * flick;
     (this.lantern.pool.material as MeshBasicMaterial).opacity = 0.32 * this.lit * flick;
     this.audio.tick(dt, this.lit);
@@ -910,6 +1001,10 @@ export class TheaterSystem extends createSystem({
       if (this.nightTitleAt < 0) this.nightTitleAt = time;
       const a = time - this.nightTitleAt;
       if (a < 4.2) this.painter.caption(this.nightTitle, Math.min(ease(a / 0.7), 1 - ease((a - 3.4) / 0.8)), 0.27);
+    }
+    // Once, after the first creature of a session: the theater can be carried by hand.
+    if (this.immersive && this.step === 1 && !this.saved.carried && this.phaseTime > 1 && this.phaseTime < 6) {
+      this.painter.caption('Pinch the lantern to carry the theater.', Math.min(ease((this.phaseTime - 1) / 0.6), 1 - ease((this.phaseTime - 5.2) / 0.8)), -0.27);
     }
     // A two-hand creature: say so when only one shadow keeps trying.
     if (target.partner && casters === 1) this.oneHand += dt; else this.oneHand = Math.max(0, this.oneHand - dt);
