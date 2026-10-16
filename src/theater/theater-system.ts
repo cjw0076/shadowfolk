@@ -1077,10 +1077,14 @@ export class TheaterSystem extends createSystem({
     const stencil = this.stencils[this.order[this.step % this.order.length]];
     const demoTarget = this.phase === Phase.Invent && this.inventTarget ? this.inventTarget : target;
     if (useDemo) this.driveDemo(demoTarget, this.animationTime); else this.demoHand.valid = this.demoHand2.valid = false;
-    this.puppeteer.opacity = this.demoHand.valid ? 1 : 0;
-    if (this.demoHand.valid) this.puppeteer.update(this.demoHand.joints, this.demoHand.radii);
-    this.puppeteer2.opacity = this.demoHand2.valid ? 1 : 0;
-    if (this.demoHand2.valid) this.puppeteer2.update(this.demoHand2.joints, this.demoHand2.radii);
+    // Filming in an emulator (`?capture` in XR): no passthrough shows the player's hands, so the wooden
+    // stand-in follows the real tracked joints. On a headset, real hands are seen through passthrough.
+    const shown = this.demoHand.valid ? this.demoHand : this.immersive && captureControl() && this.hands[0].valid ? this.hands[0] : null;
+    const shown2 = this.demoHand2.valid ? this.demoHand2 : this.immersive && captureControl() && this.hands[1].valid ? this.hands[1] : null;
+    this.puppeteer.opacity = shown ? 1 : 0;
+    if (shown) this.puppeteer.update(shown.joints, shown.radii);
+    this.puppeteer2.opacity = shown2 ? 1 : 0;
+    if (shown2) this.puppeteer2.update(shown2.joints, shown2.radii);
 
     // Lantern: a dim ember until a hand reaches its light, then a warm flicker.
     this.lit += (this.litTarget - this.lit) * Math.min(1, dt * 3.5);
