@@ -48,6 +48,10 @@ const HINT_AFTER = 7;
 const NIGHT_LENGTH = Math.min(5, TARGETS.length);
 const FIRST_NIGHT = NIGHT_LENGTH;
 const FINALE_CAPTION = `${NIGHT_LENGTH} shadows woke tonight.`;
+/** A name for each night, keyed by its newcomer; later nights are reunions. */
+const NIGHT_NAMES: Record<string, string> = {
+  first: 'The First Lantern', butterfly: 'Wings', heron: 'Long Legs', stag: 'Antlers', crab: 'The Tide',
+};
 /** Lantern brightness before the first hand reaches its light. */
 const EMBER = 0.18;
 const STORE_KEY = 'shadow-theater.v1';
@@ -149,6 +153,8 @@ export class TheaterSystem extends createSystem({
   private voiced = false;
   private oneHand = 0; // seconds a two-hand creature has seen only one shadow
   private fresh = -1; // index into TARGETS of tonight's newly joined creature
+  private nightTitle = '';
+  private nightTitleAt = -1;
   private finaleX = new Float32Array(16);
   private aPos = new Vector3();
   private aQuat = new Quaternion();
@@ -320,6 +326,9 @@ export class TheaterSystem extends createSystem({
         this.order = others.slice(0, NIGHT_LENGTH);
       }
     }
+    const key = nights === 0 ? 'first' : this.fresh >= 0 ? TARGETS[this.fresh].id : '';
+    this.nightTitle = `Night ${nights + 1} \u00b7 ${NIGHT_NAMES[key] ?? 'Old Friends'}`;
+    this.nightTitleAt = -1;
     this.step = 0;
     this.enter(Phase.Seek);
   }
@@ -895,6 +904,12 @@ export class TheaterSystem extends createSystem({
       const quiet = this.animationTime - Math.max(0, this.sessionAt);
       if (!casting && quiet > 5) this.painter.caption('Lift a hand into the lantern light.', ease((quiet - 5) / 0.8));
       else if (casting && this.phaseTime > 6 && close < 0.6) this.painter.caption('Fit your shadow to the shape.', 1);
+    }
+    // Tonight's name, once the lantern is lit, for a few seconds at the top of the paper.
+    if (this.step === 0 && this.lit > 0.7) {
+      if (this.nightTitleAt < 0) this.nightTitleAt = time;
+      const a = time - this.nightTitleAt;
+      if (a < 4.2) this.painter.caption(this.nightTitle, Math.min(ease(a / 0.7), 1 - ease((a - 3.4) / 0.8)), 0.27);
     }
     // A two-hand creature: say so when only one shadow keeps trying.
     if (target.partner && casters === 1) this.oneHand += dt; else this.oneHand = Math.max(0, this.oneHand - dt);
