@@ -273,18 +273,27 @@ export class TheaterSystem extends createSystem({}) {
     this.player.updateMatrixWorld(true);
     const e = this.player.matrixWorld.elements;
     for (const src of frame.session.inputSources) {
-      if (!src.hand) continue;
+      if (!src.hand || (src.handedness !== 'left' && src.handedness !== 'right')) continue;
       const h = this.hands[src.handedness === 'left' ? 0 : 1];
       let ok = true;
-      for (let j = 0; j < JOINT_COUNT; j++) {
-        const space = src.hand.get(JOINT_NAMES[j] as XRHandJoint);
-        const pose = space ? frame.getJointPose(space, ref) : undefined;
-        if (!pose) { ok = false; break; }
-        const p = pose.transform.position;
-        h.joints[j * 3] = e[0] * p.x + e[4] * p.y + e[8] * p.z + e[12];
-        h.joints[j * 3 + 1] = e[1] * p.x + e[5] * p.y + e[9] * p.z + e[13];
-        h.joints[j * 3 + 2] = e[2] * p.x + e[6] * p.y + e[10] * p.z + e[14];
-        h.radii[j] = pose.radius ?? 0.01;
+      try {
+        for (let j = 0; j < JOINT_COUNT; j++) {
+          const space = src.hand.get(JOINT_NAMES[j] as XRHandJoint);
+          const pose = space ? frame.getJointPose(space, ref) : undefined;
+          if (!pose) { ok = false; break; }
+          const p = pose.transform.position;
+          const radius = pose.radius ?? 0.01;
+          if (!Number.isFinite(p.x) || !Number.isFinite(p.y) || !Number.isFinite(p.z) || !Number.isFinite(radius) || radius <= 0) {
+            ok = false; break;
+          }
+          h.joints[j * 3] = e[0] * p.x + e[4] * p.y + e[8] * p.z + e[12];
+          h.joints[j * 3 + 1] = e[1] * p.x + e[5] * p.y + e[9] * p.z + e[13];
+          h.joints[j * 3 + 2] = e[2] * p.x + e[6] * p.y + e[10] * p.z + e[14];
+          h.radii[j] = radius;
+        }
+      } catch {
+        // A source/reference space can become stale as a session ends.
+        ok = false;
       }
       h.valid = ok;
       if (ok) h.lastSeen = time;
@@ -353,7 +362,15 @@ export class TheaterSystem extends createSystem({}) {
     }
 
     this.readHands(time);
-    const anyReal = this.hands[0].valid || this.hands[1].valid;
+    const handMask = (this.hands[0].valid ? 1 : 0) | (this.hands[1].valid ? 2 : 0);
+    if (this.handMask & ~handMask) {
+      // Tracking loss breaks a continuous hold, including loss of just one hand.
+      this.score = 0;
+      this.hold = 0;
+      this.audio.setHold(0);
+    }
+    this.handMask = handMask;
+    const anyReal = handMask !== 0;
     if (anyReal) this.handsSeenAt = time;
     else if (this.handsSeenAt < 0) this.handsSeenAt = time;
     const useDemo = this.demo || (!this.immersive && !anyReal);
@@ -407,7 +424,8 @@ export class TheaterSystem extends createSystem({}) {
     const raw = casting ? this.matcher.score(this.live, target.template) : 0;
     this.score += (raw - this.score) * Math.min(1, dt * 10);
     const close = Math.max(0, Math.min(1, (this.score - 0.3) / (target.pass - 0.3)));
-    if (this.score >= target.pass) this.hold += dt;
+    if (!casting) { this.score = 0; this.hold = 0; }
+    if (casting && this.score >= target.pass) this.hold += dt;
     else this.hold = Math.max(0, this.hold - dt * 1.5);
     this.audio.setHold(casting ? close * close : 0);
 
