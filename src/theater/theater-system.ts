@@ -105,6 +105,10 @@ export class TheaterSystem extends createSystem({}) {
   private saved: Saved = loadSaved();
   private demo = false;
   private immersive = false;
+  private visible = true;
+  private resumeFrame = false;
+  private handMask = 0;
+  private animationTime = 0;
   private night = new Color('#140e0c');
 
   // Scratch, allocated once.
@@ -144,22 +148,52 @@ export class TheaterSystem extends createSystem({}) {
 
     this.cleanupFuncs.push(
       this.world.visibilityState.subscribe((state) => {
+        const wasImmersive = this.immersive;
         this.immersive = state !== VisibilityState.NonImmersive;
         // Night backdrop for the browser preview; passthrough shows the room in XR.
         this.scene.background = this.immersive ? null : this.night;
-        if (state === VisibilityState.Visible) {
-          this.audio.start();
+        if (this.immersive !== wasImmersive) {
+          this.resetTracking();
           this.placed = false;
-          this.placeAt = performance.now() / 1000 + 0.5;
-        } else if (state === VisibilityState.NonImmersive) {
-          this.placed = false;
-          this.placeAt = 0;
+          // The next update establishes the deadline in the world's clock domain.
+          this.placeAt = this.immersive ? -1 : 0;
+          this.handsSeenAt = -1;
+          this.resumeFrame = true;
         }
+        this.syncVisibility();
       }),
     );
-    const unlock = () => this.audio.start();
+    const onVisibility = () => this.syncVisibility();
+    document.addEventListener('visibilitychange', onVisibility);
+    this.cleanupFuncs.push(() => document.removeEventListener('visibilitychange', onVisibility));
+    const unlock = () => { if (this.visible) this.audio.start(); };
     window.addEventListener('pointerdown', unlock);
-    this.cleanupFuncs.push(() => window.removeEventListener('pointerdown', unlock));
+    this.cleanupFuncs.push(() => window.removeEventListener('pointerdown', unlock), () => this.audio.dispose());
+  }
+
+  /** System menus and background tabs pause the night without moving the rig. */
+  private syncVisibility(): void {
+    const state = this.world.visibilityState.peek();
+    const visible = !document.hidden && (state === VisibilityState.NonImmersive || state === VisibilityState.Visible);
+    if (visible === this.visible) {
+      if (visible && this.immersive) this.audio.start();
+      return;
+    }
+    this.visible = visible;
+    this.resumeFrame = true;
+    this.resetTracking();
+    if (visible) this.audio.start(); else this.audio.pause();
+  }
+
+  private resetTracking(): void {
+    this.hold = 0;
+    this.score = 0;
+    this.handMask = 0;
+    this.drift = 0;
+    for (const hand of this.allHands) { hand.valid = false; hand.flat.valid = false; }
+    this.ghost.opacity = 0;
+    this.puppeteer.opacity = 0;
+    this.audio.setHold(0);
   }
 
   /** Seeded order for tonight; the very first night opens with the open hand. */
@@ -300,7 +334,11 @@ export class TheaterSystem extends createSystem({}) {
   }
 
   private updateFrame(delta: number, time: number): void {
-    const dt = Math.min(delta, 0.05);
+    if (!this.visible) return;
+    const dt = this.resumeFrame ? 0 : Math.max(0, Math.min(delta, 0.05));
+    this.resumeFrame = false;
+    this.animationTime += dt;
+    if (this.placeAt < 0) this.placeAt = time + 0.5;
     if (!this.placed && time >= this.placeAt) this.place();
     if (!this.placed) return;
     if (this.immersive) {
@@ -317,17 +355,18 @@ export class TheaterSystem extends createSystem({}) {
     this.readHands(time);
     const anyReal = this.hands[0].valid || this.hands[1].valid;
     if (anyReal) this.handsSeenAt = time;
+    else if (this.handsSeenAt < 0) this.handsSeenAt = time;
     const useDemo = this.demo || (!this.immersive && !anyReal);
     this.phaseTime += dt;
 
     const target = this.baked[this.order[this.step % this.order.length]];
     const stencil = this.stencils[this.order[this.step % this.order.length]];
-    if (useDemo) this.driveDemo(target, time); else this.demoHand.valid = false;
+    if (useDemo) this.driveDemo(target, this.animationTime); else this.demoHand.valid = false;
     this.puppeteer.opacity = this.demoHand.valid ? 1 : 0;
     if (this.demoHand.valid) this.puppeteer.update(this.demoHand.joints, this.demoHand.radii);
 
     // Lantern flicker.
-    const flick = 0.92 + 0.05 * Math.sin(time * 7.3) + 0.03 * Math.sin(time * 17.1);
+    const flick = 0.92 + 0.05 * Math.sin(this.animationTime * 7.3) + 0.03 * Math.sin(this.animationTime * 17.1);
     this.lantern.bodyMat.color.setRGB(1 * flick, 0.81 * flick, 0.54 * flick);
     this.lantern.halo.scale.setScalar(0.24 + 0.02 * flick);
 
@@ -346,12 +385,12 @@ export class TheaterSystem extends createSystem({}) {
     }
 
     switch (this.phase) {
-      case Phase.Seek: this.seek(target, stencil, casting, dt, time); break;
-      case Phase.Wake: this.wake(target, stencil, time); break;
+      case Phase.Seek: this.seek(target, stencil, casting, dt, this.animationTime); break;
+      case Phase.Wake: this.wake(target, stencil, this.animationTime); break;
       case Phase.Rest:
         if (this.phaseTime >= REST_TIME) this.enter(Phase.Seek);
         break;
-      case Phase.Finale: this.finale(time); break;
+      case Phase.Finale: this.finale(this.animationTime); break;
     }
 
     for (const h of this.allHands) if (h.valid && h.flat.valid) p.shadow(h.flat);
