@@ -7,7 +7,9 @@ const logs = [];
 page.on('console', (m) => { if (m.type() === 'error' || m.type() === 'warning') logs.push(m.text().slice(0, 200)); });
 page.on('pageerror', (e) => logs.push('pageerror ' + String(e).slice(0, 200)));
 await page.goto(url, { waitUntil: 'load' });
+if (process.env.CLICK) { await page.waitForTimeout(2000); await page.mouse.click(1200, 700); }
 await page.waitForTimeout(Number(wait));
+if (process.env.CLICK) console.log('audio state:', await page.evaluate(() => window.__theaterAudioState?.() ?? 'n/a'));
 await page.screenshot({ path: out });
 console.log(JSON.stringify(logs.filter((l) => /uikit|font|parse|style|error/i.test(l)).slice(0, 8), null, 1));
 await browser.close();

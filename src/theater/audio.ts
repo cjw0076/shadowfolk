@@ -19,6 +19,12 @@ export class TheaterAudio {
   private master?: GainNode;
   /** Send bus into a small synthetic room reverb (chimes, voices, notes). */
   private send?: GainNode;
+  /** Spatial buses: the lantern (drone, hum, flame) and the stage (creatures, chimes). */
+  private lanternOut?: GainNode;
+  private stageOut?: GainNode;
+  private lanternPan?: PannerNode;
+  private stagePan?: PannerNode;
+  private bus: 'lantern' | 'stage' = 'stage';
   private crackleIn = 0.6;
   private hum?: { osc: OscillatorNode; gain: GainNode };
   private noise?: AudioBuffer;
@@ -65,13 +71,29 @@ export class TheaterAudio {
     send.connect(verb);
     this.send = send;
 
+    // Spatial buses. Live sessions place them in the room with HRTF panners; the offline
+    // soundtrack (mono video audio) mixes them straight into the master.
+    const busOut = (): [GainNode, PannerNode | undefined] => {
+      const g = ctx.createGain();
+      if (this.offline || typeof ctx.createPanner !== 'function') { g.connect(master); return [g, undefined]; }
+      const pan = ctx.createPanner();
+      pan.panningModel = 'HRTF';
+      pan.distanceModel = 'inverse';
+      pan.refDistance = 0.6;
+      pan.rolloffFactor = 0.7;
+      g.connect(pan).connect(master);
+      return [g, pan];
+    };
+    [this.lanternOut, this.lanternPan] = busOut();
+    [this.stageOut, this.stagePan] = busOut();
+
     // Lantern drone: two soft detuned tones through a low-pass, slowly breathing.
     const lp = ctx.createBiquadFilter();
     lp.type = 'lowpass';
     lp.frequency.value = 420;
     const drone = ctx.createGain();
     drone.gain.value = 0.035;
-    lp.connect(drone).connect(master);
+    lp.connect(drone).connect(this.lanternOut!);
     for (const f of [110, 164.8, 220.5]) {
       const o = ctx.createOscillator();
       o.type = 'sine';
@@ -91,7 +113,7 @@ export class TheaterAudio {
     osc.type = 'triangle';
     osc.frequency.value = 330;
     gain.gain.value = 0;
-    osc.connect(gain).connect(master);
+    osc.connect(gain).connect(this.lanternOut!);
     osc.start();
     this.hum = { osc, gain };
 
@@ -103,6 +125,28 @@ export class TheaterAudio {
   }
 
   private now(): number { return this.at ?? this.ctx!.currentTime; }
+
+  private out(): AudioNode { return (this.bus === 'lantern' ? this.lanternOut : this.stageOut) ?? this.master!; }
+
+  /** Place the listener (head) and the two sound sources in world space; call every frame. */
+  place(head: { x: number; y: number; z: number }, fwd: { x: number; y: number; z: number },
+    up: { x: number; y: number; z: number }, lantern: { x: number; y: number; z: number },
+    stage: { x: number; y: number; z: number }): void {
+    const ctx = this.ctx as AudioContext | undefined;
+    if (!ctx || this.offline || !this.lanternPan || !this.stagePan) return;
+    const l = ctx.listener;
+    if (l.positionX) {
+      const t = ctx.currentTime;
+      l.positionX.setTargetAtTime(head.x, t, 0.02); l.positionY.setTargetAtTime(head.y, t, 0.02); l.positionZ.setTargetAtTime(head.z, t, 0.02);
+      l.forwardX.setTargetAtTime(fwd.x, t, 0.02); l.forwardY.setTargetAtTime(fwd.y, t, 0.02); l.forwardZ.setTargetAtTime(fwd.z, t, 0.02);
+      l.upX.setTargetAtTime(up.x, t, 0.02); l.upY.setTargetAtTime(up.y, t, 0.02); l.upZ.setTargetAtTime(up.z, t, 0.02);
+    } else {
+      l.setPosition(head.x, head.y, head.z);
+      l.setOrientation(fwd.x, fwd.y, fwd.z, up.x, up.y, up.z);
+    }
+    this.lanternPan.positionX.value = lantern.x; this.lanternPan.positionY.value = lantern.y; this.lanternPan.positionZ.value = lantern.z;
+    this.stagePan.positionX.value = stage.x; this.stagePan.positionY.value = stage.y; this.stagePan.positionZ.value = stage.z;
+  }
 
   /** Render a recorded cue list with the same synth, for a video soundtrack. */
   static async renderOffline(cues: readonly Cue[], duration: number, sampleRate = 24000): Promise<AudioBuffer> {
@@ -189,7 +233,7 @@ export class TheaterAudio {
     g.gain.setValueAtTime(0, t);
     g.gain.linearRampToValueAtTime(peak, t + Math.min(0.02, dur * 0.2));
     g.gain.exponentialRampToValueAtTime(0.0005, t + dur);
-    o.connect(g).connect(this.master!);
+    o.connect(g).connect(this.out());
     if (wet && this.send) g.connect(this.send);
     o.start(t);
     o.stop(t + dur + 0.05);
@@ -209,7 +253,7 @@ export class TheaterAudio {
     const g = ctx.createGain();
     g.gain.setValueAtTime(peak, t);
     g.gain.exponentialRampToValueAtTime(0.0005, t + dur);
-    src.connect(bp).connect(g).connect(this.master!);
+    src.connect(bp).connect(g).connect(this.out());
     if (wet && this.send) g.connect(this.send);
     src.start(t);
     src.stop(t + dur + 0.05);
@@ -219,7 +263,9 @@ export class TheaterAudio {
   crackle(level: number): void {
     this.onCue?.('crackle', +level.toFixed(2));
     if (!this.live()) return; // no context yet (before the first gesture): nothing to schedule
+    this.bus = 'lantern';
     this.burst(2800 + 2400 * ((this.now() * 7.31) % 1), 9, 0, 0.025, 0.035 * level, false);
+    this.bus = 'stage';
   }
 
   /** Call every frame: the flame crackles now and then while the lantern burns. */
@@ -234,8 +280,10 @@ export class TheaterAudio {
   /** The lantern blooms when the first hand enters its light. */
   bloom(): void {
     this.onCue?.('bloom');
+    this.bus = 'lantern';
     for (const [k, f] of [196, 246.9, 293.7, 392].entries()) this.tone(f, f, k * 0.06, 2.6, 0.05);
     this.burst(900, 0.5, 0, 0.7, 0.05);
+    this.bus = 'stage';
   }
 
   /** Each creature's small voice as it wakes. */

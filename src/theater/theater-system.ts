@@ -805,6 +805,12 @@ export class TheaterSystem extends createSystem({
     this.lantern.halo.material.opacity = (0.38 + 0.18 * this.lit) * flick;
     (this.lantern.pool.material as MeshBasicMaterial).opacity = 0.32 * this.lit * flick;
     this.audio.tick(dt, this.lit);
+    // Spatial sound: the listener is the head; the flame sits in the lantern, creatures on the paper.
+    this.camera.getWorldPosition(this.v1);
+    this.camera.getWorldQuaternion(this.q0);
+    this.v2.set(0, 0, -1).applyQuaternion(this.q0);
+    this.v3.set(0, 1, 0).applyQuaternion(this.q0);
+    this.audio.place(this.v1, this.v2, this.v3, this.lanternPos, this.screenCentre);
     this.glowLight.position.copy(this.lanternPos);
     this.glowLight.intensity = (0.12 + 0.95 * this.lit) * flick;
     this.wall.setLight(this.lit);
