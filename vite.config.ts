@@ -12,7 +12,8 @@ export default defineConfig({
   plugins: [iwsdkDev()],
   server: {
     host: '127.0.0.1',
-    port: 8081,
+    port: Number(process.env.SHADOWFOLK_DEV_PORT ?? 8081),
+    strictPort: true,
     open: false,
     // This shared host runs out of inotify watches (ENOSPC), which crashed the dev
     // server whenever a file was added. Poll instead, and skip folders Vite never serves.

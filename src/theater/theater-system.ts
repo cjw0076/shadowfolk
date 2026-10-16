@@ -547,8 +547,10 @@ export class TheaterSystem extends createSystem({
       const o = e.object3D;
       if (!o || !e.getValue(XRMesh, 'isBounded3D')) continue;
       const label = (e.getValue(XRMesh, 'semanticLabel') as string) ?? '';
-      if (label !== 'table') continue;
-      out.push({ label, object: o, box: new Box3().setFromObject(o), orientation: 'horizontal' });
+      const box = new Box3().setFromObject(o);
+      const size = box.getSize(new Vector3());
+      if (size.x * size.y * size.z > 50) continue;
+      out.push({ label, object: o, box, orientation: label === 'table' ? 'horizontal' : 'unknown' });
     }
     return out;
   }
