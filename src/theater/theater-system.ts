@@ -182,6 +182,10 @@ export class TheaterSystem extends createSystem({
   private inventId = '';
   private inventName = '';
   private inventTarget: BakedTarget | null = null;
+  // The woken creature follows the hand that made it, until it walks away.
+  private wakeC0: { cx: number; cy: number } | null = null;
+  private follow = { x: 0, y: 0, vx: 0 };
+  private wakeMo: Moments = { area: 0, cx: 0, cy: 0 };
   // Carrying the theater: pinch the lantern to pick it up, open the pinch to set it down.
   private carry: LiveHand | null = null;
   private carryOffset = new Vector3();
@@ -938,7 +942,9 @@ export class TheaterSystem extends createSystem({
     const k = seeking ? ease((this.phaseTime - 1.0 - this.demoDelay) / 2.2) : 1;
     // While the lantern waits as an ember, the demo hand first rises into its light from below.
     const rise = this.awaitingLight ? -0.32 * (1 - ease((this.phaseTime - 0.6) / 1.6)) : 0;
-    const dropFrom = this.phase === Phase.Invent ? this.phaseTime - this.inventBornAt : this.phaseTime;
+    // After a wake the demo hand lingers, sways (the creature follows it), then lowers as it walks off.
+    const dropFrom = this.phase === Phase.Invent ? this.phaseTime - this.inventBornAt
+      : this.phase === Phase.Wake ? this.phaseTime - WALK_AT : this.phaseTime;
     const lift = (seeking ? rise : -ease(dropFrom / 0.8) * 0.25) + 0.012 * Math.sin(t * 1.3);
     const live = this.phase !== Phase.Finale;
     this.blendDemo(this.demoHand, this.ghostPose, this.demoFrom, target.pose, k, lift, target.shifts[0], this.posePositions, t);
@@ -961,6 +967,11 @@ export class TheaterSystem extends createSystem({
     this.poseToWorld(tmp, pos, lift, shift);
     // A touch of drift so the shadow breathes like a real hand.
     for (let j = 0; j < JOINT_COUNT; j++) pos[j * 3] += 0.006 * Math.sin(t * 0.9);
+    if (this.phase === Phase.Wake && this.phaseTime < WALK_AT) {
+      // Sway sideways so the just-woken creature visibly follows the hand.
+      const sw = 0.035 * Math.sin(this.phaseTime * 4.5), f = this.frame;
+      for (let j = 0; j < JOINT_COUNT; j++) { pos[j * 3] += sw * f.rx; pos[j * 3 + 1] += sw * f.ry; pos[j * 3 + 2] += sw * f.rz; }
+    }
     hand.joints.set(pos);
     hand.radii.set(to.radii);
   }
@@ -1186,6 +1197,9 @@ export class TheaterSystem extends createSystem({
       if (!order.includes(id)) order.push(id);
       save(this.saved);
       this.ghost.opacity = this.ghost2.opacity = 0;
+      moments(this.live, this.wakeMo);
+      this.wakeC0 = this.wakeMo.area > 4 ? { cx: this.wakeMo.cx, cy: this.wakeMo.cy } : null;
+      this.follow.x = this.follow.y = this.follow.vx = 0;
       this.enter(Phase.Wake);
     }
   }
@@ -1196,9 +1210,22 @@ export class TheaterSystem extends createSystem({
       this.voiced = true;
       this.audio.voice(target.def.motion);
     }
-    // It comes alive in place, then walks off the paper's right edge (onto the wall, if there is one).
+    // It comes alive in place and, until it walks off, follows the hand that made it:
+    // move the hand and the creature moves with it. Then it walks off the paper's right edge.
+    if (this.wakeC0 && t < WALK_AT) {
+      moments(this.live, this.wakeMo);
+      if (this.wakeMo.area > 4) {
+        const tx = Math.max(-0.18, Math.min(0.18, this.wakeMo.cx - this.wakeC0.cx));
+        const ty = Math.max(-0.06, Math.min(0.12, this.wakeMo.cy - this.wakeC0.cy));
+        const px = this.follow.x;
+        this.follow.x += (tx - this.follow.x) * 0.25;
+        this.follow.y += (ty - this.follow.y) * 0.25;
+        this.follow.vx = this.follow.x - px;
+      }
+    }
     const walk = ease((t - WALK_AT) / WALK_TIME);
-    let x = walk * (SCREEN_W / 2 + stencil.w / 2 + 0.03), y = TARGET_CY, rot = 0, sc = 1;
+    let x = this.follow.x + walk * (SCREEN_W / 2 + stencil.w / 2 + 0.03 - this.follow.x * 0.5), y = TARGET_CY + this.follow.y * (1 - walk);
+    let rot = Math.max(-0.25, Math.min(0.25, -this.follow.vx * 6)), sc = 1;
     switch (target.def.motion) {
       case 'hop': y += Math.abs(Math.sin(Math.max(0, t - 0.4) * Math.PI * 1.6)) * 0.05; break;
       case 'swim': y += Math.sin(t * 4) * 0.018; rot = Math.cos(t * 4) * 0.08; break;
