@@ -67,6 +67,7 @@ function save(s: Saved): void {
   try { localStorage.setItem(STORE_KEY, JSON.stringify(s)); } catch { /* ignore */ }
 }
 
+const ZERO3 = [0, 0, 0] as const;
 const ease = (t: number) => (t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t));
 
 export class TheaterSystem extends createSystem({
@@ -78,7 +79,9 @@ export class TheaterSystem extends createSystem({
   private lantern!: Lantern;
   private screen!: PaperScreen;
   private ghost!: GhostHand;
+  private ghost2!: GhostHand; // second hint hand for two-hand creatures
   private puppeteer!: GhostHand; // visible demo hand in the browser preview
+  private puppeteer2!: GhostHand;
   private baked!: BakedTarget[];
   private stencils!: Stencil[];
 
@@ -116,6 +119,7 @@ export class TheaterSystem extends createSystem({
   private allHands: LiveHand[] = [];
   private mirrored: HandPose[] = [];
   private demoHand!: LiveHand;
+  private demoHand2!: LiveHand;
   private live = new Mask(170, 120, -0.68, -0.48, 0.008);
   private matcher = new Matcher();
 
@@ -142,7 +146,10 @@ export class TheaterSystem extends createSystem({
   private m0 = new Matrix4();
   private posePositions = new Float32Array(JOINT_COUNT * 3);
   private demoFrom!: HandPose;
+  private demoFrom2!: HandPose;
   private ghostPose!: HandPose;
+  private ghostPose2!: HandPose;
+  private posePositions2 = new Float32Array(JOINT_COUNT * 3);
 
   init(): void {
     this.demo = new URLSearchParams(location.search).has('demo');
@@ -150,23 +157,29 @@ export class TheaterSystem extends createSystem({
     this.lantern = buildLantern();
     this.screen = buildScreen(this.painter.texture);
     this.ghost = new GhostHand();
+    this.ghost2 = new GhostHand('GhostHand2');
     this.puppeteer = new GhostHand('DemoHand', '#c99877', true);
-    for (const o of [this.lantern.root, this.screen.root, this.ghost.root, this.puppeteer.root, this.wall.root]) {
+    this.puppeteer2 = new GhostHand('DemoHand2', '#c99877', true);
+    for (const o of [this.lantern.root, this.screen.root, this.ghost.root, this.ghost2.root,
+      this.puppeteer.root, this.puppeteer2.root, this.wall.root]) {
       this.world.createTransformEntity(o);
     }
     this.baked = TARGETS.map(bakeTarget);
     this.stencils = this.baked.map((b) =>
-      makeStencil(b.flat, 1, b.def.eyes));
+      makeStencil(b.flats, 1, b.def.eyes));
     const mk = (): LiveHand => ({
       joints: new Float32Array(JOINT_COUNT * 3), radii: new Float32Array(JOINT_COUNT),
       flat: new FlatHand(), valid: false, lastSeen: -1,
     });
     this.hands = [mk(), mk()];
     this.demoHand = mk();
-    this.allHands = [...this.hands, this.demoHand];
+    this.demoHand2 = mk();
+    this.allHands = [...this.hands, this.demoHand, this.demoHand2];
     this.mirrored = this.baked.map((b) => mirror(b.pose));
     this.demoFrom = basePoses.relaxed();
+    this.demoFrom2 = mirror(basePoses.relaxed());
     this.ghostPose = basePoses.relaxed();
+    this.ghostPose2 = basePoses.relaxed();
     this.newNight();
     if (import.meta.env.DEV) (window as unknown as { __theater: unknown }).__theater = this;
 
@@ -516,7 +529,7 @@ export class TheaterSystem extends createSystem({
   }
 
   /** Lay a hand-space pose out in the world around the anchor, facing the lantern. */
-  private poseToWorld(p: HandPose, out: Float32Array, lift: number): void {
+  private poseToWorld(p: HandPose, out: Float32Array, lift: number, shift: readonly number[] = ZERO3): void {
     let cx = 0, cy = 0, cz = 0;
     for (let j = 0; j < JOINT_COUNT; j++) {
       cx += p.mats[j * 16 + 12]; cy += p.mats[j * 16 + 13]; cz += p.mats[j * 16 + 14];
@@ -524,28 +537,42 @@ export class TheaterSystem extends createSystem({
     cx /= JOINT_COUNT; cy /= JOINT_COUNT; cz /= JOINT_COUNT;
     const f = this.frame, a = this.anchor;
     for (let j = 0; j < JOINT_COUNT; j++) {
-      const x = p.mats[j * 16 + 12] - cx, y = p.mats[j * 16 + 13] - cy + lift, z = p.mats[j * 16 + 14] - cz;
+      const x = p.mats[j * 16 + 12] - cx + shift[0];
+      const y = p.mats[j * 16 + 13] - cy + lift + shift[1];
+      const z = p.mats[j * 16 + 14] - cz + shift[2];
       out[j * 3] = a.x + x * f.rx + y * f.ux + z * f.nx;
       out[j * 3 + 1] = a.y + x * f.ry + y * f.uy + z * f.ny;
       out[j * 3 + 2] = a.z + x * f.rz + y * f.uz + z * f.nz;
     }
   }
 
-  /** Browser/demo hand: eases from a relaxed hand into tonight's shape. */
+  /** Browser/demo hands: ease from relaxed hands into tonight's shape. */
   private driveDemo(target: BakedTarget, t: number): void {
     const k = this.phase === Phase.Seek ? ease((this.phaseTime - 1.0) / 2.2) : 1;
-    const drop = this.phase === Phase.Seek ? 0 : -ease(this.phaseTime / 0.8) * 0.25;
-    const from = this.demoFrom.mats, to = target.pose.mats, pos = this.posePositions;
-    // Interpolate joint positions only; the pose's own matrices stay untouched.
-    const tmp = this.ghostPose;
-    for (let i = 0; i < from.length; i++) tmp.mats[i] = from[i] + (to[i] - from[i]) * k;
-    tmp.radii.set(target.pose.radii);
-    this.poseToWorld(tmp, pos, drop + 0.012 * Math.sin(t * 1.3));
+    const lift = (this.phase === Phase.Seek ? 0 : -ease(this.phaseTime / 0.8) * 0.25) + 0.012 * Math.sin(t * 1.3);
+    const live = this.phase !== Phase.Finale;
+    this.blendDemo(this.demoHand, this.ghostPose, this.demoFrom, target.pose, k, lift, target.shifts[0], this.posePositions, t);
+    this.demoHand.valid = live;
+    if (target.partner) {
+      this.blendDemo(this.demoHand2, this.ghostPose2, this.demoFrom2, target.partner, k, lift, target.shifts[1], this.posePositions2, t);
+      this.demoHand2.valid = live;
+    } else {
+      this.demoHand2.valid = false;
+    }
+  }
+
+  private blendDemo(
+    hand: LiveHand, tmp: HandPose, from: HandPose, to: HandPose, k: number, lift: number,
+    shift: readonly number[], pos: Float32Array, t: number,
+  ): void {
+    // Interpolate joint positions only; the poses' own matrices stay untouched.
+    for (let i = 0; i < from.mats.length; i++) tmp.mats[i] = from.mats[i] + (to.mats[i] - from.mats[i]) * k;
+    tmp.radii.set(to.radii);
+    this.poseToWorld(tmp, pos, lift, shift);
     // A touch of drift so the shadow breathes like a real hand.
     for (let j = 0; j < JOINT_COUNT; j++) pos[j * 3] += 0.006 * Math.sin(t * 0.9);
-    this.demoHand.joints.set(pos);
-    this.demoHand.radii.set(target.pose.radii);
-    this.demoHand.valid = this.phase !== Phase.Finale;
+    hand.joints.set(pos);
+    hand.radii.set(to.radii);
   }
 
   update(delta: number, time: number): void {
@@ -569,9 +596,11 @@ export class TheaterSystem extends createSystem({
 
     const target = this.baked[this.order[this.step % this.order.length]];
     const stencil = this.stencils[this.order[this.step % this.order.length]];
-    if (useDemo) this.driveDemo(target, time); else this.demoHand.valid = false;
+    if (useDemo) this.driveDemo(target, time); else this.demoHand.valid = this.demoHand2.valid = false;
     this.puppeteer.opacity = this.demoHand.valid ? 1 : 0;
     if (this.demoHand.valid) this.puppeteer.update(this.demoHand.joints, this.demoHand.radii);
+    this.puppeteer2.opacity = this.demoHand2.valid ? 1 : 0;
+    if (this.demoHand2.valid) this.puppeteer2.update(this.demoHand2.joints, this.demoHand2.radii);
 
     // Lantern flicker.
     const flick = 0.92 + 0.05 * Math.sin(time * 7.3) + 0.03 * Math.sin(time * 17.1);
@@ -582,18 +611,18 @@ export class TheaterSystem extends createSystem({
     const p = this.painter;
     p.begin();
     this.live.clear();
-    let casting = false;
+    let casters = 0;
     const L = this.lanternPos;
     for (const h of this.allHands) {
       if (!h.valid) continue;
       projectFromLight(h.joints, h.radii, L.x, L.y, L.z, this.frame, h.flat);
       if (!h.flat.valid) continue;
       drawHand(this.live, h.flat);
-      casting = true;
+      casters++;
     }
 
     switch (this.phase) {
-      case Phase.Seek: this.seek(target, stencil, casting, dt, time); break;
+      case Phase.Seek: this.seek(target, stencil, casters, dt, time); break;
       case Phase.Wake: this.wake(target, stencil, time); break;
       case Phase.Rest:
         if (this.phaseTime >= REST_TIME) this.enter(Phase.Seek);
@@ -612,8 +641,10 @@ export class TheaterSystem extends createSystem({
     this.wall.update(time);
   }
 
-  private seek(target: BakedTarget, stencil: Stencil, casting: boolean, dt: number, time: number): void {
-    const raw = casting ? this.matcher.score(this.live, target.template) : 0;
+  private seek(target: BakedTarget, stencil: Stencil, casters: number, dt: number, time: number): void {
+    const casting = casters > 0;
+    // A two-hand creature only wakes for two shadows.
+    const raw = casters >= (target.partner ? 2 : 1) ? this.matcher.score(this.live, target.template) : 0;
     this.score += (raw - this.score) * Math.min(1, dt * 10);
     const close = Math.max(0, Math.min(1, (this.score - 0.3) / (target.pass - 0.3)));
     if (this.score >= target.pass) this.hold += dt;
@@ -632,12 +663,20 @@ export class TheaterSystem extends createSystem({
     if (close < 0.85) this.stuck += dt; else this.stuck = Math.max(0, this.stuck - dt);
     const hint = ease((this.stuck - HINT_AFTER) / 1.5);
     if (hint > 0 && !this.demo) {
-      const right = this.hands[1].valid || !this.hands[0].valid;
-      const pose = right ? this.mirrored[this.baked.indexOf(target)] : target.pose;
-      this.poseToWorld(pose, this.posePositions, 0.0);
-      this.ghost.update(this.posePositions, pose.radii);
+      if (target.partner) {
+        this.poseToWorld(target.pose, this.posePositions, 0.0, target.shifts[0]);
+        this.ghost.update(this.posePositions, target.pose.radii);
+        this.poseToWorld(target.partner, this.posePositions2, 0.0, target.shifts[1]);
+        this.ghost2.update(this.posePositions2, target.partner.radii);
+      } else {
+        const right = this.hands[1].valid || !this.hands[0].valid;
+        const pose = right ? this.mirrored[this.baked.indexOf(target)] : target.pose;
+        this.poseToWorld(pose, this.posePositions, 0.0);
+        this.ghost.update(this.posePositions, pose.radii);
+      }
     }
     this.ghost.opacity = this.demo ? 0 : hint * (0.28 + 0.08 * Math.sin(time * 3));
+    this.ghost2.opacity = target.partner ? this.ghost.opacity : 0;
 
     if (this.hold >= HOLD_TO_WAKE) {
       this.audio.setHold(0);
@@ -647,7 +686,7 @@ export class TheaterSystem extends createSystem({
       const order = this.saved.order ?? (this.saved.order = Object.keys(this.saved.woken).filter((k) => k !== id));
       if (!order.includes(id)) order.push(id);
       save(this.saved);
-      this.ghost.opacity = 0;
+      this.ghost.opacity = this.ghost2.opacity = 0;
       this.enter(Phase.Wake);
     }
   }

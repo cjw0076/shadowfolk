@@ -4,7 +4,7 @@
  * the screen. Its orthographic shadow becomes the template the player's live
  * shadow must fit; the same pose drives the ghost-hand hint.
  */
-import { HandPose, basePoses, clonePose, orient, shape, spread } from './hand-model.js';
+import { HandPose, basePoses, clonePose, mirror, orient, shape, spread } from './hand-model.js';
 import { PASS } from './thresholds.js';
 import { HandPose as Pose, JOINT_COUNT } from './hand-model.js';
 import {
@@ -19,10 +19,19 @@ export interface TargetDef {
   /** One line of the night's story, told when the creature wakes. */
   line: string;
   motion: Motion;
-  /** Eyes, each placed between two joints: [jointA, jointB, t]. */
-  eyes: [number, number, number][];
+  /** Eyes, each placed between two joints: [jointA, jointB, t, hand?] (hand 1 = partner). */
+  eyes: Eye[];
+  /** The left hand's pose, in hand space (the matcher also accepts it mirrored). */
   build: () => HandPose;
+  /**
+   * Two-hand creatures: the second hand, built as a left-hand pose and
+   * mirrored into the right hand, with its centroid this far from the first
+   * hand's centroid (metres: +x right, +y up, +z toward the lantern).
+   */
+  partner?: { build: () => HandPose; offset: [number, number, number] };
 }
+
+export type Eye = [number, number, number] | [number, number, number, number];
 
 const straight = -0.32;
 
@@ -105,6 +114,11 @@ export const TARGETS: readonly TargetDef[] = [
 export interface BakedTarget {
   def: TargetDef;
   pose: HandPose;
+  /** Two-hand creatures: the right hand (already mirrored) and each hand's shift from the pair centre. */
+  partner?: HandPose;
+  shifts: [number, number, number][];
+  /** Every hand's ideal shadow (one, or two for a pair). */
+  flats: FlatHand[];
   template: Uint8Array; // NORM x NORM
   /** Weighted IoU needed to wake the creature (tools/eval-targets.ts). */
   pass: number;
@@ -122,33 +136,51 @@ const CANON: ScreenFrame = {
  * Cast a hand-space pose from the canonical lantern: the pose is centred on
  * the lantern-to-cut-out line at the natural hand distance, hand-space +Z toward the light.
  */
-export function castCanonical(p: Pose, out: FlatHand, joints = new Float32Array(JOINT_COUNT * 3)): FlatHand {
+export function castCanonical(
+  p: Pose, out: FlatHand, joints = new Float32Array(JOINT_COUNT * 3), shift: readonly number[] = [0, 0, 0],
+): FlatHand {
   let cx = 0, cy = 0, cz = 0;
   for (let j = 0; j < JOINT_COUNT; j++) {
     cx += p.mats[j * 16 + 12]; cy += p.mats[j * 16 + 13]; cz += p.mats[j * 16 + 14];
   }
   cx /= JOINT_COUNT; cy /= JOINT_COUNT; cz /= JOINT_COUNT;
   for (let j = 0; j < JOINT_COUNT; j++) {
-    joints[j * 3] = p.mats[j * 16 + 12] - cx;
-    joints[j * 3 + 1] = p.mats[j * 16 + 13] - cy + (STAGE.lightDrop * STAGE.lightToHand) / STAGE.lightToScreen;
-    joints[j * 3 + 2] = p.mats[j * 16 + 14] - cz - STAGE.lightToHand;
+    joints[j * 3] = p.mats[j * 16 + 12] - cx + shift[0];
+    joints[j * 3 + 1] = p.mats[j * 16 + 13] - cy + shift[1] + (STAGE.lightDrop * STAGE.lightToHand) / STAGE.lightToScreen;
+    joints[j * 3 + 2] = p.mats[j * 16 + 14] - cz + shift[2] - STAGE.lightToHand;
   }
   return projectFromLight(joints, p.radii, 0, 0, 0, CANON, out);
 }
 
-export function bakeTarget(def: TargetDef): BakedTarget {
+/** Hands of a target with each hand's shift from the pair centre (centroid to centroid). */
+export function targetHands(def: TargetDef): { poses: HandPose[]; shifts: [number, number, number][] } {
   const pose = def.build();
-  const flat = castCanonical(pose, new FlatHand());
+  if (!def.partner) return { poses: [pose], shifts: [[0, 0, 0]] };
+  const [ox, oy, oz] = def.partner.offset;
+  return {
+    poses: [pose, mirror(def.partner.build())],
+    shifts: [[-ox / 2, -oy / 2, -oz / 2], [ox / 2, oy / 2, oz / 2]],
+  };
+}
+
+export function bakeTarget(def: TargetDef): BakedTarget {
+  const { poses, shifts } = targetHands(def);
+  const flats = poses.map((p, k) => castCanonical(p, new FlatHand(), undefined, shifts[k]));
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-  for (let j = 0; j < flat.x.length; j++) {
-    minX = Math.min(minX, flat.x[j] - flat.r[j]); maxX = Math.max(maxX, flat.x[j] + flat.r[j]);
-    minY = Math.min(minY, flat.y[j] - flat.r[j]); maxY = Math.max(maxY, flat.y[j] + flat.r[j]);
+  for (const flat of flats) {
+    for (let j = 0; j < flat.x.length; j++) {
+      minX = Math.min(minX, flat.x[j] - flat.r[j]); maxX = Math.max(maxX, flat.x[j] + flat.r[j]);
+      minY = Math.min(minY, flat.y[j] - flat.r[j]); maxY = Math.max(maxY, flat.y[j] + flat.r[j]);
+    }
   }
   const cell = 0.003;
   const w = Math.ceil((maxX - minX) / cell) + 4, h = Math.ceil((maxY - minY) / cell) + 4;
   const display = new Mask(w, h, minX - 2 * cell, minY - 2 * cell, cell);
-  drawHand(display, flat);
+  for (const flat of flats) drawHand(display, flat);
   const template = new Uint8Array(NORM * NORM);
   normalise(display, moments(display, { area: 0, cx: 0, cy: 0 }), template);
-  return { def, pose, flat, template, display, pass: PASS[def.id] ?? 0.65 };
+  return {
+    def, pose: poses[0], partner: poses[1], shifts, flats, flat: flats[0],
+    template, display, pass: PASS[def.id] ?? 0.65,
+  };
 }

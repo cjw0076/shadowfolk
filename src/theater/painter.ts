@@ -71,11 +71,14 @@ function handPathGrown(ctx: CanvasRenderingContext2D, f: FlatHand, grow: number)
   }
 }
 
-export function makeStencil(f: FlatHand, scale: number, eyes: [number, number, number][]): Stencil {
+export function makeStencil(hands: FlatHand | FlatHand[], scale: number, eyes: readonly (readonly number[])[]): Stencil {
+  const fs = Array.isArray(hands) ? hands : [hands];
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-  for (let j = 0; j < f.x.length; j++) {
-    minX = Math.min(minX, f.x[j] - f.r[j]); maxX = Math.max(maxX, f.x[j] + f.r[j]);
-    minY = Math.min(minY, f.y[j] - f.r[j]); maxY = Math.max(maxY, f.y[j] + f.r[j]);
+  for (const f of fs) {
+    for (let j = 0; j < f.x.length; j++) {
+      minX = Math.min(minX, f.x[j] - f.r[j]); maxX = Math.max(maxX, f.x[j] + f.r[j]);
+      minY = Math.min(minY, f.y[j] - f.r[j]); maxY = Math.max(maxY, f.y[j] + f.r[j]);
+    }
   }
   const pad = 0.03; // metres of room for the glow
   const wM = (maxX - minX) * scale + 2 * pad, hM = (maxY - minY) * scale + 2 * pad;
@@ -85,16 +88,16 @@ export function makeStencil(f: FlatHand, scale: number, eyes: [number, number, n
   ictx.fillStyle = ictx.strokeStyle = INK;
   ictx.lineCap = 'round';
   ictx.lineJoin = 'round';
-  handPath(ictx, f);
+  for (const f of fs) handPath(ictx, f);
   // Cut-out: a hole in the paper with a thin scorched edge, lit from behind.
   const [cut, cctx] = canvas(w, h);
   cctx.setTransform(ictx.getTransform());
   cctx.lineCap = 'round';
   cctx.lineJoin = 'round';
   cctx.fillStyle = cctx.strokeStyle = 'rgba(92,58,34,0.85)';
-  handPathGrown(cctx, f, 0.0045 / scale);
+  for (const f of fs) handPathGrown(cctx, f, 0.0045 / scale);
   cctx.fillStyle = cctx.strokeStyle = '#fff4dc';
-  handPath(cctx, f);
+  for (const f of fs) handPath(cctx, f);
   const [glow, gctx] = canvas(w, h);
   gctx.filter = 'blur(9px)';
   gctx.drawImage(ink, 0, 0);
@@ -106,8 +109,10 @@ export function makeStencil(f: FlatHand, scale: number, eyes: [number, number, n
     (pad + (x - minX) * scale) / wM,
     1 - (pad + (y - minY) * scale) / hM,
   ];
-  const eyePts = eyes.map(([a, b, t]) =>
-    toSprite(f.x[a] + (f.x[b] - f.x[a]) * t, f.y[a] + (f.y[b] - f.y[a]) * t));
+  const eyePts = eyes.map(([a, b, t, hand = 0]) => {
+    const f = fs[Math.min(hand, fs.length - 1)];
+    return toSprite(f.x[a] + (f.x[b] - f.x[a]) * t, f.y[a] + (f.y[b] - f.y[a]) * t);
+  });
   return {
     ink, cut, glow, w: wM, h: hM,
     cx: ((minX + maxX) / 2) * scale, cy: ((minY + maxY) / 2) * scale,
