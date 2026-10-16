@@ -8,10 +8,10 @@ import {
   Box3, Color, Matrix4, MeshBasicMaterial, PointLight, Quaternion, Vector3, VisibilityState, XRMesh, XRPlane, createSystem,
 } from '@iwsdk/core';
 import {
-  HandPose, JOINT_COUNT, JOINT_NAMES, basePoses, mirror,
+  HandPose, JOINT_COUNT, JOINT_NAMES, basePoses, mirror, orient, shape, spread,
 } from '../shadow/hand-model.js';
 import {
-  FlatHand, Mask, Matcher, STAGE, ScreenFrame, drawHand, projectFromLight,
+  FlatHand, Mask, Matcher, Moments, STAGE, ScreenFrame, drawHand, moments, projectFromLight,
 } from '../shadow/silhouette.js';
 import { BakedTarget, TARGETS, bakeTarget } from '../shadow/targets.js';
 import { TheaterAudio } from './audio.js';
@@ -57,7 +57,19 @@ const NIGHT_NAMES: Record<string, string> = {
 const EMBER = 0.18;
 const STORE_KEY = 'shadow-theater.v1';
 
-enum Phase { Seek, Wake, Rest, Finale }
+enum Phase { Seek, Wake, Rest, Finale, Invent }
+
+const MAX_INVENTED = 8;
+const INVENT_HOLD = 1.4; // seconds a free shape must stay still to be born
+const INVENT_TIME = 14;
+const SYLLABLES = ['mo', 'ri', 'ka', 'lu', 'shi', 'no', 'pa', 'te', 'yo', 'fu', 'ki', 'ra', 'so', 'mi', 'ha', 'to'];
+
+function validInvented(v: unknown): v is Invented {
+  const o = v as Invented;
+  const arr = (a: unknown) => Array.isArray(a) && a.length === JOINT_COUNT && a.every((n) => Number.isFinite(n) && Math.abs(n) < 2);
+  return !!o && typeof o.id === 'string' && typeof o.name === 'string' && Array.isArray(o.hands) && o.hands.length >= 1 && o.hands.length <= 2
+    && o.hands.every((h) => h && arr(h.x) && arr(h.y) && arr(h.r)) && Array.isArray(o.eye) && o.eye.length === 4;
+}
 
 interface LiveHand {
   joints: Float32Array;
@@ -67,7 +79,9 @@ interface LiveHand {
   lastSeen: number;
 }
 
-interface Saved { nights: number; woken: Record<string, number>; order?: string[]; carried?: boolean }
+/** A shadow the player invented: its hands' flat shapes on the paper (metres), an eye, a name. */
+interface Invented { id: string; name: string; hands: { x: number[]; y: number[]; r: number[] }[]; eye: [number, number, number, number] }
+interface Saved { nights: number; woken: Record<string, number>; order?: string[]; carried?: boolean; invented?: Invented[] }
 
 function loadSaved(): Saved {
   try {
@@ -84,7 +98,10 @@ function loadSaved(): Saved {
             if (Number.isSafeInteger(count) && count >= 0) woken[target.id] = count;
           }
         }
-        return { nights, woken };
+        const ids = new Set(TARGETS.map((t) => t.id));
+        const order = Array.isArray(candidate.order) ? candidate.order.filter((id): id is string => typeof id === 'string' && ids.has(id)) : undefined;
+        const invented = Array.isArray(candidate.invented) ? candidate.invented.filter(validInvented).slice(-MAX_INVENTED) : undefined;
+        return { nights, woken, order, carried: candidate.carried === true, invented };
       }
     }
   } catch { /* private mode: play without memory */ }
@@ -155,6 +172,16 @@ export class TheaterSystem extends createSystem({
   private oneHand = 0; // seconds a two-hand creature has seen only one shadow
   private fresh = -1; // index into TARGETS of tonight's newly joined creature
   private nightTitle = '';
+  // Inventing a creature of your own after the finale.
+  private inventStencils = new Map<string, Stencil>();
+  private inventStable = 0;
+  private inventPrev: Moments = { area: 0, cx: 0, cy: 0 };
+  private inventMo: Moments = { area: 0, cx: 0, cy: 0 };
+  private inventBorn = false;
+  private inventBornAt = 0;
+  private inventId = '';
+  private inventName = '';
+  private inventTarget: BakedTarget | null = null;
   // Carrying the theater: pinch the lantern to pick it up, open the pinch to set it down.
   private carry: LiveHand | null = null;
   private carryOffset = new Vector3();
@@ -222,6 +249,7 @@ export class TheaterSystem extends createSystem({
     this.baked = TARGETS.map(bakeTarget);
     this.stencils = this.baked.map((b) =>
       makeStencil(b.flats, 1, b.def.eyes));
+    for (const v of this.saved.invented ?? []) this.inventStencils.set(v.id, this.inventedStencil(v));
     const mk = (): LiveHand => ({
       joints: new Float32Array(JOINT_COUNT * 3), radii: new Float32Array(JOINT_COUNT),
       flat: new FlatHand(), valid: false, lastSeen: -1,
@@ -238,6 +266,13 @@ export class TheaterSystem extends createSystem({
     this.wall.onSettle = () => this.audio.settle();
     const cap = captureControl();
     if (cap) this.audio.onCue = (kind, arg) => cap.cues.push({ t: cap.time, kind, arg });
+    if (cap) {
+      const names = ['seek', 'wake', 'rest', 'finale', 'invent'];
+      cap.state = () => ({
+        phase: names[this.phase], step: this.step, target: this.baked[this.order[this.step % this.order.length]]?.def.id,
+        mode: this.mode, born: this.inventBorn, wall: this.wall.active,
+      });
+    }
     this.newNight();
     if (import.meta.env?.DEV) (window as unknown as { __theater: unknown }).__theater = this;
 
@@ -553,7 +588,7 @@ export class TheaterSystem extends createSystem({
       c.clone().addScaledVector(r, x).add(new Vector3(0, y, 0)));
     const exit = c.clone().addScaledVector(r, hw).add(new Vector3(0, TARGET_CY, 0));
     const cell = { w: Math.max(...this.stencils.map((st) => st.w)), h: Math.max(...this.stencils.map((st) => st.h)) };
-    this.wall.layout(wall, this.lanternPos, head, corners, exit, 1, TARGETS.length, cell);
+    this.wall.layout(wall, this.lanternPos, head, corners, exit, 1, TARGETS.length + MAX_INVENTED, cell);
     this.wall.setResidents(this.firstWoken().map((id) => ({ id, st: this.stencilOf(id) })));
     if (createAnchor || (this.manual && this.immersive)) {
       const frame = this.renderer.xr.getFrame?.() as XRFrame | undefined;
@@ -605,11 +640,113 @@ export class TheaterSystem extends createSystem({
 
   private firstWoken(): string[] {
     const order = this.saved.order ?? Object.keys(this.saved.woken);
-    return order.filter((id) => (this.saved.woken[id] ?? 0) > 0 && TARGETS.some((t) => t.id === id));
+    const known = order.filter((id) => (this.saved.woken[id] ?? 0) > 0 && TARGETS.some((t) => t.id === id));
+    return [...known, ...(this.saved.invented ?? []).map((v) => v.id)];
   }
 
   private stencilOf(id: string): Stencil {
-    return this.stencils[TARGETS.findIndex((t) => t.id === id)];
+    const k = TARGETS.findIndex((t) => t.id === id);
+    return k >= 0 ? this.stencils[k] : this.inventStencils.get(id)!;
+  }
+
+  /** Stencil for an invented shadow, from its saved flat hands. */
+  private inventedStencil(v: Invented): Stencil {
+    const flats = v.hands.map((h) => {
+      const f = new FlatHand();
+      f.x.set(h.x); f.y.set(h.y); f.r.set(h.r); f.valid = true;
+      return f;
+    });
+    return makeStencil(flats, 1, [v.eye]);
+  }
+
+  /** A loose random hand for the demo puppet to invent with (seeded by the night). */
+  private makeInventPose(): void {
+    let seed = (this.saved.nights * 7349 + 17) % 2147483647 || 3;
+    const r = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+    const curls = { thumb: r() * 1.2 - 0.3, index: r() * 1.3 - 0.32, middle: r() * 1.3 - 0.32, ring: r() * 1.3 - 0.32, pinky: r() * 1.3 - 0.32 };
+    const p = shape(basePoses.relaxed(), curls);
+    spread(p, 'index', r() * 20 - 5); spread(p, 'pinky', -r() * 25);
+    orient(p, [0, r() * 60, r() * 90 - 45]);
+    this.inventTarget = { pose: p, shifts: [[0, 0, 0]], partner: undefined } as unknown as BakedTarget;
+  }
+
+  /**
+   * After the finale, any shape the player holds still becomes a new creature of
+   * their own: its shadow turns to ink, opens an eye, gets a name and joins the wall.
+   */
+  private invent(dt: number, time: number, casters: number): void {
+    const t = this.phaseTime;
+    if (!this.inventBorn) {
+      const a = Math.min(ease(t / 0.8), 1 - ease((t - INVENT_TIME + 0.8) / 0.8));
+      this.painter.caption('Make a shape of your own.', a, 0.27);
+      if (t > 2.5) this.painter.caption('Hold it still.', a * 0.8, -0.27);
+      if (casters > 0) {
+        moments(this.live, this.inventMo);
+        const still = this.inventPrev.area > 0
+          && Math.hypot(this.inventMo.cx - this.inventPrev.cx, this.inventMo.cy - this.inventPrev.cy) < 0.004
+          && Math.abs(this.inventMo.area - this.inventPrev.area) < 0.08 * this.inventPrev.area;
+        this.inventStable = still && t > 1.5 ? this.inventStable + dt : Math.max(0, this.inventStable - dt * 2);
+        this.inventPrev.area = this.inventMo.area; this.inventPrev.cx = this.inventMo.cx; this.inventPrev.cy = this.inventMo.cy;
+      } else {
+        this.inventStable = Math.max(0, this.inventStable - dt * 2);
+        this.inventPrev.area = 0;
+      }
+      this.audio.setHold(casters > 0 ? Math.min(1, this.inventStable / INVENT_HOLD) : 0);
+      if (this.inventStable >= INVENT_HOLD) this.bear(time);
+      else if (t >= INVENT_TIME) { this.audio.setHold(0); this.newNight(); }
+      return;
+    }
+    // Born: ink in place, an eye opens, then it walks off toward the wall like any creature.
+    const b = t - this.inventBornAt;
+    const st = this.inventStencils.get(this.inventId)!;
+    const walk = ease((b - 1.6) / 1.2);
+    const x = walk * (SCREEN_W / 2 + st.w / 2 + 0.03);
+    const blink = b > 1.0 && b < 1.1;
+    this.painter.creature(st, x, Math.abs(Math.sin(b * 5)) * 0.01 * walk, 1, 0, false, blink, 1);
+    if (b < 1.2) this.painter.sparks(st.cx, st.cy, b / 1.2, 1);
+    this.painter.caption(`A new shadow is born: ${this.inventName}.`, Math.min(ease(b / 0.5), 1 - ease((b - 2.8) / 0.6)), 0.27);
+    if (!this.leapt && b >= 1.6 + 1.2 * 0.82) {
+      this.leapt = true;
+      if (this.wall.active) this.wall.leap(this.inventId, st, time);
+    }
+    if (b >= 3.4) this.newNight();
+  }
+
+  private bear(time: number): void {
+    const flats: FlatHand[] = [];
+    for (const h of this.allHands) {
+      if (!h.valid || !h.flat.valid) continue;
+      const f = new FlatHand();
+      f.x.set(h.flat.x); f.y.set(h.flat.y); f.r.set(h.flat.r); f.valid = true;
+      flats.push(f);
+    }
+    if (!flats.length) return;
+    // The eye goes near the highest fingertip of the first hand: heads tend to be up.
+    const tips = [4, 9, 14, 19, 24];
+    const top = tips.reduce((best, j) => (flats[0].y[j] > flats[0].y[best] ? j : best), tips[0]);
+    const eye: [number, number, number, number] = [top - 1, top, 0.25, 0];
+    let seed = (Date.now() % 100000) + this.saved.nights * 31;
+    const r = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+    const syl = () => SYLLABLES[Math.floor(r() * SYLLABLES.length)];
+    const raw = syl() + syl() + (r() < 0.4 ? syl() : '');
+    const name = raw.charAt(0).toUpperCase() + raw.slice(1);
+    const id = `inv-${Date.now().toString(36)}`;
+    const round = (a: Float32Array) => Array.from(a, (v) => Math.round(v * 10000) / 10000);
+    const v: Invented = { id, name, eye, hands: flats.map((f) => ({ x: round(f.x), y: round(f.y), r: round(f.r) })) };
+    const list = (this.saved.invented ??= []);
+    list.push(v);
+    while (list.length > MAX_INVENTED) list.shift();
+    save(this.saved);
+    this.inventStencils.set(id, this.inventedStencil(v));
+    this.inventId = id;
+    this.inventName = name;
+    this.inventBorn = true;
+    this.inventBornAt = this.phaseTime;
+    this.leapt = false;
+    this.audio.setHold(0);
+    this.audio.chime(this.step + 2);
+    this.audio.voice('fan');
+    void time;
   }
 
   /** Thumb-tip to index-tip pinch of a tracked hand; returns the pinch point in `out`, or -1. */
@@ -797,10 +934,12 @@ export class TheaterSystem extends createSystem({
   /** Browser/demo hands: ease from relaxed hands into tonight's shape. */
   private driveDemo(target: BakedTarget, t: number): void {
     // `?demoDelay=N` (filming): the puppet hesitates N extra seconds, long enough for the ghost-hand hint.
-    const k = this.phase === Phase.Seek ? ease((this.phaseTime - 1.0 - this.demoDelay) / 2.2) : 1;
+    const seeking = this.phase === Phase.Seek || (this.phase === Phase.Invent && !this.inventBorn);
+    const k = seeking ? ease((this.phaseTime - 1.0 - this.demoDelay) / 2.2) : 1;
     // While the lantern waits as an ember, the demo hand first rises into its light from below.
     const rise = this.awaitingLight ? -0.32 * (1 - ease((this.phaseTime - 0.6) / 1.6)) : 0;
-    const lift = (this.phase === Phase.Seek ? rise : -ease(this.phaseTime / 0.8) * 0.25) + 0.012 * Math.sin(t * 1.3);
+    const dropFrom = this.phase === Phase.Invent ? this.phaseTime - this.inventBornAt : this.phaseTime;
+    const lift = (seeking ? rise : -ease(dropFrom / 0.8) * 0.25) + 0.012 * Math.sin(t * 1.3);
     const live = this.phase !== Phase.Finale;
     this.blendDemo(this.demoHand, this.ghostPose, this.demoFrom, target.pose, k, lift, target.shifts[0], this.posePositions, t);
     this.demoHand.valid = live;
@@ -892,7 +1031,8 @@ export class TheaterSystem extends createSystem({
 
     const target = this.baked[this.order[this.step % this.order.length]];
     const stencil = this.stencils[this.order[this.step % this.order.length]];
-    if (useDemo) this.driveDemo(target, this.animationTime); else this.demoHand.valid = this.demoHand2.valid = false;
+    const demoTarget = this.phase === Phase.Invent && this.inventTarget ? this.inventTarget : target;
+    if (useDemo) this.driveDemo(demoTarget, this.animationTime); else this.demoHand.valid = this.demoHand2.valid = false;
     this.puppeteer.opacity = this.demoHand.valid ? 1 : 0;
     if (this.demoHand.valid) this.puppeteer.update(this.demoHand.joints, this.demoHand.radii);
     this.puppeteer2.opacity = this.demoHand2.valid ? 1 : 0;
@@ -950,6 +1090,7 @@ export class TheaterSystem extends createSystem({
         if (this.phaseTime >= REST_TIME) this.enter(Phase.Seek);
         break;
       case Phase.Finale: this.finale(this.animationTime); break;
+      case Phase.Invent: this.invent(dt, this.animationTime, casters); break;
     }
 
     const screenDistance = this.screenCentre.distanceTo(L);
@@ -1119,7 +1260,11 @@ export class TheaterSystem extends createSystem({
     if (t >= FINALE_TIME) {
       this.wall.cheer(0);
       this.finaleX.fill(0);
-      this.newNight();
+      this.inventBorn = false;
+      this.inventStable = 0;
+      this.inventPrev.area = 0;
+      this.makeInventPose();
+      this.enter(Phase.Invent);
     }
   }
 

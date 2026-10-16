@@ -14,6 +14,8 @@ export interface CaptureControl {
   camera: { pos: [number, number, number]; look: [number, number, number]; fov?: number } | null;
   cues: Cue[];
   readonly time: number;
+  /** Set by the theater: phase / step / target at the current frame (shot planning). */
+  state?: () => unknown;
   /** Render the recorded cues to a mono 16-bit WAV (base64) of the given length. */
   renderAudio(duration: number): Promise<string>;
 }
