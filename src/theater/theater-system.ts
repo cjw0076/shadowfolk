@@ -138,6 +138,7 @@ export class TheaterSystem extends createSystem({
   private anchored = false;
   private leapt = false;
   private now = 0;
+  private reported = new Set<string>();
   private lit = 1; // lantern brightness 0..1
   private litTarget = 1;
   private awaitingLight = false;
@@ -705,6 +706,10 @@ export class TheaterSystem extends createSystem({
     const started = perf?.beginFrame();
     try {
       this.updateFrame(delta, time);
+    } catch (e) {
+      // Keep the night running: report each distinct failure once, then carry on next frame.
+      const key = String(e);
+      if (!this.reported.has(key)) { this.reported.add(key); console.error('[Shadowfolk] frame error', e); }
     } finally {
       if (started !== undefined) perf!.endFrame(started, this.phase);
     }
@@ -775,6 +780,7 @@ export class TheaterSystem extends createSystem({
     this.lantern.bodyMat.color.setRGB(glow, 0.81 * glow, 0.54 * glow);
     this.lantern.halo.scale.setScalar((0.12 + 0.12 * this.lit) + 0.02 * flick);
     (this.lantern.pool.material as MeshBasicMaterial).opacity = 0.32 * this.lit * flick;
+    this.audio.tick(dt, this.lit);
     this.glowLight.position.copy(this.lanternPos);
     this.glowLight.intensity = (0.12 + 0.95 * this.lit) * flick;
     // The room dims as the lantern blooms (passthrough only; the preview room is already dark).

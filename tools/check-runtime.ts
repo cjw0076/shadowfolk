@@ -41,7 +41,7 @@ export async function run(): Promise<string[]> {
     const { system: s, world, state, frame, ref } = make();
     let starts = 0, pauses = 0, disposed = 0;
     s.audio = { start() { starts++; }, pause() { pauses++; }, setHold() {}, rustle() {}, bloom() {},
-      chime() {}, voice() {}, note() {}, settle() {}, dispose() { disposed++; } };
+      chime() {}, voice() {}, note() {}, settle() {}, tick() {}, crackle() {}, dispose() { disposed++; } };
     s.init();
     s.demo = false;
     try {

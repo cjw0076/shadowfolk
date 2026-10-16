@@ -13,6 +13,11 @@ const fps = shot.fps ?? 30, seconds = shot.seconds, frames = Math.round(seconds 
 mkdirSync(`${outDir}/frames`, { recursive: true });
 
 const lerp = (a, b, k) => a.map((v, i) => v + (b[i] - v) * k);
+// One exact frame step, with a timeout so a broken page fails loudly instead of hanging.
+async function step(page, dt) {
+  const r = await Promise.race([page.evaluate((d) => window.__capture.step(d), dt), new Promise((res) => setTimeout(() => res('timeout'), 15000))]);
+  if (r === 'timeout') throw new Error('frame step timed out (page error?)');
+}
 const smooth = (k) => k * k * (3 - 2 * k);
 function cameraAt(t) {
   const keys = shot.camera;
@@ -32,6 +37,7 @@ const browser = await chromium.launch({ args: ['--use-gl=angle', '--use-angle=vu
 const page = await browser.newPage({ viewport: { width: shot.width ?? 1600, height: shot.height ?? 900 }, ignoreHTTPSErrors: true });
 const errors = [];
 page.on('pageerror', (e) => errors.push(String(e)));
+page.on('console', (m) => { if (m.type() === 'error') errors.push('console: ' + m.text().slice(0, 300)); });
 // Seed saved progress before the app reads it.
 await page.goto(base, { waitUntil: 'domcontentloaded' });
 await page.evaluate((st) => { localStorage.clear(); for (const [k, v] of Object.entries(st ?? {})) localStorage.setItem(k, JSON.stringify(v)); }, shot.storage);
@@ -43,7 +49,7 @@ await canvas.waitFor({ timeout: 60000 });
 const warm = Math.round((shot.warmup ?? 1.5) * fps);
 for (let i = 0; i < warm; i++) {
   await page.evaluate(([cam]) => { window.__capture.camera = cam; }, [cameraAt(0)]);
-  await page.evaluate((dt) => window.__capture.step(dt), 1 / fps);
+  await step(page, 1 / fps);
 }
 const t0 = await page.evaluate(() => window.__capture.time);
 const startCue = await page.evaluate(() => window.__capture.cues.length);
@@ -51,7 +57,7 @@ const started = Date.now();
 for (let f = 0; f < frames; f++) {
   const cam = cameraAt(f / fps);
   await page.evaluate((c) => { window.__capture.camera = c; }, cam);
-  await page.evaluate((dt) => window.__capture.step(dt), 1 / fps);
+  await step(page, 1 / fps);
   await canvas.screenshot({ path: `${outDir}/frames/f${String(f).padStart(5, '0')}.png` });
   if (f % 30 === 0) process.stdout.write(`frame ${f}/${frames} (${((Date.now() - started) / 1000).toFixed(0)}s)\n`);
 }

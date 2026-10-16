@@ -5,7 +5,7 @@
  * when the first hand enters its light. No audio files, nothing to license.
  */
 export type Voice = 'swim' | 'hop' | 'crawl' | 'bob' | 'fan' | 'flap' | 'stalk' | 'scuttle';
-export type CueKind = 'bloom' | 'voice' | 'chime' | 'rustle' | 'note' | 'settle' | 'hold';
+export type CueKind = 'bloom' | 'voice' | 'chime' | 'rustle' | 'note' | 'settle' | 'hold' | 'crackle';
 /** A sound cue at a time on the night's clock (recorded for offline rendering). */
 export interface Cue { t: number; kind: CueKind; arg?: number | string }
 export class TheaterAudio {
@@ -17,6 +17,9 @@ export class TheaterAudio {
   private at: number | null = null;
   private lastHold = -1;
   private master?: GainNode;
+  /** Send bus into a small synthetic room reverb (chimes, voices, notes). */
+  private send?: GainNode;
+  private crackleIn = 0.6;
   private hum?: { osc: OscillatorNode; gain: GainNode };
   private noise?: AudioBuffer;
   private paused = false;
@@ -40,6 +43,27 @@ export class TheaterAudio {
     master.gain.value = 0.8;
     master.connect(ctx.destination);
     this.master = master;
+    // Reverb: a generated stereo impulse (decaying noise), so nothing needs licensing.
+    const verb = ctx.createConvolver();
+    const irLen = Math.floor(ctx.sampleRate * 2.4);
+    const ir = ctx.createBuffer(2, irLen, ctx.sampleRate);
+    for (let ch = 0; ch < 2; ch++) {
+      const d = ir.getChannelData(ch);
+      let seed = 4242 + ch * 77;
+      for (let i = 0; i < irLen; i++) {
+        seed = (seed * 16807) % 2147483647;
+        const env = Math.pow(1 - i / irLen, 2.6) * (i < 120 ? i / 120 : 1);
+        d[i] = ((seed / 2147483647) * 2 - 1) * env;
+      }
+    }
+    verb.buffer = ir;
+    const wet = ctx.createGain();
+    wet.gain.value = 0.32;
+    verb.connect(wet).connect(master);
+    const send = ctx.createGain();
+    send.gain.value = 1;
+    send.connect(verb);
+    this.send = send;
 
     // Lantern drone: two soft detuned tones through a low-pass, slowly breathing.
     const lp = ctx.createBiquadFilter();
@@ -97,6 +121,7 @@ export class TheaterAudio {
         case 'note': a.note(Number(c.arg ?? 0)); break;
         case 'settle': a.settle(); break;
         case 'hold': a.setHold(Number(c.arg ?? 0)); break;
+        case 'crackle': a.crackle(Number(c.arg ?? 0.5)); break;
       }
     }
     a.at = null;
@@ -152,7 +177,7 @@ export class TheaterAudio {
   }
 
   /** One enveloped tone: sine/triangle, optional glide, starting `at` seconds from now. */
-  private tone(f0: number, f1: number, at: number, dur: number, peak: number, type: OscillatorType = 'sine'): void {
+  private tone(f0: number, f1: number, at: number, dur: number, peak: number, type: OscillatorType = 'sine', wet = true): void {
     const ctx = this.live();
     if (!ctx) return;
     const t = this.now() + at;
@@ -165,12 +190,13 @@ export class TheaterAudio {
     g.gain.linearRampToValueAtTime(peak, t + Math.min(0.02, dur * 0.2));
     g.gain.exponentialRampToValueAtTime(0.0005, t + dur);
     o.connect(g).connect(this.master!);
+    if (wet && this.send) g.connect(this.send);
     o.start(t);
     o.stop(t + dur + 0.05);
   }
 
   /** A short filtered noise burst (paper, wood, water). */
-  private burst(freq: number, q: number, at: number, dur: number, peak: number): void {
+  private burst(freq: number, q: number, at: number, dur: number, peak: number, wet = true): void {
     const ctx = this.live();
     if (!ctx || !this.noise) return;
     const t = this.now() + at;
@@ -184,8 +210,25 @@ export class TheaterAudio {
     g.gain.setValueAtTime(peak, t);
     g.gain.exponentialRampToValueAtTime(0.0005, t + dur);
     src.connect(bp).connect(g).connect(this.master!);
+    if (wet && this.send) g.connect(this.send);
     src.start(t);
     src.stop(t + dur + 0.05);
+  }
+
+  /** A tiny dry tick of the lantern's flame; `level` is the lantern brightness. */
+  crackle(level: number): void {
+    this.onCue?.('crackle', +level.toFixed(2));
+    if (!this.live()) return; // no context yet (before the first gesture): nothing to schedule
+    this.burst(2800 + 2400 * ((this.now() * 7.31) % 1), 9, 0, 0.025, 0.035 * level, false);
+  }
+
+  /** Call every frame: the flame crackles now and then while the lantern burns. */
+  tick(dt: number, level: number): void {
+    if (level < 0.3) return;
+    this.crackleIn -= dt;
+    if (this.crackleIn > 0) return;
+    this.crackleIn = 0.35 + ((this.crackleIn * 9301 + 49297) % 1 + 1) % 1 * 1.4;
+    this.crackle(level);
   }
 
   /** The lantern blooms when the first hand enters its light. */
@@ -243,6 +286,7 @@ export class TheaterAudio {
       g.gain.linearRampToValueAtTime(0.12, t + 0.01);
       g.gain.exponentialRampToValueAtTime(0.0008, t + 1.6);
       o.connect(g).connect(this.master);
+      if (this.send) g.connect(this.send);
       o.start(t);
       o.stop(t + 1.7);
     }

@@ -48,9 +48,13 @@ export function installCapture(world: World): void {
     const p = pending;
     pending = null;
     t += p.dt;
-    original(p.dt, t);
-    // The renderer draws this state right after update; resolve on the next frame.
-    requestAnimationFrame(() => p.resolve(t));
+    try {
+      original(p.dt, t);
+    } finally {
+      // The renderer draws this state right after update; resolve on the next frame
+      // (also after an error, so a recorder reports it instead of hanging).
+      requestAnimationFrame(() => p.resolve(t));
+    }
   };
   const control: CaptureControl = {
     step: (dt = 1 / 30) => new Promise((resolve) => { pending = { dt, resolve }; }),
