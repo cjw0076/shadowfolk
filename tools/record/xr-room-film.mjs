@@ -16,7 +16,7 @@ const tableHead = { position: [-0.9, 1.25, -1.19], yaw: 90, pitch: -8 };
 const pinnedHead = { position: [-1.9, 1.25, 1.2], yaw: 90, pitch: -8 };
 const savedResidents = ['peacock', 'rabbit', 'snail', 'fish', 'duck', 'butterfly', 'heron', 'stag', 'crab'];
 const launchArgs = ['--use-gl=angle', '--use-angle=vulkan', '--enable-features=Vulkan',
-  '--ignore-gpu-blocklist', '--enable-gpu', '--autoplay-policy=no-user-gesture-required'];
+  '--ignore-gpu-blocklist', '--enable-gpu', '--autoplay-policy=no-user-gesture-required', ...(process.env.CHROME_EXTRA ?? '').split(' ').filter(Boolean)];
 
 async function setHead(page, head) {
   await page.evaluate(({ position, yaw, pitch }) => {

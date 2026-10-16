@@ -20,11 +20,23 @@ const sourceYaw = Math.atan2(-sourceDirection[0], -sourceDirection[2]);
 const rotation = Math.PI / 2 - sourceYaw;
 const sine = Math.sin(rotation);
 const cosine = Math.cos(rotation);
-const transformPoint = (point) => {
+let transformPoint = (point) => {
   const offset = point.map((value, axis) => value - first.pos[axis]);
   return [tableSeat[0] + offset[0] * cosine + offset[2] * sine,
     tableSeat[1] + offset[1], tableSeat[2] - offset[0] * sine + offset[2] * cosine];
 };
+// Shots are authored in the browser-preview rig frame (lantern light at PREVIEW_LANTERN, paper toward -z).
+// After placement, `XR_FRAME=rig` (default) maps them rigidly onto the placed XR rig, so side views stay side views.
+const PREVIEW_LANTERN = [0, 0.932, -0.25];
+function rigTransform(lantern, paper) {
+  const dx = paper[0] - lantern[0], dz = paper[2] - lantern[2];
+  const theta = Math.atan2(-dx, -dz); // yaw taking preview forward (0,0,-1) onto the XR lantern->paper direction
+  const s = Math.sin(theta), c = Math.cos(theta);
+  return (point) => {
+    const x = point[0] - PREVIEW_LANTERN[0], y = point[1] - PREVIEW_LANTERN[1], z = point[2] - PREVIEW_LANTERN[2];
+    return [lantern[0] + x * c + z * s, lantern[1] + y, lantern[2] - x * s + z * c];
+  };
+}
 const mix = (before, after, fraction) => before.map((value, axis) => value + (after[axis] - value) * fraction);
 const smooth = (fraction) => fraction * fraction * (3 - 2 * fraction);
 function cameraAt(time) {
@@ -70,7 +82,7 @@ async function step(page) {
 
 const browser = await chromium.launch({ args: ['--use-gl=angle', '--use-angle=vulkan',
   '--enable-features=Vulkan', '--ignore-gpu-blocklist', '--enable-gpu',
-  '--autoplay-policy=no-user-gesture-required'] });
+  '--autoplay-policy=no-user-gesture-required', ...(process.env.CHROME_EXTRA ?? '').split(' ').filter(Boolean)] });
 const page = await browser.newPage({ viewport: { width, height }, deviceScaleFactor: 1, ignoreHTTPSErrors: true });
 const errors = [];
 page.on('pageerror', (error) => errors.push(String(error)));
@@ -121,6 +133,8 @@ try {
       captureTime: window.__capture.time,
     };
   });
+  if ((process.env.XR_FRAME ?? 'rig') === 'rig') transformPoint = rigTransform(rig.lantern, rig.paper);
+  rig.cameraFrame = process.env.XR_FRAME ?? 'rig';
   rig.sourceShot = shotPath;
   rig.sourceFirstHead = first.pos;
   rig.worldSeat = tableSeat;

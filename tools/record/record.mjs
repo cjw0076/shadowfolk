@@ -33,7 +33,7 @@ function cameraAt(t) {
   return keys[keys.length - 1];
 }
 
-const browser = await chromium.launch({ args: ['--use-gl=angle', '--use-angle=vulkan', '--enable-features=Vulkan', '--ignore-gpu-blocklist', '--enable-gpu', '--autoplay-policy=no-user-gesture-required'] });
+const browser = await chromium.launch({ args: ['--use-gl=angle', '--use-angle=vulkan', '--enable-features=Vulkan', '--ignore-gpu-blocklist', '--enable-gpu', '--autoplay-policy=no-user-gesture-required', ...(process.env.CHROME_EXTRA ?? '').split(' ').filter(Boolean)] });
 const page = await browser.newPage({ viewport: { width: shot.width ?? 1600, height: shot.height ?? 900 }, ignoreHTTPSErrors: true });
 const errors = [];
 page.on('pageerror', (e) => errors.push(String(e)));
