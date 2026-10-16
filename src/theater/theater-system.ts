@@ -384,6 +384,10 @@ export class TheaterSystem extends createSystem({
         this.order = others.slice(0, NIGHT_LENGTH);
       }
     }
+    // `?first=crab,dog` (filming): these creatures open tonight, in that order.
+    const first = (new URLSearchParams(location.search).get('first') ?? '').split(',')
+      .map((id) => TARGETS.findIndex((t) => t.id === id)).filter((i) => i >= 0);
+    if (first.length) this.order = [...first, ...this.order.filter((i) => !first.includes(i))].slice(0, Math.max(NIGHT_LENGTH, first.length));
     const key = nights === 0 ? 'first' : this.fresh >= 0 ? TARGETS[this.fresh].id : '';
     this.nightTitle = `Night ${nights + 1} \u00b7 ${NIGHT_NAMES[key] ?? 'Old Friends'}`;
     const phase = moonPhase();
@@ -983,6 +987,14 @@ export class TheaterSystem extends createSystem({
     this.poseToWorld(tmp, pos, lift, shift);
     // A touch of drift so the shadow breathes like a real hand.
     for (let j = 0; j < JOINT_COUNT; j++) pos[j * 3] += 0.006 * Math.sin(t * 0.9);
+    if (this.demoDelay > 0 && !this.demoDepth && this.phase === Phase.Seek) {
+      // A stuck player: the hand wanders beside the shape, so the ghost hand reads clearly, then moves into it.
+      const f = this.frame, w = (1 - k) * Math.min(1, this.phaseTime / 1.5);
+      const dx = w * (0.075 + 0.02 * Math.sin(this.phaseTime * 0.8)), dy = w * (-0.05 + 0.015 * Math.sin(this.phaseTime * 1.1));
+      for (let j = 0; j < JOINT_COUNT; j++) {
+        pos[j * 3] += dx * f.rx + dy * f.ux; pos[j * 3 + 1] += dx * f.ry + dy * f.uy; pos[j * 3 + 2] += dx * f.rz + dy * f.uz;
+      }
+    }
     if (this.demoDepth && this.phase === Phase.Seek) {
       // Slide along the lantern-to-paper line: the shadow swells near the light and sharpens near the paper.
       const f = this.frame, d = 0.13 * Math.sin(this.phaseTime * 1.6) * (1 - k);
