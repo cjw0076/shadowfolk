@@ -21,6 +21,9 @@ export interface Surface {
 export const LANTERN_ON_TABLE = 0.132;
 /** Distance of the screen plane's feet from its centre, downwards. */
 export const SCREEN_FOOT_DROP = 0.372;
+const PAPER_RISE = 0.24;
+const PAPER_HALF_HEIGHT = 0.33;
+const PAPER_EDGE = 0.06;
 
 const inv = new Matrix4();
 const local = new Vector3();
@@ -74,6 +77,29 @@ function topOf(s: Surface): number {
   return s.object.getWorldPosition(tmp).y;
 }
 
+function boxObstructs(
+  surfaces: readonly Surface[], lantern: Vector3, fwd: Vector3, right: Vector3,
+  halfFeet: number, lightToScreen: number, stand = false,
+): boolean {
+  const paper = lantern.clone().addScaledVector(fwd, lightToScreen).add(new Vector3(0, PAPER_RISE, 0));
+  const standFoot = stand ? lantern.clone().add(new Vector3(0, -0.128, 0)) : null;
+  const sample = new Vector3();
+  const paperBox = new Box3().makeEmpty();
+  for (const horizontal of [-1, 1]) for (const vertical of [-1, 1]) for (const depth of [-1, 1]) {
+    sample.copy(paper).addScaledVector(right, horizontal * (halfFeet + PAPER_EDGE + 0.022))
+      .addScaledVector(fwd, depth * 0.012);
+    sample.y += vertical * (PAPER_HALF_HEIGHT + 0.022);
+    paperBox.expandByPoint(sample);
+  }
+  for (const surface of surfaces) {
+    if (!surface.box) continue;
+    if (surface.box.distanceToPoint(lantern) < 0.055) return true;
+    if (standFoot && surface.box.distanceToPoint(standFoot) < 0.0035) return true;
+    if (surface.box.intersectsBox(paperBox)) return true;
+  }
+  return false;
+}
+
 export interface TableFit {
   top: number;
   /** Move the rig this far along the facing direction to stand on the table. */
@@ -97,6 +123,7 @@ export function fitTable(
   for (const s of surfaces) {
     if (s.label === 'floor' || s.label === 'ceiling') continue;
     if (s.orientation === 'vertical') continue;
+    if (s.box && s.label !== 'table') continue;
     if (!s.box && normalOf(s, nrm).y < 0.9) continue;
     const top = topOf(s);
     const dy = top + LANTERN_ON_TABLE - lantern.y;
@@ -104,6 +131,8 @@ export function fitTable(
     for (const sh of shifts) {
       p.copy(lantern).addScaledVector(fwd, sh);
       if (clearance(s, p) < 0.04) continue;
+      p.y = top + LANTERN_ON_TABLE;
+      if (boxObstructs(surfaces, p, fwd, right, halfFeet, lightToScreen, true)) continue;
       let feet = 0;
       for (const side of [-1, 1]) {
         p.copy(lantern).addScaledVector(fwd, sh + lightToScreen).addScaledVector(right, side * halfFeet);
@@ -166,7 +195,7 @@ export function wallClearance(w: WallFit, x: number, y: number): number {
   return clearance(w.surface, p);
 }
 
-const SKIP_PIN = new Set(['window', 'window frame', 'door frame', 'screen', 'wall art', 'other']);
+const SKIP_PIN = new Set(['window', 'window frame', 'door', 'door frame', 'screen', 'wall art', 'other']);
 
 export interface PinFit {
   wall: WallFit;
@@ -199,9 +228,12 @@ export function fitPinWall(
     const face = new Vector3().copy(n).negate();
     const point = new Vector3().copy(origin).addScaledVector(face, depth);
     if (clearance(s, point) < 0.22) continue; // the paper must sit on the wall, not off its edge
+    const right = new Vector3().crossVectors(new Vector3(0, 1, 0), n).normalize();
+    const lantern = new Vector3().copy(head).addScaledVector(face, ahead);
+    lantern.y = paperY - PAPER_RISE;
+    if (boxObstructs(surfaces, lantern, face, right, 0.44, lightToScreen)) continue;
     if (best && depth >= best.depth) continue;
     const up = new Vector3(0, 1, 0);
-    const right = new Vector3().crossVectors(up, n).normalize();
     best = { wall: { point, normal: n, right, up, distance: 0, label: s.label, surface: s }, depth };
   }
   return best;
