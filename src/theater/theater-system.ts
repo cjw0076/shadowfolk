@@ -139,6 +139,7 @@ export class TheaterSystem extends createSystem({
   private leapt = false;
   private now = 0;
   private reported = new Set<string>();
+  private emberShown = false;
   private lit = 1; // lantern brightness 0..1
   private litTarget = 1;
   private awaitingLight = false;
@@ -321,6 +322,18 @@ export class TheaterSystem extends createSystem({
     this.enter(Phase.Seek);
   }
 
+  /** True when some cast shadow's centre lies on the paper (a hand has entered the light). */
+  private shadowOnPaper(): boolean {
+    for (const h of this.allHands) {
+      if (!h.valid || !h.flat.valid) continue;
+      let x = 0, y = 0;
+      for (let j = 0; j < JOINT_COUNT; j++) { x += h.flat.x[j]; y += h.flat.y[j]; }
+      x /= JOINT_COUNT; y /= JOINT_COUNT;
+      if (Math.abs(x) < SCREEN_W / 2 && Math.abs(y) < SCREEN_H / 2) return true;
+    }
+    return false;
+  }
+
   /** The creature that will join on the next night, if any. */
   private nextNewcomer(): number {
     const i = FIRST_NIGHT + this.saved.nights - 1;
@@ -429,6 +442,13 @@ export class TheaterSystem extends createSystem({
     this.nextFit = time + 0.3;
     // The preview room is known at once: settle on its table straight away.
     if (!this.immersive) this.tryFit(time);
+    // `?ember`: the browser preview also starts with the lantern as an ember that blooms
+    // when the (demo) hand enters its light, exactly as a headset session does.
+    if (!this.immersive && !this.emberShown && new URLSearchParams(location.search).has('ember')) {
+      this.emberShown = true;
+      this.lit = this.litTarget = EMBER;
+      this.awaitingLight = true;
+    }
   }
 
   /** Planes and table meshes from the room model, as plain surfaces. */
@@ -676,7 +696,9 @@ export class TheaterSystem extends createSystem({
   /** Browser/demo hands: ease from relaxed hands into tonight's shape. */
   private driveDemo(target: BakedTarget, t: number): void {
     const k = this.phase === Phase.Seek ? ease((this.phaseTime - 1.0) / 2.2) : 1;
-    const lift = (this.phase === Phase.Seek ? 0 : -ease(this.phaseTime / 0.8) * 0.25) + 0.012 * Math.sin(t * 1.3);
+    // While the lantern waits as an ember, the demo hand first rises into its light from below.
+    const rise = this.awaitingLight ? -0.32 * (1 - ease((this.phaseTime - 0.6) / 1.6)) : 0;
+    const lift = (this.phase === Phase.Seek ? rise : -ease(this.phaseTime / 0.8) * 0.25) + 0.012 * Math.sin(t * 1.3);
     const live = this.phase !== Phase.Finale;
     this.blendDemo(this.demoHand, this.ghostPose, this.demoFrom, target.pose, k, lift, target.shifts[0], this.posePositions, t);
     this.demoHand.valid = live;
@@ -804,7 +826,7 @@ export class TheaterSystem extends createSystem({
       drawHand(this.live, h.flat);
       casters++;
     }
-    if (this.awaitingLight && casters > 0) {
+    if (this.awaitingLight && casters > 0 && this.shadowOnPaper()) {
       this.awaitingLight = false;
       this.litTarget = 1;
       this.audio.bloom();
