@@ -12,6 +12,7 @@ import { BONES, PALM } from '../shadow/hand-model.js';
 import { FlatHand } from '../shadow/silhouette.js';
 import { TARGETS } from '../shadow/targets.js';
 import { runtimePerf as perf } from './perf.js';
+import { playfairReady } from './visual-fonts.js';
 
 export const SCREEN_W = 1.0; // metres
 export const SCREEN_H = 0.66;
@@ -24,6 +25,23 @@ const INK = '#1c1316';
 const INK_COLOR = new Color(INK);
 const SPARK_COUNT = 18;
 const CAPTION_H = 80;
+const eyeGlint = new Image();
+const pendingGlints: { canvas: HTMLCanvasElement; texture: CanvasTexture; eyes: [number, number][] }[] = [];
+eyeGlint.onload = () => {
+  for (const pending of pendingGlints) {
+    const context = pending.canvas.getContext('2d')!;
+    for (const [u, v] of pending.eyes) {
+      const x = u * pending.canvas.width;
+      const y = v * pending.canvas.height;
+      context.drawImage(eyeGlint, x - 7, y - 9, 14, 14);
+      context.fillStyle = '#fff';
+      context.fillRect(x - 2, y - 2, 2, 2);
+    }
+    pending.texture.needsUpdate = true;
+  }
+  pendingGlints.length = 0;
+};
+eyeGlint.src = `${import.meta.env?.BASE_URL ?? './'}textures/eye-glint.png`;
 
 function texture(source: HTMLCanvasElement): CanvasTexture {
   const result = new CanvasTexture(source);
@@ -109,22 +127,51 @@ export function makeStencil(hands: FlatHand | FlatHand[], scale: number, eyes: r
   ictx.fillStyle = ictx.strokeStyle = INK;
   ictx.lineCap = 'round';
   ictx.lineJoin = 'round';
+  ictx.filter = 'blur(2px)';
+  ictx.fillStyle = ictx.strokeStyle = 'rgba(42,47,58,0.85)';
   for (const f of fs) handPath(ictx, f);
-  // Cut-out: a hole in the paper with a thin scorched edge, lit from behind.
+  ictx.filter = 'none';
+  ictx.globalAlpha = 0.9;
+  ictx.fillStyle = ictx.strokeStyle = INK;
+  for (const f of fs) handPath(ictx, f);
+  ictx.globalAlpha = 1;
+  ictx.setTransform(1, 0, 0, 1, 0, 0);
+  ictx.globalCompositeOperation = 'source-atop';
+  let grainSeed = 0x6d2b79f5;
+  for (let index = 0; index < Math.round(w * h / 90); index++) {
+    grainSeed = (Math.imul(grainSeed, 1664525) + 1013904223) >>> 0;
+    const x = (grainSeed / 0x100000000) * w;
+    grainSeed = (Math.imul(grainSeed, 1664525) + 1013904223) >>> 0;
+    const y = (grainSeed / 0x100000000) * h;
+    ictx.fillStyle = index % 3 ? 'rgba(240,226,201,0.055)' : 'rgba(8,7,9,0.10)';
+    ictx.fillRect(x, y, 1, 1);
+  }
+  ictx.globalCompositeOperation = 'source-over';
   const [cut, cctx] = canvas(w, h);
-  cctx.setTransform(ictx.getTransform());
+  cctx.setTransform(PX * scale, 0, 0, -PX * scale, pad * PX - minX * PX * scale, h - pad * PX + minY * PX * scale);
   cctx.lineCap = 'round';
   cctx.lineJoin = 'round';
-  cctx.fillStyle = cctx.strokeStyle = 'rgba(92,58,34,0.85)';
-  for (const f of fs) handPathGrown(cctx, f, 0.0045 / scale);
-  cctx.fillStyle = cctx.strokeStyle = '#fff4dc';
+  cctx.fillStyle = cctx.strokeStyle = '#2e1408';
+  for (const f of fs) handPathGrown(cctx, f, 0.0052 / scale);
+  cctx.fillStyle = cctx.strokeStyle = '#42220f';
+  for (const f of fs) handPathGrown(cctx, f, 0.0038 / scale);
+  cctx.fillStyle = cctx.strokeStyle = '#fff2d1';
   for (const f of fs) handPath(cctx, f);
+  cctx.setTransform(1, 0, 0, 1, 0, 0);
+  const charPixels = cctx.getImageData(0, 0, w, h);
+  for (let pixel = 0; pixel < charPixels.data.length; pixel += 4) {
+    if (charPixels.data[pixel] > 90 || charPixels.data[pixel + 3] === 0) continue;
+    const noise = ((pixel * 1664525 + 1013904223) >>> 16) & 15;
+    charPixels.data[pixel] += noise;
+    charPixels.data[pixel + 1] += noise >> 1;
+  }
+  cctx.putImageData(charPixels, 0, 0);
   const [glow, gctx] = canvas(w, h);
-  gctx.filter = 'blur(9px)';
+  gctx.filter = 'blur(16px)';
   gctx.drawImage(ink, 0, 0);
   gctx.filter = 'none';
   gctx.globalCompositeOperation = 'source-in';
-  gctx.fillStyle = '#ffc25e';
+  gctx.fillStyle = '#f7b25a';
   gctx.fillRect(0, 0, w, h);
   const toSprite = (x: number, y: number): [number, number] => [
     (pad + (x - minX) * scale) / wM,
@@ -137,20 +184,40 @@ export function makeStencil(hands: FlatHand | FlatHand[], scale: number, eyes: r
   const eyeSprite = (blink: boolean): HTMLCanvasElement => {
     const [sprite, context] = canvas(w, h);
     context.drawImage(ink, 0, 0);
-    context.fillStyle = '#fff6e0';
     for (const [u, v] of eyePts) {
+      const x = u * w;
+      const y = v * h;
+      const halo = context.createRadialGradient(x, y, 1, x, y, 14);
+      halo.addColorStop(0, 'rgba(255,217,133,1)');
+      halo.addColorStop(0.45, 'rgba(217,143,63,0.85)');
+      halo.addColorStop(1, 'rgba(217,143,63,0)');
+      context.fillStyle = halo;
       context.beginPath();
-      if (blink) context.ellipse(u * w, v * h, 8, 1.6, 0, 0, Math.PI * 2);
-      else context.arc(u * w, v * h, 7.5, 0, Math.PI * 2);
+      if (blink) context.ellipse(x, y, 10, 2, 0, 0, Math.PI * 2);
+      else context.arc(x, y, 14, 0, Math.PI * 2);
       context.fill();
+      if (!blink) {
+        context.fillStyle = '#ffd985';
+        context.beginPath();
+        context.arc(x, y, 4.2, 0, Math.PI * 2);
+        context.fill();
+        if (eyeGlint.complete && eyeGlint.naturalWidth) context.drawImage(eyeGlint, x - 7, y - 9, 14, 14);
+        context.fillStyle = '#fff';
+        context.beginPath();
+        context.arc(x - 1.5, y - 1.8, 1.2, 0, Math.PI * 2);
+        context.fill();
+      }
     }
     return sprite;
   };
+  const openEyes = eyeSprite(false);
+  const openTexture = texture(openEyes);
+  if (!eyeGlint.complete || !eyeGlint.naturalWidth) pendingGlints.push({ canvas: openEyes, texture: openTexture, eyes: eyePts });
   return {
     ink, cut, glow, w: wM, h: hM,
     cx: ((minX + maxX) / 2) * scale, cy: ((minY + maxY) / 2) * scale,
     eyes: eyePts,
-    inkOpen: texture(eyeSprite(false)), inkBlink: texture(eyeSprite(true)),
+    inkOpen: openTexture, inkBlink: texture(eyeSprite(true)),
     cutTexture: texture(cut), glowTexture: texture(glow),
   };
 }
@@ -177,6 +244,10 @@ export class ScreenPainter {
   private ctx: CanvasRenderingContext2D;
   private soft: HTMLCanvasElement;
   private sctx: CanvasRenderingContext2D;
+  private handCanvas: HTMLCanvasElement;
+  private handContext: CanvasRenderingContext2D;
+  private washi = new Image();
+  private fontReady = false;
   private softTexture: CanvasTexture;
   private shadowMesh: Mesh<PlaneGeometry, MeshBasicMaterial>;
   private cutMesh: Mesh<PlaneGeometry, MeshBasicMaterial>;
@@ -198,15 +269,16 @@ export class ScreenPainter {
   constructor() {
     [this.canvas, this.ctx] = canvas(CW, CH);
     [this.soft, this.sctx] = canvas(CW / SOFT, Math.round(CH / SOFT));
+    [this.handCanvas, this.handContext] = canvas(this.soft.width, this.soft.height);
     this.texture = texture(this.canvas);
     this.softTexture = texture(this.soft);
     this.paperMesh = new Mesh(new PlaneGeometry(SCREEN_W, SCREEN_H),
       new MeshBasicMaterial({ map: this.texture, toneMapped: false }));
     this.paperMesh.name = 'Paper';
     this.root.add(this.paperMesh);
-    this.cutMesh = this.overlay(1, new PlaneGeometry(1, 1));
+    this.shadowMesh = this.overlay(1, new PlaneGeometry(SCREEN_W, SCREEN_H));
     this.glowMesh = this.overlay(2, new PlaneGeometry(1, 1), true);
-    this.shadowMesh = this.overlay(3, new PlaneGeometry(SCREEN_W, SCREEN_H));
+    this.cutMesh = this.overlay(3, new PlaneGeometry(1, 1));
     this.shadowMesh.material.map = this.softTexture;
     this.shadowMesh.material.color.set(INK);
     for (let index = 0; index < TARGETS.length + 2; index++) {
@@ -249,6 +321,9 @@ export class ScreenPainter {
     this.root.add(this.sparksMesh);
     for (let index = 0; index < 5; index++) this.captions.push(this.makeCaption(CW, CAPTION_H, 6));
     this.perfCaption = this.makeCaption(420, 48, 7);
+    this.washi.onload = () => this.renderPaper();
+    this.washi.src = `${import.meta.env?.BASE_URL ?? './'}textures/washi.jpg`;
+    void playfairReady.then(ready => { this.fontReady = ready; });
     this.paintPaper(0, -0.2);
   }
 
@@ -297,24 +372,21 @@ export class ScreenPainter {
     const g = this.ctx;
     g.setTransform(1, 0, 0, 1, 0, 0);
     g.globalAlpha = 1;
-    g.fillStyle = '#eadbc0';
+    g.fillStyle = '#f4e7d0';
     g.fillRect(0, 0, CW, CH);
-    let seed = 1234567;
-    const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
-    for (let k = 0; k < 900; k++) {
-      const x = rnd() * CW, y = rnd() * CH, len = 6 + rnd() * 40, a = rnd() * Math.PI;
-      g.strokeStyle = rnd() < 0.5 ? 'rgba(255,250,235,0.35)' : 'rgba(150,120,85,0.12)';
-      g.lineWidth = 0.6 + rnd() * 1.2;
-      g.beginPath();
-      g.moveTo(x, y);
-      g.quadraticCurveTo(x + Math.cos(a) * len * 0.5 + (rnd() - 0.5) * 8, y + Math.sin(a) * len * 0.5, x + Math.cos(a) * len, y + Math.sin(a) * len);
-      g.stroke();
+    if (this.washi.complete && this.washi.naturalWidth) {
+      g.drawImage(this.washi, 0, 0, CW, CH, 0, 0, CW, CH);
+      g.fillStyle = 'rgba(255,248,232,0.18)';
+      g.fillRect(0, 0, CW, CH);
     }
+    g.fillStyle = 'rgba(167,91,33,0.24)';
+    g.fillRect(0, 0, CW, CH);
     const cx = CW / 2 + this.paperX * PX, cy = CH / 2 - this.paperY * PX;
-    const glow = g.createRadialGradient(cx, cy, 20, cx, cy, CW * 0.75);
-    glow.addColorStop(0, 'rgba(255,214,140,0.55)');
-    glow.addColorStop(0.45, 'rgba(255,190,110,0.18)');
-    glow.addColorStop(1, 'rgba(70,40,25,0.55)');
+    const glow = g.createRadialGradient(cx, cy, 16, cx, cy, CW * 0.66);
+    glow.addColorStop(0, 'rgba(255,240,209,0.85)');
+    glow.addColorStop(0.45, 'rgba(255,190,83,0.44)');
+    glow.addColorStop(0.8, 'rgba(214,124,36,0.32)');
+    glow.addColorStop(1, 'rgba(82,42,20,0.66)');
     g.fillStyle = glow;
     g.fillRect(0, 0, CW, CH);
     for (let index = 0; index < this.progressTotal; index++) {
@@ -348,11 +420,11 @@ export class ScreenPainter {
     const started = perf ? performance.now() : 0;
     this.cutMesh.material.map = st.cutTexture;
     this.cutMesh.material.opacity = 0.8 + 0.12 * Math.sin(time * 1.7);
-    this.cutMesh.position.set(cx + st.cx, cy + st.cy, 0.0004);
+    this.cutMesh.position.set(cx + st.cx, cy + st.cy, 0.0012);
     this.cutMesh.scale.set(st.w, st.h, 1);
     this.cutMesh.visible = true;
     this.glowMesh.material.map = st.glowTexture;
-    this.glowMesh.material.opacity = Math.min(1, 0.25 + glow * 0.9);
+    this.glowMesh.material.opacity = Math.min(1, (0.25 + glow * 0.9) * (0.94 + 0.06 * Math.sin(time * 3.2)));
     this.glowMesh.position.set(cx + st.cx, cy + st.cy, 0.0008);
     this.glowMesh.scale.set(st.w, st.h, 1);
     this.glowMesh.visible = true;
@@ -360,15 +432,20 @@ export class ScreenPainter {
   }
 
   /** Accumulate a live hand shadow (screen-metre coordinates). */
-  shadow(f: FlatHand): void {
+  shadow(f: FlatHand, blurPixels = 1): void {
     if (!f.valid) return;
     const started = perf ? performance.now() : 0;
-    const s = this.sctx, k = PX / SOFT;
-    s.setTransform(k, 0, 0, -k, this.soft.width / 2, this.soft.height / 2);
-    s.fillStyle = s.strokeStyle = '#fff';
-    s.lineCap = 'round';
-    s.lineJoin = 'round';
-    handPath(s, f);
+    const hand = this.handContext, shadow = this.sctx, quarterScale = PX / SOFT;
+    hand.setTransform(1, 0, 0, 1, 0, 0);
+    hand.clearRect(0, 0, this.handCanvas.width, this.handCanvas.height);
+    hand.setTransform(quarterScale, 0, 0, -quarterScale, this.soft.width / 2, this.soft.height / 2);
+    hand.fillStyle = hand.strokeStyle = '#fff';
+    hand.lineCap = 'round';
+    hand.lineJoin = 'round';
+    handPath(hand, f);
+    shadow.filter = `blur(${blurPixels.toFixed(1)}px)`;
+    shadow.drawImage(this.handCanvas, 0, 0);
+    shadow.filter = 'none';
     perf?.endCall('shadow', started);
   }
 
@@ -470,11 +547,12 @@ export class ScreenPainter {
   }
 
   private drawCaption(layer: CaptionLayer, text: string, alpha: number, y: number, small: boolean): void {
+    if (!small && !this.fontReady) return;
     if (layer.text !== text) {
       const context = layer.ctx;
       context.clearRect(0, 0, layer.canvas.width, layer.canvas.height);
-      context.fillStyle = '#4a3626';
-      context.font = small ? '22px Arial, sans-serif' : 'italic 34px Georgia, "Times New Roman", serif';
+      context.fillStyle = '#4a3020';
+      context.font = small ? '22px Arial, sans-serif' : 'italic 34px "Playfair Display", Georgia, serif';
       context.textAlign = small ? 'left' : 'center';
       context.textBaseline = 'middle';
       context.fillText(text, small ? 12 : layer.canvas.width / 2, layer.canvas.height / 2);

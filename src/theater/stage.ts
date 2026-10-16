@@ -20,14 +20,19 @@ import {
   Matrix4,
   Mesh,
   MeshBasicMaterial,
+  MeshPhysicalMaterial,
   MeshStandardMaterial,
   Object3D,
   PlaneGeometry,
   Quaternion,
+  RepeatWrapping,
+  SRGBColorSpace,
   ShaderMaterial,
   SphereGeometry,
   Sprite,
   SpriteMaterial,
+  TextureLoader,
+  TorusGeometry,
   Vector2,
   Vector3,
 } from '@iwsdk/core';
@@ -58,35 +63,71 @@ function glowTexture(): CanvasTexture {
   return new CanvasTexture(c);
 }
 
+const textureLoader = new TextureLoader();
+const visualTexture = (name: string) => {
+  const loaded = textureLoader.load(`${import.meta.env?.BASE_URL ?? './'}textures/${name}`);
+  loaded.colorSpace = SRGBColorSpace;
+  return loaded;
+};
+const lanternPaper = visualTexture('lantern-paper.jpg');
+const darkWood = visualTexture('dark-wood.jpg');
+darkWood.wrapS = darkWood.wrapT = RepeatWrapping;
+const ember = visualTexture('ember.png');
+
 /** A small round paper lantern, ~9 cm tall, origin at its light centre. */
 export function buildLantern(): Lantern {
   const root = new Group();
   root.name = 'Lantern';
   const profile: Vector2[] = [];
-  for (let k = 0; k <= 16; k++) {
-    const a = (k / 16) * Math.PI;
-    profile.push(new Vector2(0.008 + Math.sin(a) * 0.036, -0.045 + (1 - Math.cos(a)) * 0.045));
+  for (let index = 0; index <= 28; index++) {
+    const angle = (index / 28) * Math.PI;
+    profile.push(new Vector2(0.008 + Math.pow(Math.sin(angle), 0.82) * 0.036,
+      -0.045 + (1 - Math.cos(angle)) * 0.045));
   }
-  const bodyMat = new MeshBasicMaterial({ color: new Color('#ffcf8a') });
-  const body = new Mesh(new LatheGeometry(profile, 28), bodyMat);
+  const bodyMat = new MeshBasicMaterial({ color: new Color('#ffe8bc'), map: lanternPaper, toneMapped: false });
+  bodyMat.onBeforeCompile = shader => {
+    shader.vertexShader = `varying float vLanternFace;\nvarying float vLanternHeight;\n${shader.vertexShader}`
+      .replace('#include <begin_vertex>', `#include <begin_vertex>
+        vec3 lanternNormal = normalize(normalMatrix * normal);
+        vec3 lanternView = normalize(-(modelViewMatrix * vec4(position, 1.0)).xyz);
+        vLanternFace = clamp(dot(lanternNormal, lanternView), 0.0, 1.0);
+        vLanternHeight = uv.y;`);
+    shader.fragmentShader = `varying float vLanternFace;\nvarying float vLanternHeight;\n${shader.fragmentShader}`
+      .replace('#include <map_fragment>', `#include <map_fragment>
+        float equator = 1.0 - 0.38 * pow(abs(vLanternHeight * 2.0 - 1.0), 1.6);
+        float rib = pow(0.5 + 0.5 * cos(vLanternHeight * 94.2478), 18.0);
+        float rim = pow(1.0 - vLanternFace, 2.0);
+        diffuseColor.rgb = diffuseColor.rgb * equator * (1.0 - 0.08 * rib)
+          + vec3(0.23, 0.09, 0.02) * rim;`);
+  };
+  const body = new Mesh(new LatheGeometry(profile, 40), bodyMat);
   body.name = 'LanternBody';
   root.add(body);
-  const ribMat = new MeshBasicMaterial({ color: new Color('#c98a4b'), transparent: true, opacity: 0.55 });
-  for (let k = 1; k < 6; k++) {
-    const y = -0.045 + (k / 6) * 0.09;
-    const r = 0.008 + Math.sin(Math.acos(1 - ((y + 0.045) / 0.045))) * 0.036 + 0.0006;
-    const rib = new Mesh(new CylinderGeometry(r, r, 0.0016, 28, 1, true), ribMat);
+  const ribMat = new MeshBasicMaterial({ color: new Color('#b97932'), transparent: true, opacity: 0.46 });
+  for (let index = 1; index < 16; index++) {
+    const y = -0.045 + (index / 16) * 0.09;
+    const radius = 0.008 + Math.pow(Math.sqrt(Math.max(0, 1 - Math.pow(y / 0.045, 2))), 0.82) * 0.036 + 0.0004;
+    const rib = new Mesh(new CylinderGeometry(radius, radius, 0.0012, 40, 1, true), ribMat);
     rib.position.y = y;
     root.add(rib);
   }
-  const capMat = new MeshStandardMaterial({ color: new Color('#2b1d16'), roughness: 0.6 });
+  const capMat = new MeshPhysicalMaterial({ color: new Color('#1e1b18'), roughness: 0.32, metalness: 0.16, clearcoat: 0.48 });
   for (const y of [-0.049, 0.049]) {
-    const cap = new Mesh(new CylinderGeometry(0.014, 0.016, 0.008, 20), capMat);
+    const cap = new Mesh(new CylinderGeometry(0.016, 0.016, 0.008, 32), capMat);
     cap.position.y = y;
     root.add(cap);
   }
+  const brass = new MeshPhysicalMaterial({ color: new Color('#c59e47'), metalness: 0.88, roughness: 0.23 });
+  const loop = new Mesh(new TorusGeometry(0.017, 0.0012, 8, 32, Math.PI), brass);
+  loop.position.y = 0.056;
+  root.add(loop);
+  for (const y of [-0.049, 0.049]) for (const x of [-0.010, 0.010]) {
+    const rivet = new Mesh(new SphereGeometry(0.0018, 8, 6), brass);
+    rivet.position.set(x, y, 0.013);
+    root.add(rivet);
+  }
   const halo = new Sprite(new SpriteMaterial({
-    map: glowTexture(), blending: AdditiveBlending, depthWrite: false, transparent: true, opacity: 0.9,
+    map: ember, blending: AdditiveBlending, depthWrite: false, transparent: true, opacity: 0.6,
   }));
   halo.scale.setScalar(0.26);
   root.add(halo);
@@ -94,9 +135,18 @@ export function buildLantern(): Lantern {
   // Stand: a turned post and a round foot, scaled to reach the table top.
   const stand = new Group();
   stand.name = 'LanternStand';
-  const woodMat = new MeshStandardMaterial({ color: new Color('#3a2418'), roughness: 0.55 });
-  const post = new Mesh(new CylinderGeometry(0.009, 0.012, 1, 12), woodMat);
-  const foot = new Mesh(new CylinderGeometry(0.04, 0.045, 0.008, 24), woodMat);
+  const woodMat = new MeshPhysicalMaterial({ map: darkWood, roughness: 0.54, metalness: 0.06, clearcoat: 0.22 });
+  const postProfile = [
+    new Vector2(0.012, -0.5), new Vector2(0.013, -0.42), new Vector2(0.008, -0.32),
+    new Vector2(0.006, -0.12), new Vector2(0.010, 0.05), new Vector2(0.013, 0.2),
+    new Vector2(0.009, 0.37), new Vector2(0.010, 0.5),
+  ];
+  const post = new Mesh(new LatheGeometry(postProfile, 24), woodMat);
+  const footProfile = [
+    new Vector2(0, -0.004), new Vector2(0.039, -0.004), new Vector2(0.045, -0.002),
+    new Vector2(0.045, 0.002), new Vector2(0.039, 0.004), new Vector2(0, 0.004),
+  ];
+  const foot = new Mesh(new LatheGeometry(footProfile, 32), woodMat);
   stand.add(post, foot);
   stand.visible = false;
   root.add(stand);
@@ -137,7 +187,7 @@ export function buildScreen(painter: ScreenPainter): PaperScreen {
   root.name = 'PaperScreen';
   const paper = painter.paperMesh;
   root.add(painter.root);
-  const wood = new MeshStandardMaterial({ color: new Color('#3a2418'), roughness: 0.55, metalness: 0.05 });
+  const wood = new MeshPhysicalMaterial({ map: darkWood, roughness: 0.54, metalness: 0.06, clearcoat: 0.22 });
   const frame = new Group();
   root.add(frame);
   const t = 0.022, d = 0.02;
