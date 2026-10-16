@@ -851,6 +851,9 @@ export class TheaterSystem extends createSystem({
       case 'crawl': sc = 1 + 0.025 * Math.sin(t * 7); x *= 0.85; break;
       case 'bob': y += Math.sin(t * 5) * 0.014; rot = Math.sin(t * 5) * 0.07; break;
       case 'fan': sc = 1 + 0.07 * Math.sin(t * 3) * (1 - walk); rot = Math.sin(t * 2) * 0.04; break;
+      case 'flap': y += 0.03 * Math.sin(t * 5) + walk * 0.12; sc = 1 + 0.06 * Math.sin(t * 10); rot = 0.06 * Math.sin(t * 5); break;
+      case 'stalk': y += Math.abs(Math.sin(t * 2.2)) * 0.012; rot = -0.04 + 0.04 * Math.sin(t * 2.2); x *= 0.9; break;
+      case 'scuttle': x += 0.012 * Math.sin(t * 22); y += 0.004 * Math.abs(Math.sin(t * 22)); break;
     }
     const onWall = this.wall.active;
     const alpha = onWall ? 1 : t < 2.3 ? 1 : 1 - ease((t - 2.3) / 0.5);

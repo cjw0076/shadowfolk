@@ -8,7 +8,7 @@ export default async function run({ page, frame }) {
   const log = [];
   for (let i = 0; i < n; i++) {
     const st = await target.evaluate(() => { const th = window.__theater; return th && { ph: th.phase, t: +th.phaseTime.toFixed(2), step: th.step, wall: th.wall.residents?.map((r) => r.id).join(','), mode: th.mode, lit: +th.lit.toFixed(2) }; });
-    await page.screenshot({ path: `${dir}/f${String(i).padStart(3, '0')}.png` });
+    await page.screenshot({ path: `${dir}/f${String(i + Number(process.env.FILM_START ?? 0)).padStart(3, '0')}.png` });
     log.push({ i, ...st });
     await page.waitForTimeout(dt);
   }

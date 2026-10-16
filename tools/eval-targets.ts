@@ -9,8 +9,11 @@ import { writeSheet } from './sheet.mjs';
 const out = process.argv[2];
 setRadialGain(Number(process.argv[3] ?? 3));
 const genMean: Record<string, number> = {};
-const baked = TARGETS.map(bakeTarget);
-const tiles: any[] = baked.map((b) => ({ w: NORM, h: NORM, data: b.template, label: b.def.id }));
+const allBaked = TARGETS.map(bakeTarget);
+// Single-hand creatures keep their original calibration stream; pairs are calibrated below.
+const baked = allBaked.filter((b) => !b.partner);
+const pairs = allBaked.filter((b) => b.partner);
+const tiles: any[] = allBaked.map((b) => ({ w: NORM, h: NORM, data: b.template, label: b.def.id }));
 
 let seed = 7; const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
 const nz = (a: number) => (rnd() * 2 - 1) * a;
@@ -75,6 +78,77 @@ baked.forEach((b, i) => { const v = rows[i].sort((a, c) => a - c);
   const p95 = v[Math.floor(v.length * 0.95)];
   pass[b.def.id] = +Math.min(0.8, Math.max(0.5, (genMean[b.def.id] + p95) / 2)).toFixed(3);
   console.log(b.def.id.padEnd(9), 'p95', v[Math.floor(v.length * 0.95)].toFixed(2), 'max', v[v.length - 1].toFixed(2), 'gen', genMean[b.def.id].toFixed(2), 'PASS', pass[b.def.id]); });
+
+// ---- Two-hand creatures: both hands noisy, their relative placement noisy, either way round.
+{
+  let seed2 = 11; const rnd2 = () => ((seed2 = (seed2 * 16807) % 2147483647) / 2147483647);
+  const nz2 = (a: number) => (rnd2() * 2 - 1) * a;
+  const pj = new Float32Array(JOINT_COUNT * 3), pf = [new FlatHand(), new FlatHand()];
+  const placeHand = (p: HandPose, shift: number[], dist: number, k: number) => {
+    const w = [0, 0, 0];
+    for (let j = 0; j < JOINT_COUNT; j++) for (let c = 0; c < 3; c++) w[c] += p.mats[j * 16 + 12 + c] / JOINT_COUNT;
+    for (let j = 0; j < JOINT_COUNT; j++) {
+      pj[j * 3] = p.mats[j * 16 + 12] - w[0] + shift[0];
+      pj[j * 3 + 1] = p.mats[j * 16 + 13] - w[1] + shift[1] + 0.26 * dist / 0.75;
+      pj[j * 3 + 2] = p.mats[j * 16 + 14] - w[2] + shift[2] - dist;
+    }
+    projectFromLight(pj, p.radii, 0, 0, 0, screen, pf[k]);
+    drawHand(live, pf[k]);
+  };
+  const jitter = (pose: HandPose, noise: number) => {
+    const p = clonePose(pose);
+    for (const f of fingers) { curl(p, f, nz2(0.12 * noise)); spread(p, f, nz2(5 * noise)); }
+    return orient(p, [nz2(12 * noise), nz2(12 * noise), nz2(15 * noise)]);
+  };
+  const attemptPair = (hands: HandPose[], shifts: number[][], noise: number, dist: number): Mask => {
+    const swap = rnd2() < 0.5; // the player may build it the other way round (mirrored whole)
+    const ox = nz2(0.05), oy = nz2(0.05);
+    live.clear();
+    hands.forEach((h, k) => {
+      let p = jitter(h, noise);
+      const sh = shifts[k].slice();
+      if (swap) { p = mirror(p); sh[0] = -sh[0]; }
+      placeHand(p, [sh[0] + ox + nz2(0.015 * noise), sh[1] + oy + nz2(0.015 * noise), sh[2] + nz2(0.015 * noise)], dist, k);
+    });
+    return live;
+  };
+  const handsOf = (b: typeof pairs[number]) => [b.pose, b.partner!];
+  console.log('\n== two-hand creatures, noise 0.5 / 1.0: rows = attempt, cols = template; mean IoU');
+  console.log('           ' + pairs.map((b) => b.def.id.padStart(10)).join(''));
+  for (const noise of [0.5, 1.0]) {
+    for (const a of pairs) {
+      const sums = pairs.map(() => 0); const N = 40;
+      for (let k = 0; k < N; k++) {
+        const m = attemptPair(handsOf(a), a.shifts, noise, 0.3 + nz2(0.07));
+        pairs.forEach((b, i) => { sums[i] += matcher.score(m, b.template) / N; });
+        if (k === 0 && noise === 1) tiles.push({ w: live.w, h: live.h, data: live.data.slice(), label: 'attempt ' + a.def.id });
+      }
+      if (noise === 0.5) genMean[a.def.id] = sums[pairs.indexOf(a)];
+      console.log(`${a.def.id.padEnd(10)}@${noise}` + sums.map((v) => v.toFixed(2).padStart(10)).join(''));
+    }
+  }
+  // Casual two-hand impostors: any two casual hands raised together, apart by 6-22 cm.
+  const casualMakers = Object.values(casual);
+  const prow: number[][] = pairs.map(() => []);
+  for (let k = 0; k < 300; k++) {
+    const a = casualMakers[Math.floor(rnd2() * casualMakers.length)]();
+    const b = mirror(casualMakers[Math.floor(rnd2() * casualMakers.length)]());
+    orient(a, [nz2(60), nz2(60), nz2(60)]); orient(b, [nz2(60), nz2(60), nz2(60)]);
+    const gap = 0.06 + rnd2() * 0.16, ang = rnd2() * Math.PI * 2;
+    const half = [Math.cos(ang) * gap / 2, Math.sin(ang) * gap / 2, nz2(0.03)];
+    const m = attemptPair([a, b], [[-half[0], -half[1], -half[2]], half], 0.5, 0.3 + nz2(0.07));
+    pairs.forEach((t, i) => prow[i].push(matcher.score(m, t.template)));
+  }
+  console.log('\n== casual two-hand pairs: p95 IoU per two-hand template');
+  pairs.forEach((b, i) => {
+    const v = prow[i].sort((x, y) => x - y);
+    const p95 = v[Math.floor(v.length * 0.95)];
+    pass[b.def.id] = +Math.min(0.8, Math.max(0.5, (genMean[b.def.id] + p95) / 2)).toFixed(3);
+    console.log(b.def.id.padEnd(10), 'p95', p95.toFixed(2), 'max', v[v.length - 1].toFixed(2), 'gen', genMean[b.def.id].toFixed(2), 'PASS', pass[b.def.id]);
+  });
+}
+writeSheet(out.replace('.png', '-all.png'), tiles, 6);
+
 import { writeFileSync } from 'node:fs';
 if (process.argv[4]) writeFileSync(process.argv[4], `// Generated by tools/eval-targets.ts: midpoint between the genuine mean
 // (noisy attempts) and the p95 of casual hands, clamped to [0.5, 0.8].

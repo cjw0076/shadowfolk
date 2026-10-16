@@ -8,7 +8,7 @@ cli xr enter | grep -q '"success": true'
 cli xr set-transform --input-json '{"device":"headset","position":{"x":-0.9,"y":1.25,"z":-1.19},"orientation":{"pitch":-10,"yaw":90,"roll":0}}' | grep -q '"ok": true'
 cli browser run tools/browser/replace.mjs | grep -q '"ok": true'
 if [ -n "$1" ]; then
-  FILM_DIR=$(realpath -m "$1") FILM_N=${2:-20} FILM_DT=${3:-1000} cli browser run tools/browser/film.mjs --timeout 600000 | python3 -c "
+  FILM_DIR=$(realpath -m "$1") FILM_N=${2:-20} FILM_DT=${3:-1000} cli browser run --timeout 600000 tools/browser/film.mjs | python3 -c "
 import json,sys; d=json.load(sys.stdin)
 for r in d['data']['result']: print(r)"
 fi

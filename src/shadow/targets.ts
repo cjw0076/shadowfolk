@@ -35,6 +35,28 @@ export type Eye = [number, number, number] | [number, number, number, number];
 
 const straight = -0.32;
 
+// Two-hand creature halves (each built as a left hand; the partner is mirrored).
+function butterflyWing(): HandPose {
+  const p = shape(basePoses.relaxed(), { thumb: straight, index: straight, middle: straight, ring: -0.1, pinky: 0.05 });
+  spread(p, 'thumb', 16); spread(p, 'index', 6); spread(p, 'middle', -4); spread(p, 'ring', -14); spread(p, 'pinky', -24);
+  return orient(p, [0, 18, 48]);
+}
+function crabHalf(): HandPose {
+  const p = shape(basePoses.relaxed(), { thumb: 0.1, index: straight, middle: straight, ring: straight, pinky: straight });
+  spread(p, 'thumb', 32); spread(p, 'index', 18); spread(p, 'middle', 4); spread(p, 'ring', -10); spread(p, 'pinky', -24);
+  return orient(p, [0, 10, 92]);
+}
+function stagHead(): HandPose {
+  const p = shape(basePoses.relaxed(), { thumb: straight, index: straight, middle: straight, ring: 1, pinky: 1 });
+  spread(p, 'thumb', 32); spread(p, 'index', -2); spread(p, 'middle', 2);
+  return orient(p, [0, 25, 85]);
+}
+function stagAntlers(): HandPose {
+  const p = shape(basePoses.relaxed(), { thumb: straight, index: straight, middle: straight, ring: straight, pinky: straight });
+  spread(p, 'thumb', 35); spread(p, 'index', 20); spread(p, 'ring', -18); spread(p, 'pinky', -32);
+  return orient(p, [0, 10, -25]);
+}
+
 export const TARGETS: readonly TargetDef[] = [
   {
     id: 'peacock',
@@ -101,12 +123,40 @@ export const TARGETS: readonly TargetDef[] = [
     build: () => orient(clonePose(basePoses.pinch()), [0, 90, -20]),
   },
   {
+    id: 'butterfly',
+    creature: 'Butterfly',
+    line: 'A butterfly hooks its wings together and drifts toward the warm paper.',
+    motion: 'flap',
+    eyes: [[3, 4, 0.7, 0], [3, 4, 0.7, 1]],
+    // Two hands, thumbs hooked, fingers fanned as wings (design: agy-02).
+    build: butterflyWing,
+    partner: { build: butterflyWing, offset: [0.085, 0.0, 0.025] },
+  },
+  {
     id: 'heron',
     creature: 'Heron',
     line: 'A heron stands on one leg and points its beak toward morning.',
     motion: 'bob',
     eyes: [[6, 11, 0.4]],
     build: () => orient(basePoses.point(), [0, 90, -55]),
+  },
+  {
+    id: 'stag',
+    creature: 'Stag',
+    line: 'A great stag lifts branched antlers above the quiet ridge.',
+    motion: 'stalk',
+    eyes: [[5, 10, 0.45, 0]],
+    build: stagHead,
+    partner: { build: stagAntlers, offset: [0.055, 0.095, 0.025] },
+  },
+  {
+    id: 'crab',
+    creature: 'Crab',
+    line: 'A tide-pool crab clicks its claws and sidesteps across the lantern glow.',
+    motion: 'scuttle',
+    eyes: [[3, 4, 0.85, 0], [3, 4, 0.85, 1]],
+    build: crabHalf,
+    partner: { build: crabHalf, offset: [0.065, 0.0, 0.025] },
   },
 ];
 
