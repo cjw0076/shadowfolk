@@ -259,7 +259,7 @@ export class TheaterSystem extends createSystem({
       this.puppeteer.root, this.puppeteer2.root, this.wall.root, this.preview.root, this.dim.mesh, this.glowLight]) {
       this.world.createTransformEntity(o);
     }
-    if (this.rays) this.world.createTransformEntity(this.rays.lines);
+    if (this.rays) this.world.createTransformEntity(this.rays.root);
     this.baked = TARGETS.map(bakeTarget);
     this.stencils = this.baked.map((b) =>
       makeStencil(b.flats, 1, b.def.eyes));

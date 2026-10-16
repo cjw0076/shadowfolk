@@ -14,6 +14,13 @@ A paper lantern stands on your real table and a washi-paper screen stands beyond
 - **Carry it:** pinch the lantern to pick the whole theater up, and open your fingers to set it down somewhere else.
 - **Lights down:** the room dims around you while the lantern stays bright.
 
+## Each night
+- **Five sleeping shapes**, the newcomer saved for last. Each night has a name ("Night 1 · The First Lantern").
+- **Wake:** fit and hold. The cut-out flares, the creature fills with ink and opens its eye, follows your hand for a moment, then walks off in its own gait (hop, crawl, swim, flap, stalk, scuttle).
+- **Parade:** after the last shape, the night's creatures parade across the paper and the next newcomer is teased.
+- **Invent your own:** then the paper is blank. Hold any shape still and it is born as a new creature with its own name, and it joins your wall.
+- **Tonight's moon:** a moon cut into the paper's corner follows the real lunar phase.
+
 ## How it works
 - **Live shadows.** Every frame, the 25 tracked joints of each hand are projected from the lantern onto the paper's plane (`src/shadow/silhouette.ts`). The penumbra widens as a hand moves toward the light.
 - **Fitting a shape.** The live shadow is rasterised, normalised for position and size, and compared with the creature's template over ±30° of rotation and either hand. The comparison is an intersection-over-union weighted toward the fingertips.
@@ -26,11 +33,17 @@ A paper lantern stands on your real table and a washi-paper screen stands beyond
   - Fixed foveation and a 72 Hz request in XR (`src/theater/xr-render.ts`).
 - **Sound.** All of it is synthesised with Web Audio: a lantern drone and flame crackle in 3D at the lantern, creature voices, chimes and a generated reverb.
 - **Help without text.** The lantern waits as an ember until your hand enters its light. If a shape does not come, a ghost hand shows it.
+- **See the optics:** add `?rays` to the URL to draw the light rays from the lantern through each fingertip to the paper.
 
 ## Verification
 - `tools/check-runtime-browser.mjs`: runtime fault checks (storage, pause and resume, hand loss, audio).
 - `tools/check-matcher.ts`: matcher exactness.
-- `tools/browser/xr-e2e.mjs`: end-to-end in the IWER emulator. Real emulated XR hand joints go through `readHands`, the matcher and the wake for every first-night creature; a relaxed hand does not wake one.
+- `tools/browser/xr-e2e-all.mjs`, `xr-room-e2e.mjs`: end-to-end in the IWER emulator with real emulated XR hand joints through `readHands`, the matcher and the wake.
+  - All 11 creatures wake.
+  - Seven near-miss inputs never wake.
+  - The persistent anchor restores after the session ends.
+  - Pinch carry and pinned-to-wall mode work.
+- `tools/record/record.mjs`: frame-exact capture (`?capture`) with an offline-rendered soundtrack; the demo video is filmed with it.
 
 ## Develop
 ```sh
