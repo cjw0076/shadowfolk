@@ -159,6 +159,31 @@ export const TARGETS: readonly TargetDef[] = [
     build: crabHalf,
     partner: { build: crabHalf, offset: [0.065, 0.0, 0.025] },
   },
+  {
+    id: 'dog',
+    creature: 'Dog',
+    line: 'A small dog barks once at the moon, then trots home.',
+    motion: 'hop',
+    eyes: [[6, 7, 0.5]],
+    // Side-on hand: fingers as the head, thumb up as an ear, little finger dropped as the jaw.
+    build: () => {
+      const p = shape(basePoses.relaxed(), { thumb: straight, index: straight, middle: straight, ring: 0.15, pinky: -0.1 });
+      spread(p, 'thumb', 20); spread(p, 'pinky', -20);
+      return orient(p, [0, 90, 10]);
+    },
+  },
+  {
+    id: 'elephant',
+    creature: 'Elephant',
+    line: 'An elephant swings its trunk and trumpets softly at the lantern.',
+    motion: 'stalk',
+    eyes: [[5, 6, 0.6]],
+    // A loose fist as the head with the middle finger hanging down as the trunk.
+    build: () => {
+      const p = shape(basePoses.relaxed(), { thumb: 0.3, index: 0.7, middle: straight, ring: 0.7, pinky: 1 });
+      return orient(p, [0, 0, 195]);
+    },
+  },
 ];
 
 /** A target baked into its normalised template and a display silhouette. */

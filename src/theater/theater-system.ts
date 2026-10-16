@@ -51,6 +51,7 @@ const FINALE_CAPTION = `${NIGHT_LENGTH} shadows woke tonight.`;
 /** A name for each night, keyed by its newcomer; later nights are reunions. */
 const NIGHT_NAMES: Record<string, string> = {
   first: 'The First Lantern', butterfly: 'Wings', heron: 'Long Legs', stag: 'Antlers', crab: 'The Tide',
+  dog: 'The Barking Moon', elephant: 'Big Ears',
 };
 /** Lantern brightness before the first hand reaches its light. */
 const EMBER = 0.18;

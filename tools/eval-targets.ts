@@ -11,7 +11,11 @@ setRadialGain(Number(process.argv[3] ?? 3));
 const genMean: Record<string, number> = {};
 const allBaked = TARGETS.map(bakeTarget);
 // Single-hand creatures keep their original calibration stream; pairs are calibrated below.
-const baked = allBaked.filter((b) => !b.partner);
+// The first six creatures keep their original calibration stream; later single-hand
+// creatures and the two-hand ones are calibrated in their own blocks below.
+const ORIGINAL = new Set(['peacock', 'rabbit', 'snail', 'fish', 'duck', 'heron']);
+const baked = allBaked.filter((b) => !b.partner && ORIGINAL.has(b.def.id));
+const extra = allBaked.filter((b) => !b.partner && !ORIGINAL.has(b.def.id));
 const pairs = allBaked.filter((b) => b.partner);
 const tiles: any[] = allBaked.map((b) => ({ w: NORM, h: NORM, data: b.template, label: b.def.id }));
 
@@ -146,6 +150,31 @@ baked.forEach((b, i) => { const v = rows[i].sort((a, c) => a - c);
     pass[b.def.id] = +Math.min(0.8, Math.max(0.5, (genMean[b.def.id] + p95) / 2)).toFixed(3);
     console.log(b.def.id.padEnd(10), 'p95', p95.toFixed(2), 'max', v[v.length - 1].toFixed(2), 'gen', genMean[b.def.id].toFixed(2), 'PASS', pass[b.def.id]);
   });
+}
+// ---- Later single-hand creatures: same attempt model and casual impostors, continuing the stream.
+if (extra.length) {
+  console.log('\n== later single-hand creatures: genuine mean (noise 0.5), casual p95');
+  for (const b of extra) {
+    let sum = 0; const N = 40;
+    for (let k = 0; k < N; k++) sum += matcher.score(attempt(b.pose, 0.5, 0.3 + nz(0.07)), b.template) / N;
+    genMean[b.def.id] = sum;
+    const v: number[] = [];
+    for (const make of Object.values(casual)) {
+      for (let k = 0; k < 60; k++) {
+        const p = make(); orient(p, [nz(60), nz(60), nz(60)]);
+        v.push(matcher.score(attempt(p, 0.5, 0.3 + nz(0.07)), b.template));
+      }
+    }
+    v.sort((x, y) => x - y);
+    const p95 = v[Math.floor(v.length * 0.95)];
+    pass[b.def.id] = +Math.min(0.8, Math.max(0.5, (sum + p95) / 2)).toFixed(3);
+    // Confusion with the other single-hand templates for genuine attempts of this creature.
+    const conf = [...baked, ...extra].filter((o) => o !== b).map((o) => {
+      let c = 0; for (let k = 0; k < 20; k++) c += matcher.score(attempt(b.pose, 0.5, 0.3 + nz(0.07)), o.template) / 20;
+      return `${o.def.id}:${c.toFixed(2)}`;
+    });
+    console.log(b.def.id.padEnd(10), 'gen', sum.toFixed(2), 'p95', p95.toFixed(2), 'PASS', pass[b.def.id], '| vs', conf.join(' '));
+  }
 }
 writeSheet(out.replace('.png', '-all.png'), tiles, 6);
 

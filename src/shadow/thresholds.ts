@@ -9,5 +9,7 @@ export const PASS: Record<string, number> = {
   "heron": 0.717,
   "butterfly": 0.589,
   "stag": 0.616,
-  "crab": 0.657
+  "crab": 0.657,
+  "dog": 0.571,
+  "elephant": 0.678
 };
