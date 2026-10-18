@@ -216,6 +216,43 @@ export async function run(): Promise<string[]> {
       passed.push('PASS: butterfly adapts after eight seek seconds, burn-in/caption, one-hand night/finale/invent, skipped target returns');
     } finally { adapted.destroy(); }
 
+    const priorUrl = location.href;
+    try {
+      history.replaceState(null, '', '?demo&demoOneHand&first=butterfly&day=20378');
+      localStorage.removeItem('shadow-theater.v1');
+      const { system: filmed } = make();
+      filmed.init();
+      try {
+        const butterfly = filmed.baked.findIndex((target: any) => target.def.id === 'butterfly');
+        check(filmed.demo && filmed.demoOneHand && filmed.order[0] === butterfly, 'one-hand demo opt-in and first target');
+        let hintAt = -1, reformAt = -1, wakeAt = -1, handJump = Infinity;
+        let priorPose: Float32Array | null = null;
+        for (let frameIndex = 0; frameIndex < 480; frameIndex++) {
+          const time = frameIndex * .05;
+          filmed.update(.05, time);
+          check(!filmed.demoHand2.valid, 'one-hand demo never casts a second puppet');
+          if (filmed.ghost.material.opacity > 0 && hintAt < 0) hintAt = time;
+          if (filmed.order[0] !== butterfly && reformAt < 0) {
+            reformAt = time;
+            priorPose = new Float32Array(filmed.demoHand.joints);
+            check(filmed.reform?.old === butterfly, 'one-hand demo uses the real reform');
+          } else if (priorPose && handJump === Infinity) {
+            handJump = 0;
+            for (let joint = 0; joint < priorPose.length; joint++) {
+              handJump = Math.max(handJump, Math.abs(filmed.demoHand.joints[joint] - priorPose[joint]));
+            }
+          }
+          if (filmed.phase === 1) { wakeAt = time; break; }
+        }
+        const replacement = filmed.baked[filmed.order[0]];
+        check(hintAt >= 0 && reformAt > hintAt && wakeAt > reformAt
+          && !replacement.partner && filmed.saved.woken[replacement.def.id] === 1
+          && handJump < .025 && filmed.reported.size === 0,
+        `filmed butterfly reforms and wakes without a puppet snap: ${JSON.stringify({ hintAt, reformAt, wakeAt, handJump })}`);
+        passed.push('PASS: demoOneHand keeps one relaxed puppet, shows hint, reforms smoothly and wakes replacement');
+      } finally { filmed.destroy(); }
+    } finally { history.replaceState(null, '', priorUrl); }
+
     localStorage.removeItem('shadow-theater.v1');
     const { system: twoHands } = make();
     twoHands.init();
