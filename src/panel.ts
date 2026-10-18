@@ -24,7 +24,26 @@ export class PanelSystem extends createSystem({}) {
       return;
     }
 
-    const launchXR = () => this.world.launchXR();
+    // No immersive-ar here (a desktop browser): say how to play instead of failing silently.
+    const xrLabel = panel?.getElementById('xr-label');
+    const xrNote = panel?.getElementById('xr-note');
+    let canEnter = true;
+    const explain = () => {
+      xrLabel?.setProperties({ text: 'Play it on Meta Quest' });
+      xrNote?.setProperties({ display: 'flex' });
+    };
+    void navigator.xr?.isSessionSupported('immersive-ar').then((ok) => {
+      canEnter = ok;
+      if (!ok) xrLabel?.setProperties({ text: 'Play it on Meta Quest' });
+    }).catch(() => { canEnter = false; });
+    if (!navigator.xr) canEnter = false;
+    const launchXR = () => {
+      if (!canEnter) { explain(); return; }
+      try {
+        const started = this.world.launchXR() as unknown;
+        if (started instanceof Promise) started.catch(explain);
+      } catch { explain(); }
+    };
     const exitXR = () => this.world.exitXR();
     xrButton.addEventListener('click', launchXR);
     exitButton.addEventListener('click', exitXR);

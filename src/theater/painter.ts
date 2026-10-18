@@ -315,7 +315,7 @@ export class ScreenPainter {
   private overlay(order: number, geometry: PlaneGeometry, additive = false): Mesh<PlaneGeometry, MeshBasicMaterial> {
     const material = new MeshBasicMaterial({
       transparent: true, depthWrite: false, toneMapped: false,
-      blending: additive ? AdditiveBlending : undefined,
+      ...(additive ? { blending: AdditiveBlending } : {}),
     });
     const mesh = new Mesh(geometry, material);
     mesh.position.z = order * 0.0004;

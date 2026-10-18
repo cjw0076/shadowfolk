@@ -1,0 +1,10 @@
+import { chromium } from 'playwright';
+const [url, out, w = '1920', h = '1080', wait = '9000'] = process.argv.slice(2);
+const browser = await chromium.launch({ args: ['--use-gl=angle', '--use-angle=vulkan', '--enable-features=Vulkan', '--ignore-gpu-blocklist', '--enable-gpu'] });
+const page = await browser.newPage({ viewport: { width: +w, height: +h }, ignoreHTTPSErrors: true });
+const errs = []; page.on('pageerror', (e) => errs.push(String(e)));
+await page.goto(url, { waitUntil: 'load' });
+await page.waitForTimeout(+wait);
+await page.screenshot({ path: out });
+console.log('errors', errs.length, errs.slice(0, 2));
+await browser.close();
