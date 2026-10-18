@@ -101,8 +101,9 @@
   <div class="line">Raise your hands into the lantern light. When your shadow fits the shape on the paper, a creature wakes.</div>
   <div class="hint">For Meta Quest. Hands only, seated, about five minutes a night. Allow room access when asked, so the theater can use your table and wall.</div>
   <div id="xr-button" class="pill">
-    <div class="pill-label">Light the lantern</div>
+    <div id="xr-label" class="pill-label">Light the lantern</div>
   </div>
+  <div id="xr-note" class="hint" style="display: none">This browser cannot open mixed reality. On Meta Quest, open cjw0076.github.io/shadowfolk in the Meta Quest Browser to play at your own table. Here, the theater plays itself.</div>
   <div id="exit-button" class="pill ghost" style="display: none">
     <div class="pill-label ghost-label">Back to the browser</div>
   </div>
