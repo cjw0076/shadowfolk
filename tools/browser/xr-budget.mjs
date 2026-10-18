@@ -5,9 +5,9 @@ import { gzipSync } from 'node:zlib';
 const [scenario = 'seek', rateArgument = '4', secondsArgument = '60'] = process.argv.slice(2);
 const rate = Number(rateArgument);
 const seconds = Number(secondsArgument);
-const allowed = new Set(['seek', 'wake', 'finale', 'invent', 'rays']);
+const allowed = new Set(['idle', 'static', 'seek', 'wake', 'finale', 'invent', 'rays']);
 if (!allowed.has(scenario) || ![1, 4, 6].includes(rate) || !Number.isFinite(seconds) || seconds <= 0) {
-  throw new Error('Usage: node tools/browser/xr-budget.mjs <seek|wake|finale|invent|rays> <1|4|6> <seconds>');
+  throw new Error('Usage: node tools/browser/xr-budget.mjs <idle|static|seek|wake|finale|invent|rays> <1|4|6> <seconds>');
 }
 const base = process.env.XR_BASE ?? 'https://127.0.0.1:4178/';
 const output = process.env.XR_BUDGET_OUT ?? '../collab/codex/14-evidence/before';
@@ -22,6 +22,7 @@ const summarize = (values) => {
   if (!sorted.length) return { count: 0, mean: null, p95: null, max: null };
   const round = (value) => +value.toFixed(3);
   return { count: sorted.length, mean: round(sorted.reduce((sum, value) => sum + value, 0) / sorted.length),
+    p50: round(sorted[Math.ceil(sorted.length * 0.5) - 1]),
     p95: round(sorted[Math.ceil(sorted.length * 0.95) - 1]), max: round(sorted.at(-1)) };
 };
 
@@ -39,7 +40,7 @@ try {
     }));
   }, scenario === 'finale' ? ['peacock', 'rabbit', 'snail', 'fish', 'duck', 'butterfly', 'heron', 'stag'] : []);
   const url = new URL(base);
-  url.search = `?perf&demo&day=20378${scenario === 'rays' ? '&rays' : ''}`;
+  url.search = `?perf&demo&day=20378${scenario === 'rays' ? '&rays' : ''}${scenario === 'idle' ? '&idle' : ''}`;
   await page.goto(url.toString(), { waitUntil: 'load' });
   await page.waitForFunction(() => window.__theater && window.__perf && window.IWER_DEVICE?.sessionOffered,
     null, { timeout: 60000 });
@@ -74,6 +75,14 @@ try {
     const butterfly = theater.baked.findIndex((target) => target.def.id === 'butterfly');
     theater.order[0] = butterfly;
     theater.step = 0;
+    if (kind === 'idle' || kind === 'static') {
+      theater.demo = false;
+      theater.demoHand.valid = false;
+      theater.demoHand2.valid = false;
+      theater.fresh = -1;
+      theater.saved.nights = 1;
+      theater.painter.caption = () => {};
+    }
     if (kind === 'seek' || kind === 'rays') {
       const score = theater.matcher.score.bind(theater.matcher);
       theater.matcher.score = (mask, template) => {
@@ -92,7 +101,7 @@ try {
         };
       }
     }
-    if (kind === 'seek' || kind === 'rays') theater.enter(0);
+    if (kind === 'seek' || kind === 'rays' || kind === 'static') theater.enter(0);
     if (kind === 'wake') {
       theater.enter(1);
       const originalWake = theater.wake.bind(theater);
@@ -136,11 +145,20 @@ try {
       frames: Object.fromEntries(frameFields.map((field) => [field, new Float64Array(capacity)])),
       renders: Object.fromEntries(renderFields.map((field) => [field, new Float64Array(capacity)])),
       frameFields, renderFields, frameCount: 0, renderCount: 0, births: [],
+      requestCount: 0,
       now: { shadowMs: 0, blurMs: 0, blurPasses: 0, captionMs: 0, wallMs: 0,
         matcherMs: 0, asyncDispatchMs: 0, driveDemoMs: 0, tendStageMs: 0, readHandsMs: 0 },
       uploadMs: 0, uploads: 0,
     };
     window.__budget = data;
+    const worker = theater.asyncMatcher?.worker;
+    if (worker) {
+      const post = worker.postMessage.bind(worker);
+      worker.postMessage = (message, transfer) => {
+        if (message.kind === 'score') data.requestCount++;
+        return post(message, transfer);
+      };
+    }
     const beginFrame = perf.beginFrame.bind(perf);
     perf.beginFrame = () => {
       data.now.shadowMs = data.now.blurMs = data.now.blurPasses = data.now.captionMs = data.now.wallMs
@@ -295,15 +313,35 @@ try {
   } catch {
     tracing = false;
   }
+  const sampleHeap = process.env.XR_HEAP === '1';
+  if (sampleHeap) {
+    await cdp.send('HeapProfiler.enable');
+    await cdp.send('HeapProfiler.startSampling', { samplingInterval: 512 });
+  }
   const startedAt = await page.evaluate(() => {
     const data = window.__budget;
     data.frameCount = 0;
     data.renderCount = 0;
     data.births.length = 0;
+    data.requestCount = 0;
     return performance.now();
   });
   await page.waitForTimeout(seconds * 1000);
   const endedAt = await page.evaluate(() => performance.now());
+  let heapSites = [];
+  if (sampleHeap) {
+    const { profile } = await cdp.send('HeapProfiler.stopSampling');
+    const sites = new Map();
+    const visit = (node) => {
+      const { url, lineNumber, functionName } = node.callFrame;
+      const key = `${url}:${lineNumber + 1}:${functionName}`;
+      sites.set(key, (sites.get(key) ?? 0) + node.selfSize);
+      node.children.forEach(visit);
+    };
+    visit(profile.head);
+    heapSites = [...sites].map(([site, bytes]) => ({ site, bytes, bytesPerSecond: Math.round(bytes / seconds) }))
+      .sort((left, right) => right.bytes - left.bytes).slice(0, 30);
+  }
   if (tracing) {
     const finished = new Promise((resolve) => cdp.once('Tracing.tracingComplete', resolve));
     await cdp.send('Tracing.end');
@@ -318,7 +356,8 @@ try {
     return { frames: rows(data.frames, data.frameFields, data.frameCount),
       renders: rows(data.renders, data.renderFields, data.renderCount), births: data.births,
       phase: theater.phase, mode: theater.mode,
-      residents: theater.wall.residents?.length ?? 0, invented: theater.saved.invented?.length ?? 0 };
+      residents: theater.wall.residents?.length ?? 0, invented: theater.saved.invented?.length ?? 0,
+      requestCount: data.requestCount };
   });
   const trim = (rows) => rows.filter((row) => row.t >= startedAt && row.t <= endedAt);
   const frames = trim(captured.frames);
@@ -332,10 +371,12 @@ try {
   metrics.rasterMs = summarize(frames.map((frame) => Math.max(0, frame.shadowMs - frame.blurMs)));
   const result = { scenario, rate, requestedSeconds: seconds, elapsedSeconds: +(endedAt - startedAt).toFixed(3) / 1000,
     setup, metrics, longestFrames: [...frames].sort((a, b) => (b.intervalMs ?? 0) - (a.intervalMs ?? 0)).slice(0, 10),
-    births: captured.births, endState: { phase: captured.phase, mode: captured.mode,
+    births: captured.births, matcherRequests: captured.requestCount,
+    matcherRequestsPerSecond: +(captured.requestCount / seconds).toFixed(2),
+    endState: { phase: captured.phase, mode: captured.mode,
       residents: captured.residents, invented: captured.invented },
     gc: { traceEvents, count: gcEvents.length, pausesMs: summarize(gcEvents.map((event) => event.ms)),
-      longest: gcEvents.sort((a, b) => b.ms - a.ms).slice(0, 10) }, errors };
+      longest: gcEvents.sort((a, b) => b.ms - a.ms).slice(0, 10) }, heapSites, errors };
   if (scenario === 'seek') {
     result.still = `${output}/${name}.png`;
     await page.screenshot({ path: result.still });
@@ -343,7 +384,8 @@ try {
   writeFileSync(`${output}/${name}.json`, JSON.stringify(result, null, 2));
   writeFileSync(`${output}/${name}-frames.json.gz`, gzipSync(JSON.stringify({ frames, renders })));
   console.log(JSON.stringify({ file: `${output}/${name}.json`, result }, null, 2));
-  if (!setup.demo || setup.mode !== 'table' || (scenario === 'rays') !== setup.rays || errors.length
+  if (setup.demo !== !['idle', 'static'].includes(scenario) || setup.mode !== 'table'
+    || (scenario === 'rays') !== setup.rays || errors.length
     || frames.length < seconds * 10 || renders.length < seconds * 10 || (scenario === 'finale' && captured.residents < 8)
     || (['seek', 'wake', 'rays'].includes(scenario) && metrics.demoHands.mean < 1.8)
     || (scenario === 'invent' && !captured.births.some((birth) => birth.born))) {

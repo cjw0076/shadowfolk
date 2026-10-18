@@ -179,6 +179,8 @@ export class TheaterSystem extends createSystem({
   private demoDelay = Number(new URLSearchParams(typeof location !== 'undefined' ? location.search : '').get('demoDelay')) || 0;
   /** `?demoDepth` (filming): before forming a shape, the demo hand moves toward the lantern and back. */
   private demoDepth = typeof location !== 'undefined' && new URLSearchParams(location.search).has('demoDepth');
+  private idle = typeof location !== 'undefined' && new URLSearchParams(location.search).has('perf')
+    && new URLSearchParams(location.search).has('idle');
   /** `?rays` (explainer): draw the lantern's light rays through each hand onto the paper. */
   private rays = typeof location !== 'undefined' && new URLSearchParams(location.search).has('rays') ? new LightRays() : null;
   private lit = 1; // lantern brightness 0..1
@@ -1163,6 +1165,7 @@ export class TheaterSystem extends createSystem({
     if (this.sessionAt < 0) this.sessionAt = this.animationTime;
     if (!this.placed && time >= this.placeAt) this.place(time);
     if (!this.placed) return;
+    if (this.idle && !this.settle && this.fitUntil === 0) return;
     if (this.immersive) {
       this.tendStage(dt, time);
     } else {

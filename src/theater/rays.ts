@@ -65,11 +65,11 @@ export class LightRays {
   }
 
   end(): void {
-    for (const im of [this.light, this.dark]) {
-      im.count = this.n;
-      im.instanceMatrix.needsUpdate = true;
-      if (im.instanceColor) im.instanceColor.needsUpdate = true;
-    }
+    this.light.count = this.dark.count = this.n;
+    this.light.instanceMatrix.needsUpdate = true;
+    this.dark.instanceMatrix.needsUpdate = true;
+    if (this.light.instanceColor) this.light.instanceColor.needsUpdate = true;
+    if (this.dark.instanceColor) this.dark.instanceColor.needsUpdate = true;
     this.root.visible = this.n > 0;
   }
 
