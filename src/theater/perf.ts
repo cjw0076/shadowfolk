@@ -12,6 +12,7 @@ class RuntimePerf {
   readonly capacity = CAPACITY;
   readonly update = new Samples();
   readonly painter = new Samples();
+  readonly mask = new Samples();
   readonly frameInterval = new Samples();
   readonly uploadBytes = new Samples();
   readonly uploadSubmissions = new Samples();
@@ -22,6 +23,7 @@ class RuntimePerf {
     caption: new Samples(), progress: new Samples(), end: new Samples(),
   };
   private painterMs = 0;
+  private maskMs = 0;
   private previous = 0;
   private pendingUploadBytes = 0;
   private pendingUploadSubmissions = 0;
@@ -29,6 +31,10 @@ class RuntimePerf {
   recordUpload(width: number, height: number): void {
     this.pendingUploadBytes += width * height * 4;
     this.pendingUploadSubmissions++;
+  }
+
+  recordMask(started: number): void {
+    this.maskMs += performance.now() - started;
   }
 
   beginFrame(): number {
@@ -40,6 +46,7 @@ class RuntimePerf {
     if (this.previous) this.frameInterval.push(now - this.previous);
     this.previous = now;
     this.painterMs = 0;
+    this.maskMs = 0;
     return now;
   }
 
@@ -53,6 +60,7 @@ class RuntimePerf {
     this.phase[this.update.count % CAPACITY] = phase;
     this.update.push(performance.now() - start);
     this.painter.push(this.painterMs);
+    this.mask.push(this.maskMs);
   }
 }
 

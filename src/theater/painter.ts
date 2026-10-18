@@ -8,20 +8,20 @@ import {
   AdditiveBlending, CanvasTexture, Color, DynamicDrawUsage, Group, InstancedMesh,
   LinearFilter, Mesh, MeshBasicMaterial, Object3D, PlaneGeometry, SRGBColorSpace, Vector2, Vector4,
 } from '@iwsdk/core';
-import { BONES, PALM } from '../shadow/hand-model.js';
 import { FlatHand } from '../shadow/silhouette.js';
 import { TARGETS } from '../shadow/targets.js';
 import { runtimePerf as perf } from './perf.js';
+import { handPath, INK, PIXELS_PER_METRE, rasterStencil, type RasterStencil } from './stencil-raster.js';
 import { playfairReady } from './visual-fonts.js';
 
 export const SCREEN_W = 1.0; // metres
 export const SCREEN_H = 0.66;
-const CW = 1024;
+const CW = PIXELS_PER_METRE;
 const CH = Math.round((CW * SCREEN_H) / SCREEN_W);
 const PX = CW / SCREEN_W; // canvas px per screen metre
 const SOFT = 4; // shadow layer downscale (penumbra softness)
+export const SHADOW_PX_PER_METRE = PX / SOFT;
 
-const INK = '#1c1316';
 const INK_COLOR = new Color(INK);
 const SPARK_COUNT = 18;
 const CAPTION_H = 80;
@@ -64,22 +64,6 @@ function canvas(w: number, h: number, cpu = true): [HTMLCanvasElement, CanvasRen
   return [c, c.getContext('2d', { willReadFrequently: cpu })!];
 }
 
-/** Trace palm polygon + finger capsules of a flat hand into the current path. */
-function handPath(ctx: CanvasRenderingContext2D, f: FlatHand): void {
-  ctx.beginPath();
-  ctx.moveTo(f.x[PALM[0]], f.y[PALM[0]]);
-  for (let k = 1; k < PALM.length; k++) ctx.lineTo(f.x[PALM[k]], f.y[PALM[k]]);
-  ctx.closePath();
-  ctx.fill();
-  for (const [a, b] of BONES) {
-    ctx.lineWidth = f.r[a] + f.r[b];
-    ctx.beginPath();
-    ctx.moveTo(f.x[a], f.y[a]);
-    ctx.lineTo(f.x[b], f.y[b]);
-    ctx.stroke();
-  }
-}
-
 /** A creature silhouette pre-rendered as sprites (ink, cut-out, glow). */
 export interface Stencil {
   ink: HTMLCanvasElement;
@@ -98,165 +82,17 @@ export interface Stencil {
   eyes: [number, number][]; // 0..1 inside the sprite, y down
 }
 
-/** Same path as handPath but every stroke widened by `grow` metres. */
-function handPathGrown(ctx: CanvasRenderingContext2D, f: FlatHand, grow: number): void {
-  ctx.lineWidth = grow * 2;
-  ctx.beginPath();
-  ctx.moveTo(f.x[PALM[0]], f.y[PALM[0]]);
-  for (let k = 1; k < PALM.length; k++) ctx.lineTo(f.x[PALM[k]], f.y[PALM[k]]);
-  ctx.closePath();
-  ctx.fill();
-  ctx.stroke();
-  for (const [a, b] of BONES) {
-    ctx.lineWidth = f.r[a] + f.r[b] + grow * 2;
-    ctx.beginPath();
-    ctx.moveTo(f.x[a], f.y[a]);
-    ctx.lineTo(f.x[b], f.y[b]);
-    ctx.stroke();
-  }
+export function makeStencil(hands: FlatHand | FlatHand[], scale: number, eyes: readonly (readonly number[])[]): Stencil {
+  return finishStencil(rasterStencil(hands, scale, eyes, canvas));
 }
 
-export function makeStencil(hands: FlatHand | FlatHand[], scale: number, eyes: readonly (readonly number[])[]): Stencil {
-  const fs = Array.isArray(hands) ? hands : [hands];
-  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-  for (const f of fs) {
-    for (let j = 0; j < f.x.length; j++) {
-      minX = Math.min(minX, f.x[j] - f.r[j]); maxX = Math.max(maxX, f.x[j] + f.r[j]);
-      minY = Math.min(minY, f.y[j] - f.r[j]); maxY = Math.max(maxY, f.y[j] + f.r[j]);
-    }
-  }
-  const pad = 0.03; // metres of room for the glow
-  const wM = (maxX - minX) * scale + 2 * pad, hM = (maxY - minY) * scale + 2 * pad;
-  const w = Math.ceil(wM * PX), h = Math.ceil(hM * PX);
-  const [ink, ictx] = canvas(w, h);
-  ictx.setTransform(PX * scale, 0, 0, -PX * scale, pad * PX - minX * PX * scale, h - pad * PX + minY * PX * scale);
-  ictx.fillStyle = ictx.strokeStyle = INK;
-  ictx.lineCap = 'round';
-  ictx.lineJoin = 'round';
-  ictx.filter = 'blur(3px)';
-  ictx.fillStyle = ictx.strokeStyle = 'rgba(42,47,58,0.85)';
-  for (const f of fs) handPath(ictx, f);
-  ictx.filter = 'none';
-  ictx.globalAlpha = 0.82;
-  ictx.fillStyle = ictx.strokeStyle = INK;
-  for (const f of fs) handPath(ictx, f);
-  ictx.globalAlpha = 1;
-  ictx.setTransform(1, 0, 0, 1, 0, 0);
-  ictx.globalCompositeOperation = 'source-atop';
-  let grainSeed = 0x6d2b79f5;
-  for (let index = 0; index < Math.round(w * h / 90); index++) {
-    grainSeed = (Math.imul(grainSeed, 1664525) + 1013904223) >>> 0;
-    const x = (grainSeed / 0x100000000) * w;
-    grainSeed = (Math.imul(grainSeed, 1664525) + 1013904223) >>> 0;
-    const y = (grainSeed / 0x100000000) * h;
-    ictx.fillStyle = index % 3 ? 'rgba(240,226,201,0.055)' : 'rgba(8,7,9,0.10)';
-    ictx.fillRect(x, y, 1, 1);
-  }
-  ictx.globalCompositeOperation = 'source-over';
-  const inkSource = ictx.getImageData(0, 0, w, h).data;
-  for (let row = 18; row < h - 18; row += 4) {
-    for (let column = 18; column < w - 18; column += 4) {
-      const pixel = (row * w + column) * 4;
-      const alpha = inkSource[pixel + 3];
-      if (alpha < 45 || alpha > 205) continue;
-      const flow = Math.sin(column * 0.31 + row * 0.17) * Math.sin(column * 0.07 - row * 0.23);
-      if (flow < 0.35) continue;
-      const gradientX = inkSource[pixel + 7] - inkSource[pixel - 1];
-      const gradientY = inkSource[pixel + w * 4 + 3] - inkSource[pixel - w * 4 + 3];
-      const length = Math.hypot(gradientX, gradientY);
-      if (length < 18) continue;
-      const reach = 8 + 8 * flow;
-      const drift = 5 * Math.sin(column * 0.09 - row * 0.13);
-      const endX = column - gradientX / length * reach - gradientY / length * drift;
-      const endY = row - gradientY / length * reach + gradientX / length * drift;
-      const wisp = ictx.createLinearGradient(column, row, endX, endY);
-      wisp.addColorStop(0, 'rgba(28,19,22,0.36)');
-      wisp.addColorStop(1, 'rgba(28,19,22,0)');
-      ictx.strokeStyle = wisp;
-      ictx.lineWidth = 0.7 + flow * 0.8;
-      ictx.beginPath();
-      ictx.moveTo(column, row);
-      ictx.quadraticCurveTo((column + endX) / 2 + drift * 0.4, (row + endY) / 2, endX, endY);
-      ictx.stroke();
-    }
-  }
-  const [cut, cctx] = canvas(w, h);
-  cctx.setTransform(PX * scale, 0, 0, -PX * scale, pad * PX - minX * PX * scale, h - pad * PX + minY * PX * scale);
-  cctx.lineCap = 'round';
-  cctx.lineJoin = 'round';
-  cctx.fillStyle = cctx.strokeStyle = '#2e1408';
-  for (const f of fs) handPathGrown(cctx, f, 0.005 / scale);
-  cctx.fillStyle = cctx.strokeStyle = '#42220f';
-  for (const f of fs) handPathGrown(cctx, f, 0.0046 / scale);
-  cctx.fillStyle = cctx.strokeStyle = '#b2682a';
-  for (const f of fs) handPathGrown(cctx, f, 0.0015 / scale);
-  cctx.fillStyle = cctx.strokeStyle = '#fff2d1';
-  for (const f of fs) handPath(cctx, f);
-  cctx.setTransform(1, 0, 0, 1, 0, 0);
-  const charPixels = cctx.getImageData(0, 0, w, h);
-  const edgeSource = charPixels.data.slice();
-  for (let row = 2; row < h - 2; row++) {
-    for (let column = 2; column < w - 2; column++) {
-      const pixel = (row * w + column) * 4;
-      if (edgeSource[pixel] > 90 || edgeSource[pixel + 3] < 160) continue;
-      const neighbours = [pixel - 4, pixel + 4, pixel - w * 4, pixel + w * 4];
-      const edge = neighbours.find(neighbour => edgeSource[neighbour + 3] < 8);
-      if (edge === undefined) continue;
-      const waviness = Math.sin(column * 0.173 + row * 0.117) * Math.sin(column * 0.041 - row * 0.087);
-      if (waviness > 0.17) {
-        charPixels.data[edge] = 66;
-        charPixels.data[edge + 1] = 34;
-        charPixels.data[edge + 2] = 15;
-        charPixels.data[edge + 3] = 210;
-      } else if (waviness < -0.57) {
-        charPixels.data[pixel + 3] = 130;
-      }
-    }
-  }
-  cctx.putImageData(charPixels, 0, 0);
-  const [reveal, revealContext] = canvas(w, h);
-  let weightedX = 0, weightedY = 0, weight = 0;
-  for (let row = 0; row < h; row++) for (let column = 0; column < w; column++) {
-    const alpha = charPixels.data[(row * w + column) * 4 + 3];
-    if (alpha < 128) continue;
-    weightedX += column * alpha;
-    weightedY += row * alpha;
-    weight += alpha;
-  }
-  const centreX = weight ? weightedX / weight : w / 2;
-  const centreY = weight ? weightedY / weight : h / 2;
-  let maxRadius = 1;
-  for (let row = 0; row < h; row++) for (let column = 0; column < w; column++) {
-    if (charPixels.data[(row * w + column) * 4 + 3] < 128) continue;
-    maxRadius = Math.max(maxRadius, Math.hypot(column - centreX, row - centreY));
-  }
-  const revealPixels = revealContext.createImageData(w, h);
-  for (let row = 0; row < h; row++) for (let column = 0; column < w; column++) {
-    const distance = Math.min(255, 255 * Math.hypot(column - centreX, row - centreY) / maxRadius);
-    const pixel = (row * w + column) * 4;
-    revealPixels.data[pixel] = revealPixels.data[pixel + 1] = revealPixels.data[pixel + 2] = distance;
-    revealPixels.data[pixel + 3] = 255;
-  }
-  revealContext.putImageData(revealPixels, 0, 0);
+function finishStencil(raster: RasterStencil<HTMLCanvasElement>): Stencil {
+  const { ink, cut, glow, reveal, wM, hM, cx, cy, eyePts } = raster;
+  const w = ink.width, h = ink.height;
   const revealTexture = new CanvasTexture(reveal);
   revealTexture.generateMipmaps = false;
   revealTexture.minFilter = LinearFilter;
   revealTexture.magFilter = LinearFilter;
-  const [glow, gctx] = canvas(w, h);
-  gctx.filter = 'blur(16px)';
-  gctx.drawImage(ink, 0, 0);
-  gctx.filter = 'none';
-  gctx.globalCompositeOperation = 'source-in';
-  gctx.fillStyle = '#f7b25a';
-  gctx.fillRect(0, 0, w, h);
-  const toSprite = (x: number, y: number): [number, number] => [
-    (pad + (x - minX) * scale) / wM,
-    1 - (pad + (y - minY) * scale) / hM,
-  ];
-  const eyePts = eyes.map(([a, b, t, hand = 0]) => {
-    const f = fs[Math.min(hand, fs.length - 1)];
-    return toSprite(f.x[a] + (f.x[b] - f.x[a]) * t, f.y[a] + (f.y[b] - f.y[a]) * t);
-  });
   const eyeSprite = (blink: boolean): HTMLCanvasElement => {
     const [sprite, context] = canvas(w, h);
     context.drawImage(ink, 0, 0);
@@ -291,11 +127,32 @@ export function makeStencil(hands: FlatHand | FlatHand[], scale: number, eyes: r
   if (!eyeGlint.complete || !eyeGlint.naturalWidth) pendingGlints.push({ canvas: openEyes, texture: openTexture, eyes: eyePts });
   return {
     ink, cut, glow, w: wM, h: hM,
-    cx: ((minX + maxX) / 2) * scale, cy: ((minY + maxY) / 2) * scale,
+    cx, cy,
     eyes: eyePts,
     inkOpen: openTexture, inkBlink: texture(eyeSprite(true)),
     cutTexture: texture(cut), glowTexture: texture(glow), revealTexture,
   };
+}
+
+export interface StencilPixels {
+  width: number;
+  height: number;
+  wM: number;
+  hM: number;
+  cx: number;
+  cy: number;
+  eyePts: [number, number][];
+  layers: [ArrayBuffer, ArrayBuffer, ArrayBuffer, ArrayBuffer];
+}
+
+export function makeStencilFromPixels(pixels: StencilPixels): Stencil {
+  const [ink, cut, glow, reveal] = pixels.layers.map((bytes) => {
+    const [source, context] = canvas(pixels.width, pixels.height);
+    context.putImageData(new ImageData(new Uint8ClampedArray(bytes), pixels.width, pixels.height), 0, 0);
+    return source;
+  });
+  return finishStencil({ ink, cut, glow, reveal, wM: pixels.wM, hM: pixels.hM,
+    cx: pixels.cx, cy: pixels.cy, eyePts: pixels.eyePts });
 }
 
 interface CreatureLayer {
@@ -326,6 +183,8 @@ export class ScreenPainter {
   private sctx: CanvasRenderingContext2D;
   private handCanvas: HTMLCanvasElement;
   private handContext: CanvasRenderingContext2D;
+  private shadowCount = 0;
+  private shadowBlur = 0;
   private washi = new Image();
   private fontReady = false;
   private softTexture: CanvasTexture;
@@ -549,6 +408,9 @@ export class ScreenPainter {
     const s = this.sctx;
     s.setTransform(1, 0, 0, 1, 0, 0);
     s.clearRect(0, 0, this.soft.width, this.soft.height);
+    this.handContext.setTransform(1, 0, 0, 1, 0, 0);
+    this.handContext.clearRect(0, 0, this.handCanvas.width, this.handCanvas.height);
+    this.shadowCount = 0;
     perf?.endCall('begin', started);
   }
 
@@ -575,23 +437,34 @@ export class ScreenPainter {
   shadow(f: FlatHand, blurPixels = 1): void {
     if (!f.valid) return;
     const started = perf ? performance.now() : 0;
-    const hand = this.handContext, shadow = this.sctx, quarterScale = PX / SOFT;
-    hand.setTransform(1, 0, 0, 1, 0, 0);
-    hand.clearRect(0, 0, this.handCanvas.width, this.handCanvas.height);
+    const hand = this.handContext, quarterScale = SHADOW_PX_PER_METRE;
+    if (this.shadowCount && Math.abs(blurPixels - this.shadowBlur) > 0.75) {
+      this.paintShadowMask();
+      hand.setTransform(1, 0, 0, 1, 0, 0);
+      hand.clearRect(0, 0, this.handCanvas.width, this.handCanvas.height);
+    }
     hand.setTransform(quarterScale, 0, 0, -quarterScale, this.soft.width / 2, this.soft.height / 2);
     hand.fillStyle = hand.strokeStyle = '#fff';
     hand.lineCap = 'round';
     hand.lineJoin = 'round';
     handPath(hand, f);
-    shadow.filter = `blur(${blurPixels.toFixed(1)}px)`;
-    shadow.drawImage(this.handCanvas, 0, 0);
-    shadow.filter = 'none';
+    this.shadowBlur = (this.shadowBlur * this.shadowCount + blurPixels) / (this.shadowCount + 1);
+    this.shadowCount++;
     perf?.endCall('shadow', started);
+  }
+
+  private paintShadowMask(): void {
+    if (!this.shadowCount) return;
+    this.sctx.filter = `blur(${this.shadowBlur.toFixed(1)}px)`;
+    this.sctx.drawImage(this.handCanvas, 0, 0);
+    this.sctx.filter = 'none';
+    this.shadowCount = 0;
   }
 
   /** Upload just the quarter-size shadow layer for GPU bilinear upscaling. */
   flushShadows(alpha: number): void {
     const started = perf ? performance.now() : 0;
+    this.paintShadowMask();
     this.shadowMesh.material.opacity = alpha;
     this.shadowMesh.visible = true;
     this.softTexture.needsUpdate = true;

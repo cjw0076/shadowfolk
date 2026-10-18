@@ -13,10 +13,12 @@ import {
 import {
   FlatHand, Mask, Matcher, Moments, STAGE, ScreenFrame, drawHand, moments, projectFromLight,
 } from '../shadow/silhouette.js';
+import { AsyncMatcher } from '../shadow/async-matcher.js';
 import { BakedTarget, TARGETS, bakeTarget } from '../shadow/targets.js';
 import { TheaterAudio } from './audio.js';
 import { runtimePerf as perf } from './perf.js';
-import { SCREEN_H, SCREEN_W, ScreenPainter, Stencil, makeStencil } from './painter.js';
+import { SCREEN_H, SCREEN_W, SHADOW_PX_PER_METRE, ScreenPainter, Stencil, StencilPixels,
+  makeStencil, makeStencilFromPixels } from './painter.js';
 import { RigAnchor } from './anchor.js';
 import { LANTERN_ON_TABLE, Surface, TableFit, WallFit, fitPinWall, fitTable, fitWall } from './room.js';
 import { GhostHand, Lantern, PaperScreen, RoomDim, buildLantern, buildRoomDim, buildScreen } from './stage.js';
@@ -201,6 +203,9 @@ export class TheaterSystem extends createSystem({
   private inventPrev: Moments = { area: 0, cx: 0, cy: 0 };
   private inventMo: Moments = { area: 0, cx: 0, cy: 0 };
   private inventBorn = false;
+  private inventPending = false;
+  private inventWorker: Worker | null = null;
+  private inventSerial = 0;
   private inventBornAt = 0;
   private inventId = '';
   private inventName = '';
@@ -226,6 +231,7 @@ export class TheaterSystem extends createSystem({
   private demoHand2!: LiveHand;
   private live = new Mask(170, 120, -0.68, -0.48, 0.008);
   private matcher = new Matcher();
+  private asyncMatcher: AsyncMatcher | null = null;
 
   private phase = Phase.Seek;
   private phaseTime = 0;
@@ -286,6 +292,10 @@ export class TheaterSystem extends createSystem({
     this.demoHand = mk();
     this.demoHand2 = mk();
     this.allHands = [...this.hands, this.demoHand, this.demoHand2];
+    this.cleanupFuncs.push(() => {
+      this.asyncMatcher?.dispose();
+      this.inventWorker?.terminate();
+    });
     this.mirrored = this.baked.map((b) => mirror(b.pose));
     this.demoFrom = basePoses.relaxed();
     this.demoFrom2 = mirror(basePoses.relaxed());
@@ -368,6 +378,10 @@ export class TheaterSystem extends createSystem({
    * all are known. The rest of the order is seeded by date and night.
    */
   private newNight(): void {
+    this.inventWorker?.terminate();
+    this.inventWorker = null;
+    this.inventPending = false;
+    this.inventSerial++;
     const nights = this.saved.nights;
     const known = Math.min(TARGETS.length, FIRST_NIGHT + nights);
     // `?day=N` pins the calendar seed (filming, testing); otherwise tonight's date.
@@ -507,6 +521,13 @@ export class TheaterSystem extends createSystem({
     this.clearOneHandThisSession = this.saved.oneHand === true;
     if (this.saved.oneHand) this.suppressTwoHandTargets();
     const session = this.renderer.xr.getSession?.();
+    if (session && typeof Worker !== 'undefined') {
+      try {
+        this.asyncMatcher = new AsyncMatcher(this.baked.map((target) => target.template), this.allHands);
+      } catch {
+        this.asyncMatcher = null;
+      }
+    }
     if (session && this.rigAnchor.hasSaved) {
       this.restore = 'pending';
       void this.rigAnchor.restore(session).then((ok) => {
@@ -518,6 +539,8 @@ export class TheaterSystem extends createSystem({
   }
 
   private endSession(): void {
+    this.asyncMatcher?.dispose();
+    this.asyncMatcher = null;
     this.rigAnchor.endSession();
     this.restore = 'idle';
     this.anchored = false;
@@ -780,6 +803,7 @@ export class TheaterSystem extends createSystem({
       const a = Math.min(ease(t / 0.8), 1 - ease((t - INVENT_TIME + 0.8) / 0.8));
       this.painter.caption('Make a shape of your own.', a, 0.27);
       if (t > 2.5) this.painter.caption('Hold it still.', a * 0.8, -0.27);
+      if (this.inventPending) return;
       if (casters > 0) {
         moments(this.live, this.inventMo);
         const still = this.inventPrev.area > 0
@@ -837,15 +861,45 @@ export class TheaterSystem extends createSystem({
     list.push(v);
     while (list.length > MAX_INVENTED) list.shift();
     save(this.saved);
-    this.inventStencils.set(id, this.inventedStencil(v));
-    this.inventId = id;
-    this.inventName = name;
-    this.inventBorn = true;
-    this.inventBornAt = this.phaseTime;
-    this.leapt = false;
+    this.inventPending = true;
+    const serial = ++this.inventSerial;
     this.audio.setHold(0);
-    this.audio.chime(this.step + 2);
-    this.audio.voice('fan');
+    const finish = (stencil: Stencil) => {
+      if (serial !== this.inventSerial || this.phase !== Phase.Invent) return;
+      this.inventStencils.set(id, stencil);
+      this.inventId = id;
+      this.inventName = name;
+      this.inventBorn = true;
+      this.inventPending = false;
+      this.inventBornAt = this.phaseTime;
+      this.leapt = false;
+      this.audio.chime(this.step + 2);
+      this.audio.voice('fan');
+    };
+    if (this.immersive && this.renderer.xr.getSession?.() && typeof Worker !== 'undefined') {
+      try {
+        const worker = new Worker(new URL('./stencil-bake.worker.ts', import.meta.url), { type: 'module' });
+        this.inventWorker = worker;
+        const fallback = () => {
+          worker.terminate();
+          if (this.inventWorker === worker) this.inventWorker = null;
+          if (serial === this.inventSerial) finish(this.inventedStencil(v));
+        };
+        worker.onmessage = ({ data }: MessageEvent<StencilPixels>) => {
+          worker.terminate();
+          if (this.inventWorker === worker) this.inventWorker = null;
+          if (serial !== this.inventSerial) return;
+          try { finish(makeStencilFromPixels(data)); } catch { finish(this.inventedStencil(v)); }
+        };
+        worker.onerror = fallback;
+        worker.postMessage({ hands: v.hands, eyes: [v.eye] });
+        return;
+      } catch {
+        this.inventWorker?.terminate();
+        this.inventWorker = null;
+      }
+    }
+    finish(this.inventedStencil(v));
     void time;
   }
 
@@ -1196,7 +1250,10 @@ export class TheaterSystem extends createSystem({
     // Shadows: project every hand from the lantern onto the paper.
     const p = this.painter;
     p.begin();
-    this.live.clear();
+    const needsMainMask = (this.phase === Phase.Seek && !this.asyncMatcher?.ready)
+      || (this.phase === Phase.Wake && this.wakeC0 !== null && this.phaseTime < WALK_AT)
+      || (this.phase === Phase.Invent && !this.inventBorn && !this.inventPending);
+    if (needsMainMask) this.live.clear();
     let casters = 0;
     const L = this.lanternPos;
     this.rays?.begin();
@@ -1204,7 +1261,11 @@ export class TheaterSystem extends createSystem({
       if (!h.valid) continue;
       projectFromLight(h.joints, h.radii, L.x, L.y, L.z, this.frame, h.flat);
       if (!h.flat.valid) continue;
-      drawHand(this.live, h.flat);
+      if (needsMainMask) {
+        const maskStarted = perf ? performance.now() : 0;
+        drawHand(this.live, h.flat);
+        perf?.recordMask(maskStarted);
+      }
       this.rays?.add(h.joints, L, this.frame, this.phase === Phase.Seek ? 1 : 0.35);
       casters++;
     }
@@ -1238,7 +1299,7 @@ export class TheaterSystem extends createSystem({
       // Penumbra width W = flame radius * (paper - hand) / hand; Gaussian sigma ~ W/3.
       // A 2.4 cm effective flame keeps a mid-distance hand readable and still blooms near the lantern.
       const penumbraMetres = 0.024 * Math.max(0, screenDistance - distance) / distance;
-      p.shadow(hand.flat, Math.min(12, Math.max(0.8, (penumbraMetres * 256) / 3)));
+      p.shadow(hand.flat, Math.min(12, Math.max(0.8, (penumbraMetres * SHADOW_PX_PER_METRE) / 3)));
     }
     p.flushShadows(this.phase === Phase.Wake ? 0.35 : 0.9);
     if (this.phase !== Phase.Finale) p.progress(this.step, NIGHT_LENGTH);
@@ -1268,7 +1329,12 @@ export class TheaterSystem extends createSystem({
     if (this.reform) this.reform.elapsed += dt;
     const reforming = !!this.reform && this.reform.elapsed < 1.4;
     // A two-hand creature only wakes for two shadows.
-    const raw = !reforming && casters >= (target.partner ? 2 : 1) ? this.matcher.score(this.live, target.template) : 0;
+    const canMatch = !reforming && casters >= (target.partner ? 2 : 1);
+    if (!canMatch) this.asyncMatcher?.reset();
+    const raw = canMatch
+      ? this.asyncMatcher?.ready ? this.asyncMatcher.score(this.baked.indexOf(target))
+        : this.matcher.score(this.live, target.template)
+      : 0;
     this.score += (raw - this.score) * Math.min(1, dt * 10);
     const close = Math.max(0, Math.min(1, (this.score - 0.3) / (target.pass - 0.3)));
     if (!casting) { this.score = 0; this.hold = 0; }
@@ -1352,6 +1418,10 @@ export class TheaterSystem extends createSystem({
       if (!order.includes(id)) order.push(id);
       save(this.saved);
       this.ghost.opacity = this.ghost2.opacity = 0;
+      if (this.asyncMatcher?.ready) {
+        this.live.clear();
+        for (const hand of this.allHands) if (hand.valid && hand.flat.valid) drawHand(this.live, hand.flat);
+      }
       moments(this.live, this.wakeMo);
       this.wakeC0 = this.wakeMo.area > 4 ? { cx: this.wakeMo.cx, cy: this.wakeMo.cy } : null;
       this.follow.x = this.follow.y = this.follow.vx = 0;
