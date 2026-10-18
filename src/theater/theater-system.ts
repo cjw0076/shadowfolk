@@ -177,6 +177,7 @@ export class TheaterSystem extends createSystem({
   private reported = new Set<string>();
   private emberShown = false;
   private demoDelay = Number(new URLSearchParams(typeof location !== 'undefined' ? location.search : '').get('demoDelay')) || 0;
+  private demoOneHand = false;
   /** `?demoDepth` (filming): before forming a shape, the demo hand moves toward the lantern and back. */
   private demoDepth = typeof location !== 'undefined' && new URLSearchParams(location.search).has('demoDepth');
   private idle = typeof location !== 'undefined' && new URLSearchParams(location.search).has('perf')
@@ -261,6 +262,7 @@ export class TheaterSystem extends createSystem({
   private q0 = new Quaternion();
   private m0 = new Matrix4();
   private posePositions = new Float32Array(JOINT_COUNT * 3);
+  private demoShift: [number, number, number] = [0, 0, 0];
   private demoFrom!: HandPose;
   private demoFrom2!: HandPose;
   private ghostPose!: HandPose;
@@ -269,6 +271,7 @@ export class TheaterSystem extends createSystem({
 
   init(): void {
     this.demo = new URLSearchParams(location.search).has('demo');
+    this.demoOneHand = this.demo && new URLSearchParams(location.search).has('demoOneHand');
     this.painter = new ScreenPainter(() => xrRenderStatusLine(this.world.renderer));
     this.lantern = buildLantern();
     this.dim = buildRoomDim();
@@ -1091,7 +1094,9 @@ export class TheaterSystem extends createSystem({
   private driveDemo(target: BakedTarget, t: number): void {
     // `?demoDelay=N` (filming): the puppet hesitates N extra seconds, long enough for the ghost-hand hint.
     const seeking = this.phase === Phase.Seek || (this.phase === Phase.Invent && !this.inventBorn);
-    const k = seeking ? ease((this.phaseTime - 1.0 - this.demoDelay) / 2.2) : 1;
+    const waitingForPartner = this.demoOneHand && !!target.partner;
+    const seekTime = this.demoOneHand && this.reform ? this.reform.elapsed : this.phaseTime;
+    const k = waitingForPartner ? 0 : seeking ? ease((seekTime - 1.0 - this.demoDelay) / 2.2) : 1;
     // While the lantern waits as an ember, the demo hand first rises into its light from below.
     const rise = this.awaitingLight ? -0.32 * (1 - ease((this.phaseTime - 0.6) / 1.6)) : 0;
     // After a wake the demo hand lingers, sways (the creature follows it), then lowers as it walks off.
@@ -1099,10 +1104,18 @@ export class TheaterSystem extends createSystem({
       : this.phase === Phase.Wake ? this.phaseTime - WALK_AT : this.phaseTime;
     const lift = (seeking ? rise : -ease(dropFrom / 0.8) * 0.25) + 0.012 * Math.sin(t * 1.3);
     const live = this.phase !== Phase.Finale;
-    this.blendDemo(this.demoHand, this.ghostPose, this.demoFrom, target.pose, k, lift, target.shifts[0], this.posePositions, t);
+    let shift = target.shifts[0];
+    if (this.demoOneHand && this.reform) {
+      const previous = this.baked[this.reform.old].shifts[0];
+      for (let axis = 0; axis < 3; axis++) this.demoShift[axis] = previous[axis] + (shift[axis] - previous[axis]) * k;
+      shift = this.demoShift;
+    }
+    this.blendDemo(this.demoHand, this.ghostPose, this.demoFrom, waitingForPartner ? this.demoFrom : target.pose,
+      k, lift, shift, this.posePositions, t, this.demoDelay > 0 || waitingForPartner || (this.demoOneHand && !!this.reform));
     this.demoHand.valid = live;
-    if (target.partner) {
-      this.blendDemo(this.demoHand2, this.ghostPose2, this.demoFrom2, target.partner, k, lift, target.shifts[1], this.posePositions2, t);
+    if (target.partner && !this.demoOneHand) {
+      this.blendDemo(this.demoHand2, this.ghostPose2, this.demoFrom2, target.partner, k, lift,
+        target.shifts[1], this.posePositions2, t, this.demoDelay > 0);
       this.demoHand2.valid = live;
     } else {
       this.demoHand2.valid = false;
@@ -1111,7 +1124,7 @@ export class TheaterSystem extends createSystem({
 
   private blendDemo(
     hand: LiveHand, tmp: HandPose, from: HandPose, to: HandPose, k: number, lift: number,
-    shift: readonly number[], pos: Float32Array, t: number,
+    shift: readonly number[], pos: Float32Array, t: number, wander: boolean,
   ): void {
     // Interpolate joint positions only; the poses' own matrices stay untouched.
     for (let i = 0; i < from.mats.length; i++) tmp.mats[i] = from.mats[i] + (to.mats[i] - from.mats[i]) * k;
@@ -1119,7 +1132,7 @@ export class TheaterSystem extends createSystem({
     this.poseToWorld(tmp, pos, lift, shift);
     // A touch of drift so the shadow breathes like a real hand.
     for (let j = 0; j < JOINT_COUNT; j++) pos[j * 3] += 0.006 * Math.sin(t * 0.9);
-    if (this.demoDelay > 0 && !this.demoDepth && this.phase === Phase.Seek) {
+    if (wander && !this.demoDepth && this.phase === Phase.Seek) {
       // A stuck player: the hand wanders beside the shape, so the ghost hand reads clearly, then moves into it.
       const f = this.frame, w = (1 - k) * Math.min(1, this.phaseTime / 1.5);
       const dx = w * (0.075 + 0.02 * Math.sin(this.phaseTime * 0.8)), dy = w * (-0.05 + 0.015 * Math.sin(this.phaseTime * 1.1));
@@ -1389,7 +1402,7 @@ export class TheaterSystem extends createSystem({
     // Stuck? Fade in the ghost hand that shows the shape.
     if (close < 0.85) this.stuck += dt; else this.stuck = Math.max(0, this.stuck - dt);
     const hint = ease((this.stuck - HINT_AFTER) / 1.5);
-    const hintsAllowed = !this.demo || this.demoDelay > 0;
+    const hintsAllowed = !this.demo || this.demoDelay > 0 || this.demoOneHand;
     if (hint > 0 && hintsAllowed) {
       if (target.partner) {
         this.poseToWorld(target.pose, this.posePositions, 0.0, target.shifts[0]);
