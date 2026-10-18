@@ -23,6 +23,9 @@ const mask = new Mask(170, 120, -0.68, -0.48, 0.008);
 const matcher = new Matcher();
 const hands = Array.from({ length: 4 }, () => new FlatHand());
 let templates: Uint8Array[] = [];
+const reply: { kind: 'score'; generation: number; targetIndex: number; value: number; payload: Float32Array } =
+  { kind: 'score', generation: 0, targetIndex: 0, value: 0, payload: new Float32Array(0) };
+const transfer: ArrayBuffer[] = [reply.payload.buffer as ArrayBuffer];
 
 scope.onmessage = ({ data }) => {
   if (data.kind === 'init') {
@@ -44,7 +47,10 @@ scope.onmessage = ({ data }) => {
     hand.valid = true;
     drawHand(mask, hand);
   }
-  scope.postMessage({ kind: 'score', generation: data.generation, targetIndex: data.targetIndex,
-    value: matcher.score(mask, templates[data.targetIndex]), payload: data.payload },
-  [data.payload.buffer as ArrayBuffer]);
+  reply.generation = data.generation;
+  reply.targetIndex = data.targetIndex;
+  reply.value = matcher.score(mask, templates[data.targetIndex]);
+  reply.payload = data.payload;
+  transfer[0] = data.payload.buffer as ArrayBuffer;
+  scope.postMessage(reply, transfer);
 };

@@ -21,6 +21,7 @@ const CH = Math.round((CW * SCREEN_H) / SCREEN_W);
 const PX = CW / SCREEN_W; // canvas px per screen metre
 const SOFT = 4; // shadow layer downscale (penumbra softness)
 export const SHADOW_PX_PER_METRE = PX / SOFT;
+const SHADOW_FILTERS = Array.from({ length: 121 }, (_, index) => `blur(${(index / 10).toFixed(1)}px)`);
 
 const INK_COLOR = new Color(INK);
 const SPARK_COUNT = 18;
@@ -455,7 +456,7 @@ export class ScreenPainter {
 
   private paintShadowMask(): void {
     if (!this.shadowCount) return;
-    this.sctx.filter = `blur(${this.shadowBlur.toFixed(1)}px)`;
+    this.sctx.filter = SHADOW_FILTERS[Math.max(0, Math.min(120, Math.round(this.shadowBlur * 10)))];
     this.sctx.drawImage(this.handCanvas, 0, 0);
     this.sctx.filter = 'none';
     this.shadowCount = 0;
