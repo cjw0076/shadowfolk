@@ -6,8 +6,12 @@ cd "$(dirname "$0")/.."
 npx tsc --noEmit
 npx vite build --logLevel error
 test -f dist/.nojekyll
-PASSES=$(timeout 300 node tools/check-runtime-browser.mjs 'https://127.0.0.1:4173/?demo' 2>&1 | grep -c PASS || true)
-[ "$PASSES" -ge 7 ] || { echo "runtime checks: $PASSES/7"; exit 1; }
+# Runtime fault checks run on the built preview with the classic night flow; the journey handoff gate
+# runs on the dev server (same source; it needs the dev-only window.__theater hook).
+PASSES=$(timeout 300 node tools/check-runtime-browser.mjs 'https://127.0.0.1:4173/?demo&noJourney' 2>&1 | grep -c PASS || true)
+[ "$PASSES" -ge 10 ] || { echo "runtime checks: $PASSES/10"; exit 1; }
+HANDOFF=$(XR_BASE=https://127.0.0.1:8081/ timeout 300 node tools/check-journey-handoff.mjs 2>&1 | grep -c '^PASS' || true)
+[ "$HANDOFF" -ge 3 ] || { echo "journey handoff checks: $HANDOFF/3"; exit 1; }
 # Smoke film with the real audio class and no user gesture: any page/console error fails the deploy.
 SMOKE=$(mktemp -d)
 timeout 600 node tools/record/record.mjs tools/record/shots/smoke.json "$SMOKE" >/dev/null
