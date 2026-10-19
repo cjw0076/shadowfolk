@@ -166,6 +166,26 @@ try {
     screenshotBuffers.push(buffer);
     writeFileSync(resolve(output, `${String(screenshotBuffers.length).padStart(2, '0')}-${label}.png`), buffer);
   };
+  let lesson = null;
+  if (process.env.XR_P3_LESSON === '1') {
+    await page.evaluate(() => {
+      const theater = window.__theater;
+      theater.order[0] = theater.baked.findIndex((target) => target.def.id === 'dog');
+      theater.step = 0;
+      theater.enter(1);
+    });
+    await play('bark', 'held', 'dog', 0, 0, 19500);
+    const bark = await play('bark', 'true', 'dog', 0, 0, 19501);
+    lesson = await page.evaluate(() => ({ ability: window.__theater.lessonAbility,
+      resolvedAt: window.__theater.lessonResolvedAt, skipped: window.__theater.saved.lessonSkipped ?? [],
+      phase: window.__theater.phase }));
+    if (!bark.observed || lesson.ability !== 'bark' || lesson.resolvedAt < 1.35
+      || lesson.resolvedAt > 6 || lesson.skipped.includes('bark'))
+      throw new Error(`Real-joint Bark lesson failed: ${JSON.stringify({ bark, lesson })}`);
+    writeFileSync(resolve(output, 'bark-lesson.png'), await page.screenshot({ type: 'png' }));
+    console.log(`PASS: real IWER Bark lesson at ${lesson.resolvedAt.toFixed(2)}s`);
+    await page.evaluate(() => window.__theater.beginJourney());
+  }
   await play('bark', 'held', 'dog', -0.42, -0.42, 18501);
   await frame('pickup');
   const kinds = [
@@ -194,6 +214,7 @@ try {
   await play('bark', 'held', 'dog', 0.24, 0.50, 18599);
   await frame('moon');
   const summary = await page.evaluate(() => window.__xrP2.summary());
+  summary.lesson = lesson;
   summary.steps = steps;
   summary.pageErrors = errors;
   writeFileSync(resolve(output, 'xr-journey-p2.json'), JSON.stringify(summary, null, 2));

@@ -17,7 +17,7 @@ import { AsyncMatcher } from '../shadow/async-matcher.js';
 import { BakedTarget, TARGETS, bakeTarget } from '../shadow/targets.js';
 import { FormTracker, type FormState } from '../journey/forms.js';
 import { GestureDetector, type GestureState } from '../journey/gestures.js';
-import { generateJourney, type Ability, type JourneyPlan, type ObstacleKind } from '../journey/generator.js';
+import { abilityForForm, generateJourney, type Ability, type JourneyPlan, type ObstacleKind } from '../journey/generator.js';
 import { JourneyRuntime, type JourneyInput } from '../journey/runtime.js';
 import { JourneyView } from '../journey/view.js';
 import { TheaterAudio } from './audio.js';
@@ -40,8 +40,19 @@ const LANTERN_AHEAD = 0.25;
 const LANTERN_DROP = 0.25;
 const HOLD_TO_WAKE = 0.55; // seconds the fit must hold
 const WAKE_TIME = 3.2;
+const LESSON_TIMEOUT = 10;
+const LESSON_COPY: Record<Ability, string> = {
+  bark: 'Close and open your thumb twice: bark.',
+  peck: 'Pinch thumb and index: the beak snaps shut.',
+  snip: 'Snap both claws together: the crab snips clean.',
+  hop: 'Lift your hand quickly: the rabbit hops high.',
+  fan: 'Spread and close your fingers: fan the tail.',
+  fly: 'Flap both hands gently: the butterfly rises up.',
+  giant: 'Move closer to the lantern: your shadow grows.',
+  tiny: 'Move closer to the paper: your shadow shrinks.',
+};
+const ABILITIES = Object.keys(LESSON_COPY) as Ability[];
 /** Wake timeline: the creature comes alive in place, then walks off the paper. */
-const WALK_AT = 1.5;
 const WALK_TIME = 1.2;
 const SETTLE_TIME = 0.9;
 /** Seconds after entering XR during which the room may still reshape the stage. */
@@ -98,6 +109,7 @@ interface Saved {
   nights: number; woken: Record<string, number>; order?: string[]; carried?: boolean; invented?: Invented[];
   oneHand?: boolean; oneHandAdaptations?: number; deferred?: string[];
   journeysCompleted?: number; abilityUses?: Record<string, number>;
+  abilities?: Ability[]; lessonSkipped?: Ability[];
 }
 
 function loadSaved(): Saved {
@@ -126,16 +138,22 @@ function loadSaved(): Saved {
         const journeysCompleted = Number.isSafeInteger(candidate.journeysCompleted) && candidate.journeysCompleted! >= 0
           ? candidate.journeysCompleted! : 0;
         const abilityUses: Record<string, number> = {};
-        for (const ability of ['bark', 'peck', 'snip', 'hop', 'fan', 'fly', 'giant', 'tiny']) {
+        for (const ability of ABILITIES) {
           const count = candidate.abilityUses?.[ability];
           if (typeof count === 'number' && Number.isSafeInteger(count) && count >= 0) abilityUses[ability] = count;
         }
+        const abilities = Array.isArray(candidate.abilities)
+          ? ABILITIES.filter((ability) => candidate.abilities!.includes(ability))
+          : ABILITIES.filter((ability) => TARGETS.some((target) => woken[target.id] > 0 && abilityForForm(target.id) === ability));
+        const lessonSkipped = Array.isArray(candidate.lessonSkipped)
+          ? ABILITIES.filter((ability) => candidate.lessonSkipped!.includes(ability)) : [];
         return { nights, woken, order, carried: candidate.carried === true, invented,
-          oneHand: candidate.oneHand === true, oneHandAdaptations, deferred, journeysCompleted, abilityUses };
+          oneHand: candidate.oneHand === true, oneHandAdaptations, deferred, journeysCompleted, abilityUses,
+          abilities, lessonSkipped };
       }
     }
   } catch { /* private mode: play without memory */ }
-  return { nights: 0, woken: {} };
+  return { nights: 0, woken: {}, abilities: [], lessonSkipped: [] };
 }
 
 function save(s: Saved): void {
@@ -202,7 +220,7 @@ export class TheaterSystem extends createSystem({
   /** `?rays` (explainer): draw the lantern's light rays through each hand onto the paper. */
   private rays = typeof location !== 'undefined' && new URLSearchParams(location.search).has('rays') ? new LightRays() : null;
   private journeyDebug = typeof location !== 'undefined' && new URLSearchParams(location.search).has('journeyDebug');
-  private journeyEnabled = typeof location !== 'undefined' && new URLSearchParams(location.search).has('journey');
+  private journeyEnabled = typeof location === 'undefined' || !new URLSearchParams(location.search).has('noJourney');
   private journeyOnly = typeof location !== 'undefined' && new URLSearchParams(location.search).has('journeyOnly');
   private journey: JourneyRuntime | null = null;
   private journeyView: JourneyView | null = null;
@@ -242,6 +260,9 @@ export class TheaterSystem extends createSystem({
   private journeyShownForm = -1;
   private journeyNameAt = -Infinity;
   private journeyArrivedAt = -Infinity;
+  private journeyBlurryFor = 0;
+  private lessonAbility: Ability | null = null;
+  private lessonResolvedAt = -1;
   private journeyFormState: FormState | null = null;
   private journeyGestureState: GestureState | null = null;
   private journeyLastEvent = '—';
@@ -361,11 +382,11 @@ export class TheaterSystem extends createSystem({
     this.demoHand2 = mk();
     this.allHands = [...this.hands, this.demoHand, this.demoHand2];
     this.journeyHands = [this.hands[0], this.hands[1]];
+    if (!this.idle) this.journeyGestures = new GestureDetector();
     if ((this.journeyDebug || this.journeyEnabled || this.journeyOnly) && typeof Worker !== 'undefined') {
       this.journeyMatcher = new AsyncMatcher(this.baked.map((baked) => baked.template),
         this.journeyHands, this.baked.map((baked) => !!baked.partner));
       this.journeyForms = new FormTracker(this.baked, this.journeyMatcher);
-      this.journeyGestures = new GestureDetector();
     }
     this.cleanupFuncs.push(() => {
       this.asyncMatcher?.dispose();
@@ -373,7 +394,7 @@ export class TheaterSystem extends createSystem({
       this.inventWorker?.terminate();
       this.journeyView?.dispose();
     });
-    if (this.journeyEnabled || this.journeyOnly) {
+    if (!this.idle) {
       this.journeyView = new JourneyView();
       this.painter.root.add(this.journeyView.root);
     }
@@ -583,6 +604,11 @@ export class TheaterSystem extends createSystem({
   private enter(p: Phase): void {
     this.phase = p;
     if (p !== Phase.Journey) this.journeyView?.hide();
+    if (p === Phase.Wake) {
+      this.lessonAbility = abilityForForm(this.baked[this.order[this.step]]?.def.id) ?? null;
+      this.lessonResolvedAt = -1;
+      this.journeyGestures?.reset();
+    }
     this.leapt = this.voiced = false;
     this.phaseTime = 0;
     this.hold = 0;
@@ -608,6 +634,7 @@ export class TheaterSystem extends createSystem({
     this.journeyLastObstacleIndex = 0;
     this.journeyShownForm = -1;
     this.journeyArrivedAt = -Infinity;
+    this.journeyBlurryFor = 0;
     this.journeyRecent.length = 0;
     const oneHand = this.saved.oneHand === true || this.demoOneHand;
     const newcomer = this.fresh >= 0 ? TARGETS[this.fresh].id : night === 1 ? TARGETS[0].id : null;
@@ -786,7 +813,7 @@ export class TheaterSystem extends createSystem({
     input.form = form;
     input.gesture = gesture;
     input.formId = form.form >= 0 ? this.baked[form.form].def.id : '';
-    if (!form.stable) this.journeyShownForm = -1;
+    if (!form.stable && this.journeyPossession < 0.02) this.journeyShownForm = -1;
     if (form.form !== this.journeyShownForm && form.stable) {
       this.journeyShownForm = form.form;
       this.journeyNameAt = this.animationTime;
@@ -856,11 +883,24 @@ export class TheaterSystem extends createSystem({
       this.audio.journey(event.kind);
       if (event.kind === 'arrival') {
         this.journeyArrivedAt = this.animationTime;
+        this.audio.chime(this.step + 2);
         this.saved.journeysCompleted = (this.saved.journeysCompleted ?? 0) + 1;
         save(this.saved);
       }
     }
     const active = journey.current;
+    let giantNearby = active?.kind === 'boulder';
+    if (!giantNearby) for (const obstacle of journey.plan.obstacles) {
+      if (obstacle.kind === 'boulder' && Math.abs(obstacle.x - input.x) < 0.15) {
+        giantNearby = true;
+        break;
+      }
+    }
+    this.journeyBlurryFor = !useDemo && gesture.scale > 1.3 && !giantNearby
+      ? this.journeyBlurryFor + dt : 0;
+    if (this.journeyBlurryFor >= 3)
+      this.painter.caption('Move your hand toward the paper for a crisper shadow.',
+        ease((this.journeyBlurryFor - 3) / 0.6), 0.24);
     if (active && journey.hint && !useDemo) {
       const hintTarget = this.baked[this.journeyFormFor(active.kind, active.ability)];
       const frame = this.frame;
@@ -1515,7 +1555,7 @@ export class TheaterSystem extends createSystem({
     const rise = this.awaitingLight ? -0.32 * (1 - ease((this.phaseTime - 0.6) / 1.6)) : 0;
     // After a wake the demo hand lingers, sways (the creature follows it), then lowers as it walks off.
     const dropFrom = this.phase === Phase.Invent ? this.phaseTime - this.inventBornAt
-      : this.phase === Phase.Wake ? this.phaseTime - WALK_AT : this.phaseTime;
+      : this.phase === Phase.Wake ? this.phaseTime - this.wakeWalkAt() : this.phaseTime;
     const lift = (seeking ? rise : -ease(dropFrom / 0.8) * 0.25) + 0.012 * Math.sin(t * 1.3);
     const live = this.phase !== Phase.Finale;
     let shift = target.shifts[0];
@@ -1526,10 +1566,14 @@ export class TheaterSystem extends createSystem({
     }
     this.blendDemo(this.demoHand, this.ghostPose, this.demoFrom, waitingForPartner ? this.demoFrom : target.pose,
       k, lift, shift, this.posePositions, t, this.demoDelay > 0 || waitingForPartner || (this.demoOneHand && !!this.reform));
+    if (this.phase === Phase.Wake && this.lessonAbility && this.lessonResolvedAt < 0)
+      this.lessonMotion(this.demoHand.joints, this.lessonAbility, this.phaseTime);
     this.demoHand.valid = live;
     if (target.partner && !this.demoOneHand) {
       this.blendDemo(this.demoHand2, this.ghostPose2, this.demoFrom2, target.partner, k, lift,
         target.shifts[1], this.posePositions2, t, this.demoDelay > 0);
+      if (this.phase === Phase.Wake && this.lessonAbility && this.lessonResolvedAt < 0)
+        this.lessonMotion(this.demoHand2.joints, this.lessonAbility, this.phaseTime);
       this.demoHand2.valid = live;
     } else {
       this.demoHand2.valid = false;
@@ -1559,13 +1603,51 @@ export class TheaterSystem extends createSystem({
       const f = this.frame, d = 0.13 * Math.sin(this.phaseTime * 1.6) * (1 - k);
       for (let j = 0; j < JOINT_COUNT; j++) { pos[j * 3] += d * f.nx; pos[j * 3 + 1] += d * f.ny; pos[j * 3 + 2] += d * f.nz; }
     }
-    if (this.phase === Phase.Wake && this.phaseTime < WALK_AT) {
+    if (this.phase === Phase.Wake && this.phaseTime < this.wakeWalkAt()) {
       // Sway sideways so the just-woken creature visibly follows the hand.
       const sw = 0.035 * Math.sin(this.phaseTime * 4.5), f = this.frame;
       for (let j = 0; j < JOINT_COUNT; j++) { pos[j * 3] += sw * f.rx; pos[j * 3 + 1] += sw * f.ry; pos[j * 3 + 2] += sw * f.rz; }
     }
     hand.joints.set(pos);
     hand.radii.set(to.radii);
+  }
+
+  private wakeWalkAt(): number { return this.lessonResolvedAt < 0 ? Infinity : this.lessonResolvedAt + 0.35; }
+
+  private lessonMotion(joints: Float32Array, ability: Ability, time: number): void {
+    const elapsed = time - 1.3;
+    if (elapsed < 0 || elapsed > 1.6) return;
+    const cycle = (elapsed * 1.65) % 1;
+    const amount = Math.sin(cycle * Math.PI) ** 2;
+    const frame = this.frame;
+    if (ability === 'bark' || ability === 'peck' || ability === 'snip') {
+      const tip = ability === 'bark' ? 4 : 9;
+      const toward = ability === 'bark' ? 9 : 4;
+      for (let axis = 0; axis < 3; axis++) joints[tip * 3 + axis] +=
+        (joints[toward * 3 + axis] - joints[tip * 3 + axis]) * amount * 0.9;
+      if (ability === 'bark') for (let axis = 0; axis < 3; axis++) joints[14 * 3 + axis] +=
+        (joints[4 * 3 + axis] - joints[14 * 3 + axis]) * amount * 0.4;
+    } else if (ability === 'fan') {
+      for (const joint of FAN_TIP_JOINTS) {
+        const index = FAN_TIP_JOINTS.indexOf(joint);
+        const offset = (index - 1.5) * amount * 0.016;
+        joints[joint * 3] += offset * frame.rx;
+        joints[joint * 3 + 1] += offset * frame.ry;
+        joints[joint * 3 + 2] += offset * frame.rz;
+      }
+    } else {
+      const displacement = ability === 'hop' || ability === 'fly' ? 0.07 * Math.sin(elapsed * Math.PI * 3.3)
+        : ability === 'giant' ? 0.12 * amount : -0.12 * amount;
+      for (let joint = 0; joint < JOINT_COUNT; joint++) {
+        const offset = joint * 3;
+        if (ability === 'hop' || ability === 'fly') joints[offset + 1] += displacement;
+        else {
+          joints[offset] += displacement * frame.nx;
+          joints[offset + 1] += displacement * frame.ny;
+          joints[offset + 2] += displacement * frame.nz;
+        }
+      }
+    }
   }
 
   update(delta: number, time: number): void {
@@ -1684,7 +1766,7 @@ export class TheaterSystem extends createSystem({
     const p = this.painter;
     p.begin();
     const needsMainMask = (this.phase === Phase.Seek && !this.asyncMatcher?.ready)
-      || (this.phase === Phase.Wake && this.wakeC0 !== null && this.phaseTime < WALK_AT)
+      || (this.phase === Phase.Wake && this.wakeC0 !== null && this.phaseTime < this.wakeWalkAt())
       || (this.phase === Phase.Invent && !this.inventBorn && !this.inventPending);
     if (needsMainMask) this.live.clear();
     let casters = 0;
@@ -1771,6 +1853,11 @@ export class TheaterSystem extends createSystem({
       }
       if (this.journeyDebug) p.journeyDebug(this.journeyLine);
     }
+    if (this.phase === Phase.Wake && this.journeyGestures && this.lessonResolvedAt < 0) {
+      this.journeyHands[0] = anyReal ? this.hands[0] : this.demoHand;
+      this.journeyHands[1] = anyReal ? this.hands[1] : this.demoHand2;
+      this.journeyGestureState = this.journeyGestures.update(dt, this.journeyHands, L, this.frame);
+    }
     this.rays?.end();
     if (this.awaitingLight && casters > 0 && this.shadowOnPaper()) {
       this.awaitingLight = false;
@@ -1801,6 +1888,7 @@ export class TheaterSystem extends createSystem({
         }
       }
     }
+    if (this.phase === Phase.Wake) this.journeyView?.updateLesson(this.animationTime);
 
     const screenDistance = this.screenCentre.distanceTo(L);
     for (const hand of this.allHands) {
@@ -1821,8 +1909,8 @@ export class TheaterSystem extends createSystem({
     p.flushShadows(this.phase === Phase.Wake ? 0.35 : 0.9);
     if (this.phase === Phase.Journey) {
       if (this.journeyPossession > 0.01) p.possess(this.journeyEyeX, this.journeyEyeY, this.journeyPossession);
-      if (this.journeyInput.form.stable && this.journeyInput.form.form >= 0) {
-        p.formName(this.baked[this.journeyInput.form.form].def.creature, this.journeyEyeX + 0.06,
+      if (this.journeyShownForm >= 0) {
+        p.formName(this.baked[this.journeyShownForm].def.creature, this.journeyEyeX + 0.06,
           Math.min(0.25, this.journeyEyeY + 0.105),
           this.journeyPossession * ease((this.animationTime - this.journeyNameAt) / 0.35));
       }
@@ -1939,6 +2027,8 @@ export class TheaterSystem extends createSystem({
       const id = target.def.id;
       if (this.saved.deferred?.includes(id)) this.saved.deferred = this.saved.deferred.filter((value) => value !== id);
       this.saved.woken[id] = (this.saved.woken[id] ?? 0) + 1;
+      const ability = abilityForForm(id);
+      if (ability && !this.saved.abilities?.includes(ability)) (this.saved.abilities ??= []).push(ability);
       const order = this.saved.order ?? (this.saved.order = Object.keys(this.saved.woken).filter((k) => k !== id));
       if (!order.includes(id)) order.push(id);
       save(this.saved);
@@ -1956,13 +2046,39 @@ export class TheaterSystem extends createSystem({
 
   private wake(target: BakedTarget, stencil: Stencil, time: number): void {
     const t = this.phaseTime;
+    const ability = this.lessonAbility;
+    if (ability && this.lessonResolvedAt < 0 && t >= 1.35) {
+      const detected = this.journeyGestureState?.[ability] === true;
+      if (detected || this.demo && t >= 2.9 || t >= LESSON_TIMEOUT) {
+        this.lessonResolvedAt = t;
+        if (detected || this.demo) {
+          this.saved.lessonSkipped = this.saved.lessonSkipped?.filter((value) => value !== ability);
+          this.journeyView?.showLessonGesture(ability, this.follow.x, time);
+          this.audio.note(this.step + 5);
+        } else if (!this.saved.lessonSkipped?.includes(ability)) (this.saved.lessonSkipped ??= []).push(ability);
+        save(this.saved);
+      }
+    }
+    const walkAt = this.wakeWalkAt();
+    if (ability && this.lessonResolvedAt < 0 && t >= 0.9) {
+      this.poseToWorld(target.pose, this.posePositions, 0, target.shifts[0]);
+      this.lessonMotion(this.posePositions, ability, t);
+      this.ghost.update(this.posePositions, target.pose.radii);
+      this.ghost.opacity = 0.34 * ease((t - 0.9) / 0.25) * (1 - ease((t - 2.9) / 0.3));
+      if (target.partner) {
+        this.poseToWorld(target.partner, this.posePositions2, 0, target.shifts[1]);
+        this.lessonMotion(this.posePositions2, ability, t);
+        this.ghost2.update(this.posePositions2, target.partner.radii);
+        this.ghost2.opacity = this.ghost.opacity;
+      }
+    } else this.ghost.opacity = this.ghost2.opacity = 0;
     if (!this.voiced && t >= 0.35) {
       this.voiced = true;
       this.audio.voice(target.def.motion);
     }
     // It comes alive in place and, until it walks off, follows the hand that made it:
     // move the hand and the creature moves with it. Then it walks off the paper's right edge.
-    if (this.wakeC0 && t < WALK_AT) {
+    if (this.wakeC0 && t < walkAt) {
       moments(this.live, this.wakeMo);
       if (this.wakeMo.area > 4) {
         const tx = Math.max(-0.18, Math.min(0.18, this.wakeMo.cx - this.wakeC0.cx));
@@ -1973,7 +2089,7 @@ export class TheaterSystem extends createSystem({
         this.follow.vx = this.follow.x - px;
       }
     }
-    const walk = ease((t - WALK_AT) / WALK_TIME);
+    const walk = ease((t - walkAt) / WALK_TIME);
     const fill = ease((t - 0.25) / 0.65);
     if (t < 0.9) this.painter.target(stencil, 0, TARGET_CY, 1, time, 1 - fill, 1 - ease(t / 0.25));
     let x = this.follow.x + walk * (SCREEN_W / 2 + stencil.w / 2 + 0.03 - this.follow.x * 0.5);
@@ -2004,18 +2120,18 @@ export class TheaterSystem extends createSystem({
         rot += 0.045 * Math.sin(t * 22); break;
     }
     const onWall = this.wall.active;
-    const alpha = onWall ? 1 : t < 2.3 ? 1 : 1 - ease((t - 2.3) / 0.5);
+    const alpha = onWall ? 1 : 1 - ease((t - walkAt - 0.8) / 0.5);
     const blink = t < 0.87 || (t > 1.35 && t < 1.44) || (t > 2.12 && t < 2.2);
     this.painter.creature(stencil, x, y, 1, rot, false, blink, alpha, Math.max(0, 1 - t / 1.5), time,
       stretchX, stretchY, fill);
-    if (!this.leapt && t >= WALK_AT + WALK_TIME * 0.82) {
+    if (!this.leapt && t >= walkAt + WALK_TIME * 0.82) {
       this.leapt = true;
       if (onWall) this.wall.leap(target.def.id, stencil, time);
     }
     if (t < 1.5) this.painter.sparks(0, TARGET_CY, t / 1.5, 1);
-    const capA = Math.min(ease((t - 0.3) / 0.5), 1 - ease((t - 2.6) / 0.6));
-    this.painter.caption(target.def.line, capA);
-    if (t >= WAKE_TIME) {
+    const capA = Math.min(ease((t - 0.3) / 0.5), 1 - ease((t - walkAt - 0.8) / 0.5));
+    this.painter.caption(ability && t >= 0.9 && t < walkAt ? LESSON_COPY[ability] : target.def.line, capA);
+    if (t >= Math.max(WAKE_TIME, walkAt + WALK_TIME + 0.35)) {
       this.step++;
       if (this.step >= NIGHT_LENGTH) {
         this.saved.nights++;
