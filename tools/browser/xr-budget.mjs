@@ -5,9 +5,9 @@ import { gzipSync } from 'node:zlib';
 const [scenario = 'seek', rateArgument = '4', secondsArgument = '60'] = process.argv.slice(2);
 const rate = Number(rateArgument);
 const seconds = Number(secondsArgument);
-const allowed = new Set(['idle', 'static', 'seek', 'wake', 'finale', 'invent', 'rays']);
+const allowed = new Set(['idle', 'static', 'seek', 'wake', 'finale', 'invent', 'rays', 'journey']);
 if (!allowed.has(scenario) || ![1, 4, 6].includes(rate) || !Number.isFinite(seconds) || seconds <= 0) {
-  throw new Error('Usage: node tools/browser/xr-budget.mjs <idle|static|seek|wake|finale|invent|rays> <1|4|6> <seconds>');
+  throw new Error('Usage: node tools/browser/xr-budget.mjs <idle|static|seek|wake|finale|invent|rays|journey> <1|4|6> <seconds>');
 }
 const base = process.env.XR_BASE ?? 'https://127.0.0.1:4178/';
 const output = process.env.XR_BUDGET_OUT ?? '../collab/codex/14-evidence/before';
@@ -40,7 +40,8 @@ try {
     }));
   }, scenario === 'finale' ? ['peacock', 'rabbit', 'snail', 'fish', 'duck', 'butterfly', 'heron', 'stag'] : []);
   const url = new URL(base);
-  url.search = `?perf&demo&day=20378${scenario === 'rays' ? '&rays' : ''}${scenario === 'idle' ? '&idle' : ''}`;
+  url.search = `?perf&demo&day=20378${scenario === 'rays' ? '&rays' : ''}${scenario === 'idle' ? '&idle' : ''}`
+    + (scenario === 'journey' ? '&journeyOnly&obstacles=crow,gap,fog,boulder' : '');
   await page.goto(url.toString(), { waitUntil: 'load' });
   await page.waitForFunction(() => window.__theater && window.__perf && window.IWER_DEVICE?.sessionOffered,
     null, { timeout: 60000 });
@@ -133,13 +134,14 @@ try {
         }
       };
     }
+    if (kind === 'journey') theater.beginJourney();
     const painter = theater.painter;
     const perf = window.__perf;
     const renderer = theater.renderer;
     const capacity = 12000;
     const frameFields = ['t', 'phase', 'updateMs', 'painterMs', 'maskMs', 'intervalMs', 'shadowMs', 'blurMs',
       'blurPasses', 'captionMs', 'wallMs', 'matcherMs', 'asyncDispatchMs',
-      'driveDemoMs', 'tendStageMs', 'readHandsMs', 'demoHands'];
+      'driveDemoMs', 'journeyMs', 'tendStageMs', 'readHandsMs', 'demoHands'];
     const renderFields = ['t', 'renderMs', 'calls', 'triangles', 'uploadMs', 'uploads'];
     const data = {
       frames: Object.fromEntries(frameFields.map((field) => [field, new Float64Array(capacity)])),
@@ -147,7 +149,7 @@ try {
       frameFields, renderFields, frameCount: 0, renderCount: 0, births: [],
       requestCount: 0,
       now: { shadowMs: 0, blurMs: 0, blurPasses: 0, captionMs: 0, wallMs: 0,
-        matcherMs: 0, asyncDispatchMs: 0, driveDemoMs: 0, tendStageMs: 0, readHandsMs: 0 },
+        matcherMs: 0, asyncDispatchMs: 0, driveDemoMs: 0, journeyMs: 0, tendStageMs: 0, readHandsMs: 0 },
       uploadMs: 0, uploads: 0,
     };
     window.__budget = data;
@@ -163,7 +165,7 @@ try {
     perf.beginFrame = () => {
       data.now.shadowMs = data.now.blurMs = data.now.blurPasses = data.now.captionMs = data.now.wallMs
         = data.now.matcherMs = data.now.asyncDispatchMs = data.now.driveDemoMs = data.now.tendStageMs
-        = data.now.readHandsMs = 0;
+        = data.now.readHandsMs = data.now.journeyMs = 0;
       return beginFrame();
     };
     const endFrame = perf.endFrame.bind(perf);
@@ -187,6 +189,7 @@ try {
       data.frames.matcherMs[slot] = data.now.matcherMs;
       data.frames.asyncDispatchMs[slot] = data.now.asyncDispatchMs;
       data.frames.driveDemoMs[slot] = data.now.driveDemoMs;
+      data.frames.journeyMs[slot] = data.now.journeyMs;
       data.frames.tendStageMs[slot] = data.now.tendStageMs;
       data.frames.readHandsMs[slot] = data.now.readHandsMs;
       data.frames.demoHands[slot] = Number(theater.demoHand.valid) + Number(theater.demoHand2.valid);
@@ -241,6 +244,16 @@ try {
       data.now.driveDemoMs += performance.now() - began;
       return result;
     };
+    if (kind === 'journey') {
+      const updateJourney = theater.updateJourney.bind(theater);
+      theater.updateJourney = (dt, useDemo) => {
+        const began = performance.now();
+        const result = updateJourney(dt, useDemo);
+        data.now.journeyMs += performance.now() - began;
+        if (theater.phase !== 5) theater.beginJourney();
+        return result;
+      };
+    }
     const tendStage = theater.tendStage.bind(theater);
     theater.tendStage = (dt, time) => {
       const began = performance.now();
@@ -363,7 +376,7 @@ try {
   const frames = trim(captured.frames);
   const renders = trim(captured.renders);
   const metrics = Object.fromEntries(['updateMs', 'painterMs', 'maskMs', 'intervalMs', 'shadowMs', 'blurMs', 'blurPasses',
-    'captionMs', 'wallMs', 'matcherMs', 'asyncDispatchMs', 'driveDemoMs', 'tendStageMs', 'readHandsMs', 'demoHands']
+    'captionMs', 'wallMs', 'matcherMs', 'asyncDispatchMs', 'driveDemoMs', 'journeyMs', 'tendStageMs', 'readHandsMs', 'demoHands']
     .map((key) => [key, summarize(frames.map((frame) => frame[key]))]));
   for (const key of ['renderMs', 'uploadMs', 'uploads', 'calls', 'triangles']) {
     metrics[key] = summarize(renders.map((render) => render[key]));

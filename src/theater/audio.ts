@@ -5,7 +5,7 @@
  * when the first hand enters its light. No audio files, nothing to license.
  */
 export type Voice = 'swim' | 'hop' | 'crawl' | 'bob' | 'fan' | 'flap' | 'stalk' | 'scuttle';
-export type CueKind = 'bloom' | 'voice' | 'chime' | 'rustle' | 'note' | 'settle' | 'hold' | 'crackle';
+export type CueKind = 'bloom' | 'voice' | 'chime' | 'rustle' | 'note' | 'settle' | 'hold' | 'crackle' | 'journey';
 /** A sound cue at a time on the night's clock (recorded for offline rendering). */
 export interface Cue { t: number; kind: CueKind; arg?: number | string }
 export class TheaterAudio {
@@ -166,6 +166,7 @@ export class TheaterAudio {
         case 'settle': a.settle(); break;
         case 'hold': a.setHold(Number(c.arg ?? 0)); break;
         case 'crackle': a.crackle(Number(c.arg ?? 0.5)); break;
+        case 'journey': a.journey(String(c.arg ?? 'pickup')); break;
       }
     }
     a.at = null;
@@ -298,6 +299,21 @@ export class TheaterAudio {
       case 'flap': for (let k = 0; k < 3; k++) this.burst(1400, 1.2, k * 0.22, 0.15, 0.12); break;
       case 'stalk': this.tone(330, 290, 0, 1.2, 0.04, 'triangle'); this.burst(600, 2, 0.1, 0.4, 0.05); break;
       case 'scuttle': for (let k = 0; k < 5; k++) this.burst(2600, 4, k * 0.07, 0.03, 0.15); break;
+    }
+  }
+
+  journey(kind: string): void {
+    this.onCue?.('journey', kind);
+    switch (kind) {
+      case 'pickup': this.tone(587, 784, 0, 0.28, 0.07); break;
+      case 'arrival': this.tone(784, 1175, 0, 1.1, 0.1); this.tone(1047, 1568, 0.18, 1.25, 0.08); break;
+      case 'crow': this.burst(1400, 3, 0, 0.28, 0.18); this.tone(240, 470, 0, 0.19, 0.08); break;
+      case 'vine': this.burst(2700, 5, 0, 0.16, 0.16); break;
+      case 'gap': this.tone(220, 510, 0, 0.34, 0.11); break;
+      case 'fog': this.burst(1100, 0.8, 0, 0.7, 0.1); break;
+      case 'ledge': this.tone(310, 880, 0, 0.65, 0.07); break;
+      case 'boulder': this.tone(90, 68, 0, 0.6, 0.13, 'triangle'); break;
+      case 'crack': this.tone(1047, 1568, 0, 0.5, 0.065); break;
     }
   }
 

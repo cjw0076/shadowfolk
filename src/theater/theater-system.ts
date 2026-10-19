@@ -17,6 +17,9 @@ import { AsyncMatcher } from '../shadow/async-matcher.js';
 import { BakedTarget, TARGETS, bakeTarget } from '../shadow/targets.js';
 import { FormTracker, type FormState } from '../journey/forms.js';
 import { GestureDetector, type GestureState } from '../journey/gestures.js';
+import { generateJourney, type Ability, type JourneyPlan, type ObstacleKind } from '../journey/generator.js';
+import { JourneyRuntime, type JourneyInput } from '../journey/runtime.js';
+import { JourneyView } from '../journey/view.js';
 import { TheaterAudio } from './audio.js';
 import { runtimePerf as perf } from './perf.js';
 import { SCREEN_H, SCREEN_W, SHADOW_PX_PER_METRE, ScreenPainter, Stencil, StencilPixels,
@@ -59,11 +62,15 @@ const NIGHT_NAMES: Record<string, string> = {
   first: 'The First Lantern', butterfly: 'Wings', heron: 'Long Legs', stag: 'Antlers', crab: 'The Tide',
   dog: 'The Barking Moon', elephant: 'Big Ears',
 };
+const JOURNEY_TARGET_INDEX = Object.fromEntries(TARGETS.map((target, index) => [target.id, index]));
+const DOG_SNOUT_JOINTS = [9, 14, 19, 24] as const;
+const FAN_TIP_JOINTS = [9, 14, 19, 24] as const;
+const VINE_FORM_IDS = ['duck', 'crab'] as const;
 /** Lantern brightness before the first hand reaches its light. */
 const EMBER = 0.18;
 const STORE_KEY = 'shadow-theater.v1';
 
-enum Phase { Seek, Wake, Rest, Finale, Invent }
+enum Phase { Seek, Wake, Rest, Finale, Invent, Journey }
 
 const MAX_INVENTED = 8;
 const INVENT_HOLD = 1.4; // seconds a free shape must stay still to be born
@@ -90,6 +97,7 @@ interface Invented { id: string; name: string; hands: { x: number[]; y: number[]
 interface Saved {
   nights: number; woken: Record<string, number>; order?: string[]; carried?: boolean; invented?: Invented[];
   oneHand?: boolean; oneHandAdaptations?: number; deferred?: string[];
+  journeysCompleted?: number; abilityUses?: Record<string, number>;
 }
 
 function loadSaved(): Saved {
@@ -115,8 +123,15 @@ function loadSaved(): Saved {
             && TARGETS.some((target) => target.id === id && !!target.partner)))] : undefined;
         const oneHandAdaptations = Number.isSafeInteger(candidate.oneHandAdaptations)
           && candidate.oneHandAdaptations! >= 0 ? Math.min(2, candidate.oneHandAdaptations!) : 0;
+        const journeysCompleted = Number.isSafeInteger(candidate.journeysCompleted) && candidate.journeysCompleted! >= 0
+          ? candidate.journeysCompleted! : 0;
+        const abilityUses: Record<string, number> = {};
+        for (const ability of ['bark', 'peck', 'snip', 'hop', 'fan', 'fly', 'giant', 'tiny']) {
+          const count = candidate.abilityUses?.[ability];
+          if (typeof count === 'number' && Number.isSafeInteger(count) && count >= 0) abilityUses[ability] = count;
+        }
         return { nights, woken, order, carried: candidate.carried === true, invented,
-          oneHand: candidate.oneHand === true, oneHandAdaptations, deferred };
+          oneHand: candidate.oneHand === true, oneHandAdaptations, deferred, journeysCompleted, abilityUses };
       }
     }
   } catch { /* private mode: play without memory */ }
@@ -187,11 +202,46 @@ export class TheaterSystem extends createSystem({
   /** `?rays` (explainer): draw the lantern's light rays through each hand onto the paper. */
   private rays = typeof location !== 'undefined' && new URLSearchParams(location.search).has('rays') ? new LightRays() : null;
   private journeyDebug = typeof location !== 'undefined' && new URLSearchParams(location.search).has('journeyDebug');
+  private journeyEnabled = typeof location !== 'undefined' && new URLSearchParams(location.search).has('journey');
+  private journeyOnly = typeof location !== 'undefined' && new URLSearchParams(location.search).has('journeyOnly');
+  private journey: JourneyRuntime | null = null;
+  private journeyView: JourneyView | null = null;
+  private journeyPlan: JourneyPlan | null = null;
+  private journeyInput: JourneyInput = {
+    form: { form: -1, score: 0, stable: false }, formId: '',
+    gesture: { bark: false, peck: false, snip: false, hop: false, fan: false, fly: false,
+      scale: 1, giant: false, tiny: false, jaw: 0, beak: 0, spread: 0, verticalVelocity: 0 },
+    x: 0, y: 0, anchorX: 0, anchorY: 0,
+  };
+  private demoJourneyForm: FormState = { form: -1, score: 1, stable: true };
+  private demoJourneyGesture: GestureState = { bark: false, peck: false, snip: false, hop: false, fan: false, fly: false,
+    scale: 1, giant: false, tiny: false, jaw: 0, beak: 0, spread: 0, verticalVelocity: 0 };
+  private demoJourneyX = -0.42;
+  private demoJourneyIndex = -1;
+  private demoJourneyAt = 0;
+  private demoJourneyStartX = -0.42;
+  private demoJourneyPriorForm = -1;
+  private demoJourneyHop = 0;
+  private demoJourneyZoneAt = -1;
+  private demoJourneyPulse = -1;
+  private journeyPossession = 0;
+  private journeyEyeX = 0;
+  private journeyEyeY = 0;
+  private journeyGestureAt = -Infinity;
   private journeyMatcher: AsyncMatcher | null = null;
   private journeyForms: FormTracker | null = null;
   private journeyGestures: GestureDetector | null = null;
   private journeyHands: LiveHand[] = [];
   private journeyCandidates = [0, 0, 0, 0];
+  private journeyProbe = 0;
+  private journeyProbeAt = 0;
+  private journeyKnown: number[] = [];
+  private journeyRecent: number[] = [];
+  private journeyLastForm = -1;
+  private journeyLastObstacleIndex = 0;
+  private journeyShownForm = -1;
+  private journeyNameAt = -Infinity;
+  private journeyArrivedAt = -Infinity;
   private journeyFormState: FormState | null = null;
   private journeyGestureState: GestureState | null = null;
   private journeyLastEvent = '—';
@@ -311,7 +361,7 @@ export class TheaterSystem extends createSystem({
     this.demoHand2 = mk();
     this.allHands = [...this.hands, this.demoHand, this.demoHand2];
     this.journeyHands = [this.hands[0], this.hands[1]];
-    if (this.journeyDebug && typeof Worker !== 'undefined') {
+    if ((this.journeyDebug || this.journeyEnabled || this.journeyOnly) && typeof Worker !== 'undefined') {
       this.journeyMatcher = new AsyncMatcher(this.baked.map((baked) => baked.template),
         this.journeyHands, this.baked.map((baked) => !!baked.partner));
       this.journeyForms = new FormTracker(this.baked, this.journeyMatcher);
@@ -321,7 +371,12 @@ export class TheaterSystem extends createSystem({
       this.asyncMatcher?.dispose();
       this.journeyMatcher?.dispose();
       this.inventWorker?.terminate();
+      this.journeyView?.dispose();
     });
+    if (this.journeyEnabled || this.journeyOnly) {
+      this.journeyView = new JourneyView();
+      this.painter.root.add(this.journeyView.root);
+    }
     this.mirrored = this.baked.map((b) => mirror(b.pose));
     this.demoFrom = basePoses.relaxed();
     this.demoFrom2 = mirror(basePoses.relaxed());
@@ -334,13 +389,16 @@ export class TheaterSystem extends createSystem({
     const cap = captureControl();
     if (cap) this.audio.onCue = (kind, arg) => cap.cues.push({ t: cap.time, kind, arg });
     if (cap) {
-      const names = ['seek', 'wake', 'rest', 'finale', 'invent'];
+      const names = ['seek', 'wake', 'rest', 'finale', 'invent', 'journey'];
       cap.state = () => ({
         phase: names[this.phase], step: this.step, target: this.baked[this.order[this.step % this.order.length]]?.def.id,
         mode: this.mode, born: this.inventBorn, wall: this.wall.active,
+        journey: this.journey ? { index: this.journey.index, spark: this.journey.spark,
+          carried: this.journey.carried, completed: this.journey.completed } : null,
       });
     }
     this.newNight();
+    if (this.journeyOnly) this.beginJourney();
     if (import.meta.env?.DEV) (window as unknown as { __theater: unknown }).__theater = this;
 
     this.cleanupFuncs.push(
@@ -524,6 +582,7 @@ export class TheaterSystem extends createSystem({
 
   private enter(p: Phase): void {
     this.phase = p;
+    if (p !== Phase.Journey) this.journeyView?.hide();
     this.leapt = this.voiced = false;
     this.phaseTime = 0;
     this.hold = 0;
@@ -533,6 +592,338 @@ export class TheaterSystem extends createSystem({
     this.oneHandSeen = false;
     this.reform = null;
     if (p === Phase.Seek) this.audio.rustle();
+  }
+
+  private beginJourney(): void {
+    const params = new URLSearchParams(location.search);
+    const fixedDay = Number(params.get('day'));
+    const day = Number.isFinite(fixedDay) && fixedDay > 0 ? fixedDay : Math.floor(Date.now() / 86400000);
+    const night = this.journeyOnly ? Math.max(1, Number(params.get('night')) || 1) : this.saved.nights;
+    const learned = this.journeyOnly ? TARGETS.map((target) => target.id)
+      : TARGETS.filter((target) => (this.saved.woken[target.id] ?? 0) > 0).map((target) => target.id);
+    this.journeyKnown = learned.map((id) => JOURNEY_TARGET_INDEX[id]).filter((index) => index !== undefined);
+    this.journeyProbe = 0;
+    this.journeyProbeAt = 0;
+    this.journeyLastForm = -1;
+    this.journeyLastObstacleIndex = 0;
+    this.journeyShownForm = -1;
+    this.journeyArrivedAt = -Infinity;
+    this.journeyRecent.length = 0;
+    const oneHand = this.saved.oneHand === true || this.demoOneHand;
+    const newcomer = this.fresh >= 0 ? TARGETS[this.fresh].id : night === 1 ? TARGETS[0].id : null;
+    const plan = generateJourney(day, night, learned, newcomer, oneHand);
+    const specified = params.get('obstacles');
+    if (this.journeyOnly && specified) {
+      const kinds: ObstacleKind[] = specified.split(',').filter((value): value is ObstacleKind =>
+        ['crow', 'vine', 'gap', 'fog', 'ledge', 'boulder', 'crack'].includes(value));
+      const ability = { crow: 'bark', vine: 'peck', gap: 'hop', fog: 'fan', ledge: oneHand ? 'hop' : 'fly',
+        boulder: 'giant', crack: 'tiny' } as const;
+      if (kinds.length) plan.obstacles = kinds.map((kind, index) => ({ kind, ability: ability[kind],
+        x: kinds.length === 1 ? 0 : -0.27 + index * 0.51 / (kinds.length - 1),
+        combined: false, ramp: kind === 'ledge' && oneHand }));
+    }
+    this.journeyPlan = plan;
+    this.journey = new JourneyRuntime(plan);
+    this.journeyForms?.reset();
+    this.journeyGestures?.reset();
+    this.demoJourneyX = -0.42;
+    this.demoJourneyStartX = -0.42;
+    this.demoJourneyForm.form = -1;
+    this.demoJourneyIndex = -1;
+    this.demoJourneyPulse = -1;
+    this.demoJourneyZoneAt = -1;
+    this.journeyPossession = 0;
+    this.journeyGestureAt = -Infinity;
+    this.ghost.opacity = this.ghost2.opacity = 0;
+    this.journeyView?.start(this.journey);
+    this.enter(Phase.Journey);
+  }
+
+  private journeyFormFor(obstacle: ObstacleKind | undefined, ability?: Ability): number {
+    const id = obstacle === 'crow' ? 'dog' : obstacle === 'vine' ? ability === 'snip' ? 'crab' : 'heron'
+      : obstacle === 'gap' ? 'rabbit' : obstacle === 'fog' ? 'peacock'
+      : obstacle === 'ledge' ? this.saved.oneHand || this.demoOneHand ? 'rabbit' : 'butterfly'
+      : obstacle === 'boulder' ? this.journeyOnly || (this.saved.woken.dog ?? 0) > 0 ? 'dog' : 'peacock'
+      : obstacle === 'crack' ? 'snail' : 'dog';
+    return JOURNEY_TARGET_INDEX[id];
+  }
+
+  private driveJourneyDemo(dt: number): void {
+    const journey = this.journey!;
+    if (journey.index !== this.demoJourneyIndex) {
+      this.demoJourneyPriorForm = this.demoJourneyForm.form;
+      this.demoJourneyStartX = this.demoJourneyX;
+      this.demoJourneyIndex = journey.index;
+      this.demoJourneyAt = this.phaseTime;
+      this.demoJourneyPulse = -1;
+      this.demoJourneyZoneAt = -1;
+    }
+    const obstacle = journey.current;
+    const motion = this.phaseTime - this.demoJourneyAt;
+    const approachX = obstacle ? obstacle.x - 0.045 : 0.43;
+    if (obstacle && motion < 1.5) {
+      this.demoJourneyX = this.demoJourneyStartX + (approachX - this.demoJourneyStartX) * ease(motion / 1.5);
+    } else if (obstacle && motion < 5.2) {
+      this.demoJourneyX = approachX;
+    } else {
+      const targetX = obstacle ? obstacle.x + 0.085 : 0.43;
+      const speed = Math.min(Math.abs(targetX - this.demoJourneyX), dt * 0.16);
+      this.demoJourneyX += Math.sign(targetX - this.demoJourneyX) * speed;
+    }
+    if (obstacle && motion >= 1.5 && this.demoJourneyZoneAt < 0) {
+      this.demoJourneyZoneAt = this.phaseTime;
+    }
+    const target = this.baked[this.journeyFormFor(obstacle?.kind, obstacle?.ability)];
+    const formIndex = this.baked.indexOf(target);
+    this.demoJourneyForm.form = motion < 2.5 && this.demoJourneyPriorForm >= 0
+      ? this.demoJourneyPriorForm : formIndex;
+    const prior = this.demoJourneyPriorForm >= 0 ? this.baked[this.demoJourneyPriorForm] : null;
+    const morph = ease((motion - 1.5) / 1);
+    const from = prior?.pose ?? this.demoFrom;
+    for (let axis = 0; axis < this.ghostPose.mats.length; axis++) {
+      this.ghostPose.mats[axis] = from.mats[axis] + (target.pose.mats[axis] - from.mats[axis]) * morph;
+    }
+    this.ghostPose.radii.set(target.pose.radii);
+    this.poseToWorld(this.ghostPose, this.posePositions, 0, target.shifts[0]);
+    const frame = this.frame;
+    const gestureMotion = this.demoJourneyZoneAt < 0 ? 0 : this.phaseTime - this.demoJourneyZoneAt;
+    const acting = motion >= 2.5 && motion < 4;
+    const flap = acting && obstacle?.kind === 'ledge' ? 0.035 * Math.sin(gestureMotion * 15) : 0;
+    const hop = acting && (obstacle?.kind === 'gap' || obstacle?.ramp)
+      ? Math.max(0, Math.sin(gestureMotion * 9)) * 0.055 : 0;
+    const depth = -0.10 + (acting && obstacle?.kind === 'boulder' ? 0.12 * ease((gestureMotion - 1) / 0.45)
+      : acting && obstacle?.kind === 'crack' ? -0.13 * ease((gestureMotion - 1) / 0.45) : 0);
+    const ratio = STAGE.lightToScreen / (STAGE.lightToHand - depth);
+    const dx = this.demoJourneyX / ratio;
+    this.demoJourneyHop = hop * ratio;
+    for (let joint = 0; joint < JOINT_COUNT; joint++) {
+      const offset = joint * 3;
+      this.posePositions[offset] += dx * frame.rx + (flap + hop) * frame.ux + depth * frame.nx;
+      this.posePositions[offset + 1] += dx * frame.ry + (flap + hop) * frame.uy + depth * frame.ny;
+      this.posePositions[offset + 2] += dx * frame.rz + (flap + hop) * frame.uz + depth * frame.nz;
+    }
+    if (acting && (obstacle?.kind === 'crow' || obstacle?.kind === 'vine')) {
+      const close = (1 - Math.cos(gestureMotion * 13)) * 0.27;
+      for (let axis = 0; axis < 3; axis++) {
+        this.posePositions[4 * 3 + axis] += (this.posePositions[9 * 3 + axis] - this.posePositions[4 * 3 + axis]) * close;
+      }
+    }
+    if (acting && obstacle?.kind === 'fog') {
+      const fan = 0.014 * Math.sin(gestureMotion * 13);
+      for (let finger = 0; finger < 4; finger++) {
+        const offset = FAN_TIP_JOINTS[finger] * 3;
+        const spread = (finger - 1.5) * fan;
+        this.posePositions[offset] += spread * frame.rx;
+        this.posePositions[offset + 1] += spread * frame.ry;
+        this.posePositions[offset + 2] += spread * frame.rz;
+      }
+    }
+    this.demoHand.joints.set(this.posePositions);
+    this.demoHand.radii.set(target.pose.radii);
+    this.demoHand.valid = true;
+    if (target.partner && !this.demoOneHand) {
+      const partnerFrom = prior?.partner ?? this.demoFrom2;
+      for (let axis = 0; axis < this.ghostPose2.mats.length; axis++) {
+        this.ghostPose2.mats[axis] = partnerFrom.mats[axis] + (target.partner.mats[axis] - partnerFrom.mats[axis]) * morph;
+      }
+      this.ghostPose2.radii.set(target.partner.radii);
+      this.poseToWorld(this.ghostPose2, this.posePositions2, 0, target.shifts[1]);
+      for (let joint = 0; joint < JOINT_COUNT; joint++) {
+        const offset = joint * 3;
+        this.posePositions2[offset] += dx * frame.rx + flap * frame.ux + depth * frame.nx;
+        this.posePositions2[offset + 1] += dx * frame.ry + flap * frame.uy + depth * frame.ny;
+        this.posePositions2[offset + 2] += dx * frame.rz + flap * frame.uz + depth * frame.nz;
+      }
+      this.demoHand2.joints.set(this.posePositions2);
+      this.demoHand2.radii.set(target.partner.radii);
+      this.demoHand2.valid = true;
+    } else this.demoHand2.valid = false;
+    const light = this.lanternPos;
+    projectFromLight(this.demoHand.joints, this.demoHand.radii, light.x, light.y, light.z, frame, this.demoHand.flat);
+    if (this.demoHand2.valid) {
+      projectFromLight(this.demoHand2.joints, this.demoHand2.radii, light.x, light.y, light.z, frame, this.demoHand2.flat);
+    }
+    let foot = Infinity;
+    for (let side = 0; side < 2; side++) {
+      const hand = side === 0 ? this.demoHand : this.demoHand2;
+      if (!hand.valid || !hand.flat.valid) continue;
+      for (let joint = 0; joint < JOINT_COUNT; joint++) foot = Math.min(foot, hand.flat.y[joint] - hand.flat.r[joint]);
+    }
+    if (Number.isFinite(foot)) {
+      const lift = (-0.18 - foot) / ratio;
+      for (let side = 0; side < 2; side++) {
+        const hand = side === 0 ? this.demoHand : this.demoHand2;
+        if (!hand.valid) continue;
+        for (let joint = 0; joint < JOINT_COUNT; joint++) {
+          const offset = joint * 3;
+          hand.joints[offset] += lift * frame.ux;
+          hand.joints[offset + 1] += lift * frame.uy;
+          hand.joints[offset + 2] += lift * frame.uz;
+        }
+      }
+    }
+    const gesture = this.demoJourneyGesture;
+    gesture.bark = gesture.peck = gesture.snip = gesture.hop = gesture.fan = gesture.fly = false;
+    gesture.giant = gesture.tiny = false;
+    if (obstacle && Math.abs(this.demoJourneyX - obstacle.x) <= 0.06 && motion >= 3.1 && motion < 4.1) {
+      const pulse = motion < 3.85 ? 0 : 1;
+      if (pulse !== this.demoJourneyPulse) {
+        this.demoJourneyPulse = pulse;
+        this.journeyView?.gesture(obstacle.ability, obstacle.x, this.animationTime);
+        this.journeyGestureAt = this.animationTime;
+        if (pulse === 1 || obstacle.kind === 'fog' || obstacle.ramp) gesture[obstacle.ability] = true;
+      }
+    }
+  }
+
+  private updateJourney(dt: number, useDemo: boolean): void {
+    const journey = this.journey;
+    if (!journey) return;
+    const input = this.journeyInput;
+    const form = useDemo ? this.demoJourneyForm : this.journeyFormState;
+    const gesture = useDemo ? this.demoJourneyGesture : this.journeyGestureState;
+    if (!form || !gesture) return;
+    input.form = form;
+    input.gesture = gesture;
+    input.formId = form.form >= 0 ? this.baked[form.form].def.id : '';
+    if (!form.stable) this.journeyShownForm = -1;
+    if (form.form !== this.journeyShownForm && form.stable) {
+      this.journeyShownForm = form.form;
+      this.journeyNameAt = this.animationTime;
+    }
+    if (useDemo) {
+      input.x = input.anchorX = this.demoJourneyX;
+      input.y = -0.10;
+      input.anchorY = -0.12 + this.demoJourneyHop;
+    } else {
+      const hand = this.journeyHands[0].valid ? this.journeyHands[0] : this.journeyHands[1];
+      if (hand?.valid && hand.flat.valid) {
+        let x = 0, y = 0;
+        for (let joint = 0; joint < JOINT_COUNT; joint++) { x += hand.flat.x[joint]; y += hand.flat.y[joint]; }
+        input.x = x / JOINT_COUNT;
+        input.y = y / JOINT_COUNT;
+        if (form.form >= 0 && this.baked[form.form].partner
+          && this.journeyHands[0].valid && this.journeyHands[1].valid && this.journeyHands[1].flat.valid) {
+          const partner = this.journeyHands[1].flat;
+          let partnerX = 0, partnerY = 0;
+          for (let joint = 0; joint < JOINT_COUNT; joint++) {
+            partnerX += partner.x[joint];
+            partnerY += partner.y[joint];
+          }
+          input.x = (input.x + partnerX / JOINT_COUNT) * 0.5;
+          input.y = (input.y + partnerY / JOINT_COUNT) * 0.5;
+        }
+        input.anchorX = input.x;
+        input.anchorY = input.y;
+        if (input.formId === 'dog') {
+          let snout: number = DOG_SNOUT_JOINTS[0];
+          for (let index = 1; index < DOG_SNOUT_JOINTS.length; index++) {
+            const joint = DOG_SNOUT_JOINTS[index];
+            if (hand.flat.x[joint] > hand.flat.x[snout]) snout = joint;
+          }
+          input.anchorX = hand.flat.x[snout];
+          input.anchorY = hand.flat.y[snout];
+        } else if (input.formId === 'rabbit') {
+          input.anchorX = (hand.flat.x[9] + hand.flat.x[14]) * 0.5;
+          input.anchorY = (hand.flat.y[9] + hand.flat.y[14]) * 0.5;
+        }
+      } else input.x = input.y = input.anchorX = input.anchorY = 9;
+    }
+    const activeGesture = journey.current;
+    if (!useDemo && activeGesture && Math.abs(input.x - activeGesture.x) <= 0.12
+      && this.animationTime - this.journeyGestureAt >= 0.3) {
+      const ability = activeGesture.kind === 'vine' && gesture.snip ? 'snip' : activeGesture.ability;
+      if (gesture[ability]) {
+        this.journeyView?.gesture(ability, activeGesture.x, this.animationTime);
+        this.journeyGestureAt = this.animationTime;
+      }
+    }
+    journey.update(dt, input);
+    if (journey.index !== this.journeyLastObstacleIndex) {
+      this.journeyGestures?.reset();
+      this.journeyLastObstacleIndex = journey.index;
+    }
+    this.journeyView?.update(journey, this.animationTime);
+    const event = journey.event;
+    if (event?.kind === 'solve' && event.obstacle) {
+      this.audio.journey(event.obstacle);
+      if (event.ability) {
+        const counts = this.saved.abilityUses ?? (this.saved.abilityUses = {});
+        counts[event.ability] = (counts[event.ability] ?? 0) + 1;
+      }
+      save(this.saved);
+    } else if (event?.kind === 'pickup' || event?.kind === 'arrival') {
+      this.audio.journey(event.kind);
+      if (event.kind === 'arrival') {
+        this.journeyArrivedAt = this.animationTime;
+        this.saved.journeysCompleted = (this.saved.journeysCompleted ?? 0) + 1;
+        save(this.saved);
+      }
+    }
+    const active = journey.current;
+    if (active && journey.hint && !useDemo) {
+      const hintTarget = this.baked[this.journeyFormFor(active.kind, active.ability)];
+      const frame = this.frame;
+      const cycle = journey.wait - 12;
+      const gestureWave = Math.sin(cycle * 11);
+      const jump = active.kind === 'gap' || active.ramp ? 0.035 * Math.max(0, gestureWave)
+        : active.kind === 'ledge' ? 0.025 * gestureWave : 0;
+      const depth = active.kind === 'boulder' ? 0.10 * (0.5 + 0.5 * gestureWave)
+        : active.kind === 'crack' ? -0.12 * (0.5 + 0.5 * gestureWave) : 0;
+      const dx = (active.x - 0.045) / (STAGE.lightToScreen / STAGE.lightToHand);
+      this.poseToWorld(hintTarget.pose, this.posePositions, 0, hintTarget.shifts[0]);
+      for (let joint = 0; joint < JOINT_COUNT; joint++) {
+        const offset = joint * 3;
+        this.posePositions[offset] += dx * frame.rx + jump * frame.ux + depth * frame.nx;
+        this.posePositions[offset + 1] += dx * frame.ry + jump * frame.uy + depth * frame.ny;
+        this.posePositions[offset + 2] += dx * frame.rz + jump * frame.uz + depth * frame.nz;
+      }
+      if (active.kind === 'crow' || active.kind === 'vine') {
+        const close = (1 - Math.cos(cycle * 11)) * 0.35;
+        for (let axis = 0; axis < 3; axis++) {
+          this.posePositions[4 * 3 + axis] += (this.posePositions[9 * 3 + axis] - this.posePositions[4 * 3 + axis]) * close;
+        }
+      }
+      if (active.kind === 'fog') {
+        for (let finger = 0; finger < FAN_TIP_JOINTS.length; finger++) {
+          const offset = FAN_TIP_JOINTS[finger] * 3;
+          const spread = (finger - 1.5) * gestureWave * 0.014;
+          this.posePositions[offset] += spread * frame.rx;
+          this.posePositions[offset + 1] += spread * frame.ry;
+          this.posePositions[offset + 2] += spread * frame.rz;
+        }
+      }
+      this.ghost.update(this.posePositions, hintTarget.pose.radii);
+      this.ghost.opacity = 0.28 + 0.08 * Math.sin(this.animationTime * 6);
+      if (hintTarget.partner && !this.saved.oneHand) {
+        this.poseToWorld(hintTarget.partner, this.posePositions2, 0, hintTarget.shifts[1]);
+        for (let joint = 0; joint < JOINT_COUNT; joint++) {
+          const offset = joint * 3;
+          this.posePositions2[offset] += dx * frame.rx + jump * frame.ux;
+          this.posePositions2[offset + 1] += dx * frame.ry + jump * frame.uy;
+          this.posePositions2[offset + 2] += dx * frame.rz + jump * frame.uz;
+        }
+        if (active.kind === 'vine') {
+          const close = (1 - Math.cos(cycle * 11)) * 0.35;
+          for (let axis = 0; axis < 3; axis++) {
+            this.posePositions2[4 * 3 + axis] += (this.posePositions2[9 * 3 + axis] - this.posePositions2[4 * 3 + axis]) * close;
+          }
+        }
+        this.ghost2.update(this.posePositions2, hintTarget.partner.radii);
+        this.ghost2.opacity = this.ghost.opacity;
+      } else this.ghost2.opacity = 0;
+    } else this.ghost.opacity = this.ghost2.opacity = 0;
+    if (journey.completed) {
+      this.painter.caption('The spark slips home into the quiet moon.', 1);
+      if (this.animationTime - this.journeyArrivedAt >= 2) this.enter(Phase.Finale);
+    } else if (!journey.carried && this.phaseTime < 3) {
+      this.painter.caption('Hold a shape you know. Carry the light.', 1);
+    } else if (active) this.painter.caption(journey.wait >= 25 ? 'Hold any form here to open the way.'
+      : active.kind === 'crow' ? 'Bark the crow away.' : active.kind === 'vine' ? 'Peck or snip the vines.'
+      : active.kind === 'gap' ? 'Hop across with the spark.' : active.kind === 'fog' ? 'Fan the mist twice.'
+      : active.kind === 'ledge' ? active.ramp ? 'Hop twice up the ramp.' : 'Fly the spark up.'
+      : active.kind === 'boulder' ? 'Grow giant near the flame.' : 'Shrink tiny near the paper.', 0.9);
+    else this.painter.caption('Carry the spark to the moon.', 0.9);
   }
 
   private beginSession(): void {
@@ -1239,14 +1630,17 @@ export class TheaterSystem extends createSystem({
     const anyReal = handMask !== 0;
     if (anyReal) this.handsSeenAt = time;
     else if (this.handsSeenAt < 0) this.handsSeenAt = time;
-    const useDemo = this.demo || (!this.immersive && !anyReal);
+    const useDemo = this.demo || (!this.immersive && !anyReal && !this.journeyOnly);
     if (this.immersive) this.handleCarry(time);
     this.phaseTime += dt;
 
     const target = this.baked[this.order[this.step % this.order.length]];
     const stencil = this.stencils[this.order[this.step % this.order.length]];
     const demoTarget = this.phase === Phase.Invent && this.inventTarget ? this.inventTarget : target;
-    if (useDemo) this.driveDemo(demoTarget, this.animationTime); else this.demoHand.valid = this.demoHand2.valid = false;
+    if (useDemo) {
+      if (this.phase === Phase.Journey) this.driveJourneyDemo(dt);
+      else this.driveDemo(demoTarget, this.animationTime);
+    } else this.demoHand.valid = this.demoHand2.valid = false;
     // Filming in an emulator (`?capture` in XR): no passthrough shows the player's hands, so the wooden
     // stand-in follows the real tracked joints. On a headset, real hands are seen through passthrough.
     const shown = this.demoHand.valid ? this.demoHand : this.immersive && captureControl() && this.hands[0].valid ? this.hands[0] : null;
@@ -1308,21 +1702,59 @@ export class TheaterSystem extends createSystem({
       this.rays?.add(h.joints, L, this.frame, this.phase === Phase.Seek ? 1 : 0.35);
       casters++;
     }
-    if (this.journeyForms && this.journeyGestures) {
+    if (this.journeyForms && this.journeyGestures && (this.phase === Phase.Journey || this.journeyDebug)) {
       this.journeyHands[0] = anyReal ? this.hands[0] : this.demoHand;
       this.journeyHands[1] = anyReal ? this.hands[1] : this.demoHand2;
       const candidates = this.journeyCandidates;
-      const currentIndex = this.order[this.step % this.order.length];
+      const currentIndex = this.phase === Phase.Journey
+        ? this.journeyFormFor(this.journey?.current?.kind, this.journey?.current?.ability) : this.order[this.step % this.order.length];
       candidates[0] = currentIndex;
       let count = 1;
-      for (let index = 0; index < this.order.length && count < 4; index++) {
-        const candidate = this.order[index];
+      if (this.phase === Phase.Journey) {
+        const active = this.journey?.current;
+        if (active?.kind === 'vine') {
+          for (const id of VINE_FORM_IDS) {
+            const index = JOURNEY_TARGET_INDEX[id];
+            if (index >= 0 && count < 4) candidates[count++] = index;
+          }
+        }
+        const held = this.journeyFormState?.form ?? -1;
+        let heldPresent = false;
+        for (let prior = 0; prior < count; prior++) if (candidates[prior] === held) heldPresent = true;
+        if (held >= 0 && !heldPresent && count < 4) candidates[count++] = held;
+        for (let index = 0; index < this.journeyRecent.length && count < 4; index++) {
+          const recent = this.journeyRecent[index];
+          let present = false;
+          for (let prior = 0; prior < count; prior++) if (candidates[prior] === recent) present = true;
+          if (!present) candidates[count++] = recent;
+        }
+      }
+      const probeOrder = this.phase === Phase.Journey ? this.journeyKnown : this.order;
+      const probeLength = probeOrder.length;
+      if (this.phase === Phase.Journey && this.animationTime - this.journeyProbeAt >= 2) {
+        this.journeyProbe = (this.journeyProbe + 1) % Math.max(1, probeLength);
+        this.journeyProbeAt = this.animationTime;
+      }
+      for (let index = 0; index < probeLength && count < 4; index++) {
+        const candidate = probeOrder[(index + (this.phase === Phase.Journey ? this.journeyProbe : 0)) % probeLength];
+        if (candidate < 0) continue;
         let found = false;
         for (let prior = 0; prior < count; prior++) if (candidates[prior] === candidate) found = true;
         if (!found) candidates[count++] = candidate;
       }
       candidates.length = count;
-      this.journeyFormState = this.journeyForms.update(dt, this.journeyHands, candidates);
+      this.journeyFormState = this.journeyForms.update(dt, this.journeyHands, candidates,
+        this.phase === Phase.Journey ? currentIndex : -1);
+      if (this.phase === Phase.Journey && this.journeyFormState.form !== this.journeyLastForm) {
+        this.journeyGestures.reset();
+        this.journeyLastForm = this.journeyFormState.form;
+        if (this.journeyLastForm >= 0) {
+          const position = this.journeyRecent.indexOf(this.journeyLastForm);
+          if (position >= 0) this.journeyRecent.splice(position, 1);
+          this.journeyRecent.unshift(this.journeyLastForm);
+          this.journeyRecent.length = Math.min(this.journeyRecent.length, 3);
+        }
+      }
       this.journeyGestureState = this.journeyGestures.update(dt, this.journeyHands, L, this.frame);
       const gesture = this.journeyGestureState;
       if (gesture.bark) this.journeyLastEvent = 'bark';
@@ -1331,13 +1763,13 @@ export class TheaterSystem extends createSystem({
       if (gesture.hop) this.journeyLastEvent = 'hop';
       if (gesture.fan) this.journeyLastEvent = 'fan';
       if (gesture.fly) this.journeyLastEvent = 'fly';
-      if (this.animationTime - this.journeyLineAt >= 0.15) {
+      if (this.journeyDebug && this.animationTime - this.journeyLineAt >= 0.15) {
         const form = this.journeyFormState;
         const name = form.form < 0 ? '—' : this.baked[form.form].def.creature;
         this.journeyLine = `${name} ${form.score.toFixed(2)} · ${gesture.scale.toFixed(2)}× · ${this.journeyLastEvent}`;
         this.journeyLineAt = this.animationTime;
       }
-      p.journeyDebug(this.journeyLine);
+      if (this.journeyDebug) p.journeyDebug(this.journeyLine);
     }
     this.rays?.end();
     if (this.awaitingLight && casters > 0 && this.shadowOnPaper()) {
@@ -1354,6 +1786,20 @@ export class TheaterSystem extends createSystem({
         break;
       case Phase.Finale: this.finale(this.animationTime); break;
       case Phase.Invent: this.invent(dt, this.animationTime, casters); break;
+      case Phase.Journey: this.updateJourney(dt, useDemo); break;
+    }
+
+    if (this.phase === Phase.Journey) {
+      const stable = this.journeyInput.form.stable && this.journeyInput.form.form >= 0;
+      this.journeyPossession += ((stable ? 1 : 0) - this.journeyPossession) * Math.min(1, dt * 6);
+      if (stable) {
+        const eye = this.baked[this.journeyInput.form.form].def.eyes[0];
+        const hand = this.journeyHands[eye[3] ?? 0];
+        if (hand?.valid && hand.flat.valid) {
+          this.journeyEyeX = hand.flat.x[eye[0]] + (hand.flat.x[eye[1]] - hand.flat.x[eye[0]]) * eye[2];
+          this.journeyEyeY = hand.flat.y[eye[0]] + (hand.flat.y[eye[1]] - hand.flat.y[eye[0]]) * eye[2];
+        }
+      }
     }
 
     const screenDistance = this.screenCentre.distanceTo(L);
@@ -1369,10 +1815,19 @@ export class TheaterSystem extends createSystem({
       // Penumbra width W = flame radius * (paper - hand) / hand; Gaussian sigma ~ W/3.
       // A 2.4 cm effective flame keeps a mid-distance hand readable and still blooms near the lantern.
       const penumbraMetres = 0.024 * Math.max(0, screenDistance - distance) / distance;
-      p.shadow(hand.flat, Math.min(12, Math.max(0.8, (penumbraMetres * SHADOW_PX_PER_METRE) / 3)));
+      const blur = Math.min(12, Math.max(0.8, (penumbraMetres * SHADOW_PX_PER_METRE) / 3));
+      p.shadow(hand.flat, this.phase === Phase.Journey ? blur * (1 - this.journeyPossession * 0.55) : blur);
     }
     p.flushShadows(this.phase === Phase.Wake ? 0.35 : 0.9);
-    if (this.phase !== Phase.Finale) p.progress(this.step, NIGHT_LENGTH);
+    if (this.phase === Phase.Journey) {
+      if (this.journeyPossession > 0.01) p.possess(this.journeyEyeX, this.journeyEyeY, this.journeyPossession);
+      if (this.journeyInput.form.stable && this.journeyInput.form.form >= 0) {
+        p.formName(this.baked[this.journeyInput.form.form].def.creature, this.journeyEyeX + 0.06,
+          Math.min(0.25, this.journeyEyeY + 0.105),
+          this.journeyPossession * ease((this.animationTime - this.journeyNameAt) / 0.35));
+      }
+    }
+    if (this.phase !== Phase.Finale && this.phase !== Phase.Journey) p.progress(this.step, NIGHT_LENGTH);
 
     if (this.immersive && !anyReal && time - this.handsSeenAt > 2 && !this.demo) {
       p.caption('Set the controllers down. Just your hands.', 1, 0.27);
@@ -1565,7 +2020,7 @@ export class TheaterSystem extends createSystem({
       if (this.step >= NIGHT_LENGTH) {
         this.saved.nights++;
         save(this.saved);
-        this.enter(Phase.Finale);
+        if (this.journeyEnabled) this.beginJourney(); else this.enter(Phase.Finale);
       } else {
         this.enter(Phase.Rest);
       }
