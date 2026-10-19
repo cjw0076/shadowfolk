@@ -1,8 +1,11 @@
-# Shadowfolk — a hand-shadow theater for Meta Quest
+# Shadowfolk — your hand is the character
 
 ![A shadow fills the glowing cut-out of a peacock on the paper; woken creatures watch from the wall](docs/hero.jpg)
 
-A paper lantern stands on your real table and a washi-paper screen stands beyond it. Raise your hands into the lantern light and their shadows fall on the paper. Each night, cut-outs of sleeping creatures wait there. Shape your hands until the shadow fits, hold it, and the creature wakes, walks off the paper, and settles on your real wall. It stays there, night after night.
+A paper lantern stands on your real table and a washi-paper screen stands beyond it. Raise your hands into the lantern light and their shadows fall on the paper.
+- **Wake.** Each night, cut-outs of sleeping creatures wait there. Fit your shadow to one and hold it: the creature wakes and teaches you its move.
+- **Become it.** Later, make that shape again and your shadow *becomes* the creature: your fingers make it bark, peck, hop, fan or fly, and moving toward the flame makes it a giant.
+- **The journey.** Use the creatures you know to carry the lantern's spark across the paper to the moon. Woken creatures settle on your real wall, night after night.
 
 **Play:** open https://cjw0076.github.io/shadowfolk/ in the Meta Quest Browser and press *Light the lantern*. Hands only, seated, a few minutes a night. Allow room access when asked, so the theater can use your table and wall. A desktop browser shows a self-playing preview.
 
@@ -15,11 +18,17 @@ A paper lantern stands on your real table and a washi-paper screen stands beyond
 - **Lights down:** the room dims around you while the lantern stays bright.
 
 ## Each night
-- **Five sleeping shapes**, the newcomer saved for last. Each night has a name ("Night 1 · The First Lantern").
-- **Wake:** fit and hold. The cut-out flares, the creature fills with ink and opens its eye, follows your hand for a moment, then walks off in its own gait (hop, crawl, swim, flap, stalk, scuttle).
-- **Parade:** after the last shape, the night's creatures parade across the paper and the next newcomer is teased.
-- **Invent your own:** then the paper is blank. Hold any shape still and it is born as a new creature with its own name, and it joins your wall.
-- **One hand is enough:** a player using one hand never meets a two-hand shape they can't make; it re-forms into a single-hand creature, and the preference is remembered.
+- **Wake:** five sleeping shapes, the newcomer saved for last. Fit and hold; the cut-out flares, the creature fills with ink and opens its eye.
+- **Lesson:** each creature teaches its one move with a ghost hand, and you do it once:
+  - bark (dog), peck (heron, duck), snip (crab), hop (rabbit);
+  - fan (peacock), fly (butterfly);
+  - giant (toward the flame), tiny (toward the paper).
+- **Journey:** the lantern's spark must reach the moon. Crows, vines, gaps, fog, ledges, boulders and cracks stand in the way.
+  - Make a creature's shape and your live shadow becomes it.
+  - Do its move *at* the obstacle and carry the spark through.
+  - Journeys are generated from the moves you have learned (`src/journey/`).
+- **Parade and invent:** the night's creatures parade. Then any shape you hold still is born as a new creature and joins your wall.
+- **One hand is enough:** two-hand shapes and obstacles turn into one-hand ones for a player using one hand, and the preference is remembered.
 - **Tonight's moon:** a moon cut into the paper's corner follows the real lunar phase.
 
 ## How it works
@@ -33,6 +42,7 @@ A paper lantern stands on your real table and a washi-paper screen stands beyond
   - Only a quarter-resolution shadow layer is uploaded per frame; paper, cut-outs and creatures are cached layers and sprites (`src/theater/painter.ts`).
   - Fixed foveation and a 72 Hz request in XR (`src/theater/xr-render.ts`).
 - **Sound.** All of it is synthesised with Web Audio: a lantern drone and flame crackle in 3D at the lantern, creature voices, chimes and a generated reverb.
+- **Live forms and moves.** During the journey the shadow is scored against up to four relevant creatures in a worker at 15 Hz, with hysteresis, so a form holds while you perform its move. Moves are read from the 3D joints (`src/journey/forms.ts`, `src/journey/gestures.ts`; bench: `tools/check-journey-p1.ts`, `tools/browser/xr-journey-p1.mjs`).
 - **Help without text.** The lantern waits as an ember until your hand enters its light. If a shape does not come, a ghost hand shows it.
 - **See the optics:** add `?rays` to the URL to draw the light rays from the lantern through each fingertip to the paper.
 
