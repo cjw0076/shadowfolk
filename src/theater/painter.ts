@@ -24,6 +24,7 @@ export const SHADOW_PX_PER_METRE = PX / SOFT;
 const SHADOW_FILTERS = Array.from({ length: 121 }, (_, index) => `blur(${(index / 10).toFixed(1)}px)`);
 
 const INK_COLOR = new Color(INK);
+const JOURNEY_INK = INK_COLOR.clone().lerp(new Color('#5a2b1b'), 0.28);
 const SPARK_COUNT = 18;
 const CAPTION_H = 80;
 const eyeGlint = new Image();
@@ -190,6 +191,8 @@ export class ScreenPainter {
   private fontReady = false;
   private softTexture: CanvasTexture;
   private shadowMesh: Mesh<PlaneGeometry, MeshBasicMaterial>;
+  private journeyEyeMesh: Mesh<PlaneGeometry, MeshBasicMaterial>;
+  private tone = 1;
   private cutMesh: Mesh<PlaneGeometry, MeshBasicMaterial>;
   private glowMesh: Mesh<PlaneGeometry, MeshBasicMaterial>;
   private reveal = { value: 1 };
@@ -291,8 +294,9 @@ export class ScreenPainter {
     sparkGradient.addColorStop(1, 'rgba(255,255,255,0)');
     sparkContext.fillStyle = sparkGradient;
     sparkContext.fillRect(0, 0, 32, 32);
+    const sparkTexture = texture(sparkCanvas);
     this.sparksMesh = new InstancedMesh(new PlaneGeometry(1, 1), new MeshBasicMaterial({
-      map: texture(sparkCanvas), transparent: true, depthWrite: false,
+      map: sparkTexture, transparent: true, depthWrite: false,
       blending: AdditiveBlending, toneMapped: false,
     }), SPARK_COUNT);
     this.sparksMesh.instanceMatrix.setUsage(DynamicDrawUsage);
@@ -304,6 +308,10 @@ export class ScreenPainter {
     this.sparksMesh.frustumCulled = false;
     this.sparksMesh.visible = false;
     this.root.add(this.sparksMesh);
+    this.journeyEyeMesh = this.overlay(5, new PlaneGeometry(1, 1), true);
+    this.journeyEyeMesh.material.map = sparkTexture;
+    this.journeyEyeMesh.material.color.set('#ffcc80');
+    this.journeyEyeMesh.scale.setScalar(0.021);
     for (let index = 0; index < 5; index++) this.captions.push(this.makeCaption(CW, CAPTION_H, 6));
     this.perfCaption = this.makeCaption(420, 48, 7);
     this.perfXrCaption = this.makeCaption(980, 42, 7);
@@ -335,6 +343,7 @@ export class ScreenPainter {
   }
 
   setTone(value: number): void {
+    this.tone = value;
     this.paperMesh.material.color.setScalar(value);
     this.cutMesh.material.color.setScalar(value);
     this.glowMesh.material.color.setScalar(value);
@@ -404,6 +413,7 @@ export class ScreenPainter {
     for (let index = 0; index < this.creatureCount; index++) this.creatures[index].mesh.visible = false;
     this.creatureCount = 0;
     this.sparksMesh.visible = false;
+    this.journeyEyeMesh.visible = false;
     for (let index = 0; index < this.captions.length; index++) this.captions[index].mesh.visible = false;
     this.perfCaption.mesh.visible = false;
     this.perfXrCaption.mesh.visible = false;
@@ -473,6 +483,13 @@ export class ScreenPainter {
     this.shadowMesh.visible = true;
     this.softTexture.needsUpdate = true;
     perf?.endCall('flushShadows', started);
+  }
+
+  possess(x: number, y: number): void {
+    this.shadowMesh.material.color.copy(JOURNEY_INK).multiplyScalar(this.tone);
+    this.journeyEyeMesh.position.set(x, y + 0.008, 0.0022);
+    this.journeyEyeMesh.material.opacity = 0.8 * this.tone;
+    this.journeyEyeMesh.visible = Math.abs(x) <= SCREEN_W / 2 && Math.abs(y) <= SCREEN_H / 2;
   }
 
   /** A woken creature: ink silhouette with a blinking eye. */
