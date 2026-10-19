@@ -15,8 +15,8 @@ function texture(canvas: HTMLCanvasElement): CanvasTexture {
 }
 
 const SIZES: Record<ObstacleKind, [number, number, number]> = {
-  crow: [0.22, 0.21, -0.085], vine: [0.20, 0.32, -0.035], gap: [0.18, 0.09, -0.19],
-  fog: [0.36, 0.22, -0.08], ledge: [0.23, 0.27, -0.055], boulder: [0.34, 0.31, -0.05],
+  crow: [0.352, 0.336, -0.022], vine: [0.20, 0.32, -0.035], gap: [0.18, 0.09, -0.19],
+  fog: [0.45, 0.33, -0.08], ledge: [0.23, 0.27, -0.055], boulder: [0.34, 0.31, -0.05],
   crack: [0.13, 0.28, -0.045],
 };
 const TEXTURE_KEYS: Record<ObstacleKind, readonly string[]> = {
@@ -70,6 +70,7 @@ export class JourneyView {
   }
 
   start(runtime: JourneyRuntime): void {
+    this.ground.visible = this.moon.visible = this.ember.visible = true;
     const gaps = runtime.plan.obstacles.filter((obstacle) => obstacle.kind === 'gap')
       .map((obstacle) => [obstacle.x + 0.5 - 0.09, obstacle.x + 0.5 + 0.09] as const);
     const oldGround = this.textures.get('ground');
@@ -98,6 +99,20 @@ export class JourneyView {
     this.feedback.scale.set(ability === 'fan' ? 0.23 : 0.16, ability === 'fan' ? 0.135 : 0.095, 1);
     this.feedbackAt = time;
     this.feedback.visible = true;
+  }
+
+  showLessonGesture(ability: Ability, x: number, time: number): void {
+    this.ground.visible = this.moon.visible = this.ember.visible = false;
+    for (const obstacle of this.obstacles) obstacle.visible = false;
+    this.root.visible = true;
+    this.gesture(ability, x, time);
+  }
+
+  updateLesson(time: number): void {
+    const age = time - this.feedbackAt;
+    this.feedback.visible = age >= 0 && age < 0.8;
+    if (this.feedback.visible) this.feedback.material.opacity = Math.min(1, age * 6) * Math.min(1, (0.8 - age) * 2.5);
+    else this.root.visible = false;
   }
 
   update(runtime: JourneyRuntime, time: number): void {

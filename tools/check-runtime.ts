@@ -145,7 +145,7 @@ export async function run(): Promise<string[]> {
       } finally { Storage.prototype.setItem = setItem; }
       s.wake(s.baked[s.order[0]], s.stencils[s.order[0]], 70);
       passed.push('PASS: quota-denied successful wake continues playing');
-      s.step = s.order.length - 1; s.phaseTime = 3.7;
+      s.step = s.order.length - 1; s.lessonResolvedAt = 1.5; s.phaseTime = 3.7;
       s.wake(s.baked[s.order[s.step]], s.stencils[s.order[s.step]], 71);
       check(s.phase === 3 && s.saved.nights === 1, 'last creature enters finale');
       s.phaseTime = 1; s.finale(72);
@@ -191,7 +191,8 @@ export async function run(): Promise<string[]> {
         adapted.score = 1; adapted.hold = .54;
         adapted.seek(adapted.baked[index], adapted.stencils[index], 1, .02, 20 + slot);
         check(adapted.phase === 1, `one-hand creature ${slot} wakes`);
-        adapted.phaseTime = 3.3;
+        adapted.lessonResolvedAt = 1.5;
+        adapted.phaseTime = 3.7;
         adapted.wake(adapted.baked[index], adapted.stencils[index], 21 + slot);
       }
       check(adapted.phase === 3 && adapted.saved.nights === 1, 'one-hand night completes into finale');

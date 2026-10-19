@@ -610,19 +610,10 @@ export class ScreenPainter {
       if (xrPerf) {
         context.fillStyle = 'rgba(20,14,12,0.88)';
         context.fillRect(0, 0, layer.canvas.width, layer.canvas.height);
-      } else if (layer === this.formCaption) {
-        context.font = 'bold 29px "Playfair Display", Georgia, serif';
-        const width = Math.min(208, context.measureText(text).width + 26);
-        const left = (layer.canvas.width - width) * 0.5;
-        context.fillStyle = 'rgba(29,17,13,0.92)';
-        context.fillRect(left, 6, width, 46);
-        context.strokeStyle = 'rgba(229,172,99,0.8)';
-        context.lineWidth = 2;
-        context.strokeRect(left + 1, 7, width - 2, 44);
       }
-      context.fillStyle = xrPerf ? '#ffe8bd' : layer === this.formCaption ? '#ffe1aa' : '#4a3020';
+      context.fillStyle = xrPerf ? '#ffe8bd' : layer === this.formCaption ? '#23160f' : '#4a3020';
       context.font = xrPerf ? '27px Arial, sans-serif' : small ? '22px Arial, sans-serif'
-        : layer === this.formCaption ? 'bold 29px "Playfair Display", Georgia, serif'
+        : layer === this.formCaption ? 'italic 29px "Playfair Display", Georgia, serif'
           : 'italic 34px "Playfair Display", Georgia, serif';
       context.textAlign = small ? 'left' : 'center';
       context.textBaseline = 'middle';
