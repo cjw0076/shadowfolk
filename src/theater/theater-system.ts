@@ -15,6 +15,8 @@ import {
 } from '../shadow/silhouette.js';
 import { AsyncMatcher } from '../shadow/async-matcher.js';
 import { BakedTarget, TARGETS, bakeTarget } from '../shadow/targets.js';
+import { FormTracker, type FormState } from '../journey/forms.js';
+import { GestureDetector, type GestureState } from '../journey/gestures.js';
 import { TheaterAudio } from './audio.js';
 import { runtimePerf as perf } from './perf.js';
 import { SCREEN_H, SCREEN_W, SHADOW_PX_PER_METRE, ScreenPainter, Stencil, StencilPixels,
@@ -184,6 +186,17 @@ export class TheaterSystem extends createSystem({
     && new URLSearchParams(location.search).has('idle');
   /** `?rays` (explainer): draw the lantern's light rays through each hand onto the paper. */
   private rays = typeof location !== 'undefined' && new URLSearchParams(location.search).has('rays') ? new LightRays() : null;
+  private journeyDebug = typeof location !== 'undefined' && new URLSearchParams(location.search).has('journeyDebug');
+  private journeyMatcher: AsyncMatcher | null = null;
+  private journeyForms: FormTracker | null = null;
+  private journeyGestures: GestureDetector | null = null;
+  private journeyHands: LiveHand[] = [];
+  private journeyCandidates = [0, 0, 0, 0];
+  private journeyFormState: FormState | null = null;
+  private journeyGestureState: GestureState | null = null;
+  private journeyLastEvent = '—';
+  private journeyLine = '';
+  private journeyLineAt = -Infinity;
   private lit = 1; // lantern brightness 0..1
   private litTarget = 1;
   private paperDim = 0;
@@ -297,8 +310,16 @@ export class TheaterSystem extends createSystem({
     this.demoHand = mk();
     this.demoHand2 = mk();
     this.allHands = [...this.hands, this.demoHand, this.demoHand2];
+    this.journeyHands = [this.hands[0], this.hands[1]];
+    if (this.journeyDebug && typeof Worker !== 'undefined') {
+      this.journeyMatcher = new AsyncMatcher(this.baked.map((baked) => baked.template),
+        this.journeyHands, this.baked.map((baked) => !!baked.partner));
+      this.journeyForms = new FormTracker(this.baked, this.journeyMatcher);
+      this.journeyGestures = new GestureDetector();
+    }
     this.cleanupFuncs.push(() => {
       this.asyncMatcher?.dispose();
+      this.journeyMatcher?.dispose();
       this.inventWorker?.terminate();
     });
     this.mirrored = this.baked.map((b) => mirror(b.pose));
@@ -375,6 +396,8 @@ export class TheaterSystem extends createSystem({
     this.ghost.opacity = this.ghost2.opacity = 0;
     this.puppeteer.opacity = this.puppeteer2.opacity = 0;
     this.audio.setHold(0);
+    this.journeyForms?.reset();
+    this.journeyGestures?.reset();
   }
 
   /**
@@ -1284,6 +1307,37 @@ export class TheaterSystem extends createSystem({
       }
       this.rays?.add(h.joints, L, this.frame, this.phase === Phase.Seek ? 1 : 0.35);
       casters++;
+    }
+    if (this.journeyForms && this.journeyGestures) {
+      this.journeyHands[0] = anyReal ? this.hands[0] : this.demoHand;
+      this.journeyHands[1] = anyReal ? this.hands[1] : this.demoHand2;
+      const candidates = this.journeyCandidates;
+      const currentIndex = this.order[this.step % this.order.length];
+      candidates[0] = currentIndex;
+      let count = 1;
+      for (let index = 0; index < this.order.length && count < 4; index++) {
+        const candidate = this.order[index];
+        let found = false;
+        for (let prior = 0; prior < count; prior++) if (candidates[prior] === candidate) found = true;
+        if (!found) candidates[count++] = candidate;
+      }
+      candidates.length = count;
+      this.journeyFormState = this.journeyForms.update(dt, this.journeyHands, candidates);
+      this.journeyGestureState = this.journeyGestures.update(dt, this.journeyHands, L, this.frame);
+      const gesture = this.journeyGestureState;
+      if (gesture.bark) this.journeyLastEvent = 'bark';
+      if (gesture.peck) this.journeyLastEvent = 'peck';
+      if (gesture.snip) this.journeyLastEvent = 'snip';
+      if (gesture.hop) this.journeyLastEvent = 'hop';
+      if (gesture.fan) this.journeyLastEvent = 'fan';
+      if (gesture.fly) this.journeyLastEvent = 'fly';
+      if (this.animationTime - this.journeyLineAt >= 0.15) {
+        const form = this.journeyFormState;
+        const name = form.form < 0 ? '—' : this.baked[form.form].def.creature;
+        this.journeyLine = `${name} ${form.score.toFixed(2)} · ${gesture.scale.toFixed(2)}× · ${this.journeyLastEvent}`;
+        this.journeyLineAt = this.animationTime;
+      }
+      p.journeyDebug(this.journeyLine);
     }
     this.rays?.end();
     if (this.awaitingLight && casters > 0 && this.shadowOnPaper()) {
