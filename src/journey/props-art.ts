@@ -445,7 +445,7 @@ export function groundLine(
         g.lineTo(x, baseY + undulate);
       }
       for (let x = sx1; x >= sx0; x -= 12) {
-        const thickness = 15 + Math.sin(x * 0.031 + 1.2) * 4;
+        const thickness = 23 + Math.sin(x * 0.031 + 1.2) * 5;
         const undulate = Math.sin(x * 0.025) * 3.5;
         g.lineTo(x, baseY + undulate + thickness);
       }

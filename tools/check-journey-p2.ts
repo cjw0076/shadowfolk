@@ -28,6 +28,9 @@ for (let night = 1; night <= 6; night++) {
   assert.deepEqual(first, second, `night ${night} deterministic`);
   assert.equal(first.obstacles.length, Math.min(5, 3 + Math.floor((night - 1) / 2)));
   assert.ok(first.obstacles.some((obstacle) => obstacle.ability === abilityForForm(newcomer)), `night ${night} newcomer`);
+  for (let index = 1; index < first.obstacles.length; index++) {
+    assert.ok(first.obstacles[index].x >= first.obstacles[index - 1].x, `night ${night} left-to-right path`);
+  }
   const available = new Set(learned.map(abilityForForm));
   available.add('giant'); available.add('tiny');
   for (const obstacle of first.obstacles) assert.ok(available.has(obstacle.ability), `night ${night} learned ${obstacle.ability}`);

@@ -28,7 +28,7 @@ try {
         await window.__capture.step(1 / 20);
         if (journey.event?.kind === 'solve') solves.push({ index: journey.index,
           kind: journey.event.obstacle, wait: +journey.wait.toFixed(2), form: theater.journeyInput.formId,
-          gesture: journey.plan.obstacles[journey.index]?.ability });
+          gesture: journey.plan.obstacles[journey.index]?.ability, at: +theater.phaseTime.toFixed(2) });
       }
       return { frames, seconds: +(frames / 20).toFixed(2), completed: journey.completed,
         states: [...journey.states], index: journey.index,
@@ -37,7 +37,10 @@ try {
         saved: JSON.parse(localStorage.getItem('shadow-theater.v1') ?? '{}'),
         errors: [...theater.reported], };
     });
-    if (errors.length || result.errors.length || !result.completed || result.solves.some((solve) => solve.wait >= 12)) {
+    if (errors.length || result.errors.length || !result.completed || result.solves.some((solve) => solve.wait >= 12)
+      || result.solves[0]?.at < 3.5 || result.solves.some((solve, index) => index > 0
+        && solve.at - result.solves[index - 1].at < 5.1)
+      || result.seconds < result.obstacles.length * 5 || result.seconds > result.obstacles.length * 8) {
       throw new Error(`Night ${night} stalled: ${JSON.stringify({ result, errors })}`);
     }
     if (night === 1) {

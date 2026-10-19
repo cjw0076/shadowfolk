@@ -24,7 +24,7 @@ export const SHADOW_PX_PER_METRE = PX / SOFT;
 const SHADOW_FILTERS = Array.from({ length: 121 }, (_, index) => `blur(${(index / 10).toFixed(1)}px)`);
 
 const INK_COLOR = new Color(INK);
-const JOURNEY_INK = INK_COLOR.clone().lerp(new Color('#5a2b1b'), 0.28);
+const JOURNEY_INK = new Color('#120c0f');
 const SPARK_COUNT = 18;
 const CAPTION_H = 80;
 const eyeGlint = new Image();
@@ -204,6 +204,7 @@ export class ScreenPainter {
   private perfCaption: CaptionLayer;
   private perfXrCaption: CaptionLayer;
   private journeyCaption: CaptionLayer;
+  private formCaption: CaptionLayer;
   private sparksMesh: InstancedMesh<PlaneGeometry, MeshBasicMaterial>;
   private sparkTransform = new Object3D();
   private paperX = 0;
@@ -308,14 +309,15 @@ export class ScreenPainter {
     this.sparksMesh.frustumCulled = false;
     this.sparksMesh.visible = false;
     this.root.add(this.sparksMesh);
-    this.journeyEyeMesh = this.overlay(5, new PlaneGeometry(1, 1), true);
+    this.journeyEyeMesh = this.overlay(10, new PlaneGeometry(1, 1), true);
     this.journeyEyeMesh.material.map = sparkTexture;
     this.journeyEyeMesh.material.color.set('#ffcc80');
-    this.journeyEyeMesh.scale.setScalar(0.021);
+    this.journeyEyeMesh.scale.setScalar(0.043);
     for (let index = 0; index < 5; index++) this.captions.push(this.makeCaption(CW, CAPTION_H, 6));
     this.perfCaption = this.makeCaption(420, 48, 7);
     this.perfXrCaption = this.makeCaption(980, 42, 7);
     this.journeyCaption = this.makeCaption(580, 44, 7);
+    this.formCaption = this.makeCaption(220, 58, 10);
     this.washi.onload = () => this.renderPaper();
     this.washi.src = `${import.meta.env?.BASE_URL ?? './'}textures/washi.jpg`;
     void playfairReady.then(ready => { this.fontReady = ready; });
@@ -414,6 +416,7 @@ export class ScreenPainter {
     this.creatureCount = 0;
     this.sparksMesh.visible = false;
     this.journeyEyeMesh.visible = false;
+    this.formCaption.mesh.visible = false;
     for (let index = 0; index < this.captions.length; index++) this.captions[index].mesh.visible = false;
     this.perfCaption.mesh.visible = false;
     this.perfXrCaption.mesh.visible = false;
@@ -485,11 +488,18 @@ export class ScreenPainter {
     perf?.endCall('flushShadows', started);
   }
 
-  possess(x: number, y: number): void {
-    this.shadowMesh.material.color.copy(JOURNEY_INK).multiplyScalar(this.tone);
-    this.journeyEyeMesh.position.set(x, y + 0.008, 0.0022);
-    this.journeyEyeMesh.material.opacity = 0.8 * this.tone;
-    this.journeyEyeMesh.visible = Math.abs(x) <= SCREEN_W / 2 && Math.abs(y) <= SCREEN_H / 2;
+  possess(x: number, y: number, alpha: number): void {
+    this.shadowMesh.material.color.copy(INK_COLOR).lerp(JOURNEY_INK, alpha).multiplyScalar(this.tone);
+    this.journeyEyeMesh.position.set(x, y, 0.004);
+    this.journeyEyeMesh.scale.y = 0.043 * Math.max(0.05, alpha);
+    this.journeyEyeMesh.material.opacity = alpha * this.tone;
+    this.journeyEyeMesh.visible = alpha > 0 && Math.abs(x) <= SCREEN_W / 2 && Math.abs(y) <= SCREEN_H / 2;
+  }
+
+  formName(text: string, x: number, y: number, alpha: number): void {
+    if (alpha <= 0 || !this.fontReady) return;
+    this.drawCaption(this.formCaption, text, alpha, y, false);
+    this.formCaption.mesh.position.x = Math.max(-0.38, Math.min(0.38, x));
   }
 
   /** A woken creature: ink silhouette with a blinking eye. */
@@ -600,9 +610,20 @@ export class ScreenPainter {
       if (xrPerf) {
         context.fillStyle = 'rgba(20,14,12,0.88)';
         context.fillRect(0, 0, layer.canvas.width, layer.canvas.height);
+      } else if (layer === this.formCaption) {
+        context.font = 'bold 29px "Playfair Display", Georgia, serif';
+        const width = Math.min(208, context.measureText(text).width + 26);
+        const left = (layer.canvas.width - width) * 0.5;
+        context.fillStyle = 'rgba(29,17,13,0.92)';
+        context.fillRect(left, 6, width, 46);
+        context.strokeStyle = 'rgba(229,172,99,0.8)';
+        context.lineWidth = 2;
+        context.strokeRect(left + 1, 7, width - 2, 44);
       }
-      context.fillStyle = xrPerf ? '#ffe8bd' : '#4a3020';
-      context.font = xrPerf ? '27px Arial, sans-serif' : small ? '22px Arial, sans-serif' : 'italic 34px "Playfair Display", Georgia, serif';
+      context.fillStyle = xrPerf ? '#ffe8bd' : layer === this.formCaption ? '#ffe1aa' : '#4a3020';
+      context.font = xrPerf ? '27px Arial, sans-serif' : small ? '22px Arial, sans-serif'
+        : layer === this.formCaption ? 'bold 29px "Playfair Display", Georgia, serif'
+          : 'italic 34px "Playfair Display", Georgia, serif';
       context.textAlign = small ? 'left' : 'center';
       context.textBaseline = 'middle';
       context.fillText(text, small ? 12 : layer.canvas.width / 2, layer.canvas.height / 2);

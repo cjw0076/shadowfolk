@@ -219,8 +219,15 @@ export class TheaterSystem extends createSystem({
   private demoJourneyX = -0.42;
   private demoJourneyIndex = -1;
   private demoJourneyAt = 0;
+  private demoJourneyStartX = -0.42;
+  private demoJourneyPriorForm = -1;
+  private demoJourneyHop = 0;
   private demoJourneyZoneAt = -1;
   private demoJourneyPulse = -1;
+  private journeyPossession = 0;
+  private journeyEyeX = 0;
+  private journeyEyeY = 0;
+  private journeyGestureAt = -Infinity;
   private journeyMatcher: AsyncMatcher | null = null;
   private journeyForms: FormTracker | null = null;
   private journeyGestures: GestureDetector | null = null;
@@ -612,16 +619,21 @@ export class TheaterSystem extends createSystem({
       const ability = { crow: 'bark', vine: 'peck', gap: 'hop', fog: 'fan', ledge: oneHand ? 'hop' : 'fly',
         boulder: 'giant', crack: 'tiny' } as const;
       if (kinds.length) plan.obstacles = kinds.map((kind, index) => ({ kind, ability: ability[kind],
-        x: -0.27 + (index + 1) * 0.53 / (kinds.length + 1), combined: false, ramp: kind === 'ledge' && oneHand }));
+        x: kinds.length === 1 ? 0 : -0.27 + index * 0.51 / (kinds.length - 1),
+        combined: false, ramp: kind === 'ledge' && oneHand }));
     }
     this.journeyPlan = plan;
     this.journey = new JourneyRuntime(plan);
     this.journeyForms?.reset();
     this.journeyGestures?.reset();
     this.demoJourneyX = -0.42;
+    this.demoJourneyStartX = -0.42;
+    this.demoJourneyForm.form = -1;
     this.demoJourneyIndex = -1;
     this.demoJourneyPulse = -1;
     this.demoJourneyZoneAt = -1;
+    this.journeyPossession = 0;
+    this.journeyGestureAt = -Infinity;
     this.ghost.opacity = this.ghost2.opacity = 0;
     this.journeyView?.start(this.journey);
     this.enter(Phase.Journey);
@@ -639,46 +651,64 @@ export class TheaterSystem extends createSystem({
   private driveJourneyDemo(dt: number): void {
     const journey = this.journey!;
     if (journey.index !== this.demoJourneyIndex) {
+      this.demoJourneyPriorForm = this.demoJourneyForm.form;
+      this.demoJourneyStartX = this.demoJourneyX;
       this.demoJourneyIndex = journey.index;
       this.demoJourneyAt = this.phaseTime;
       this.demoJourneyPulse = -1;
       this.demoJourneyZoneAt = -1;
     }
     const obstacle = journey.current;
-    const targetX = obstacle ? obstacle.x + (journey.states[journey.index] === 'blocked' ? -0.045 : 0.085) : 0.43;
-    const speed = Math.min(Math.abs(targetX - this.demoJourneyX), dt * 0.13);
-    this.demoJourneyX += Math.sign(targetX - this.demoJourneyX) * speed;
-    if (obstacle && journey.states[journey.index] === 'blocked'
-      && Math.abs(this.demoJourneyX - obstacle.x) <= 0.06 && this.demoJourneyZoneAt < 0) {
+    const motion = this.phaseTime - this.demoJourneyAt;
+    const approachX = obstacle ? obstacle.x - 0.045 : 0.43;
+    if (obstacle && motion < 1.5) {
+      this.demoJourneyX = this.demoJourneyStartX + (approachX - this.demoJourneyStartX) * ease(motion / 1.5);
+    } else if (obstacle && motion < 5.2) {
+      this.demoJourneyX = approachX;
+    } else {
+      const targetX = obstacle ? obstacle.x + 0.085 : 0.43;
+      const speed = Math.min(Math.abs(targetX - this.demoJourneyX), dt * 0.16);
+      this.demoJourneyX += Math.sign(targetX - this.demoJourneyX) * speed;
+    }
+    if (obstacle && motion >= 1.5 && this.demoJourneyZoneAt < 0) {
       this.demoJourneyZoneAt = this.phaseTime;
     }
     const target = this.baked[this.journeyFormFor(obstacle?.kind, obstacle?.ability)];
     const formIndex = this.baked.indexOf(target);
-    this.demoJourneyForm.form = formIndex;
-    const pose = target.pose;
-    this.poseToWorld(pose, this.posePositions, 0, target.shifts[0]);
-    const ratio = STAGE.lightToScreen / STAGE.lightToHand;
-    const dx = this.demoJourneyX / ratio;
+    this.demoJourneyForm.form = motion < 2.5 && this.demoJourneyPriorForm >= 0
+      ? this.demoJourneyPriorForm : formIndex;
+    const prior = this.demoJourneyPriorForm >= 0 ? this.baked[this.demoJourneyPriorForm] : null;
+    const morph = ease((motion - 1.5) / 1);
+    const from = prior?.pose ?? this.demoFrom;
+    for (let axis = 0; axis < this.ghostPose.mats.length; axis++) {
+      this.ghostPose.mats[axis] = from.mats[axis] + (target.pose.mats[axis] - from.mats[axis]) * morph;
+    }
+    this.ghostPose.radii.set(target.pose.radii);
+    this.poseToWorld(this.ghostPose, this.posePositions, 0, target.shifts[0]);
     const frame = this.frame;
-    const motion = this.phaseTime - this.demoJourneyAt;
     const gestureMotion = this.demoJourneyZoneAt < 0 ? 0 : this.phaseTime - this.demoJourneyZoneAt;
-    const flap = obstacle?.kind === 'ledge' ? 0.025 * Math.sin(motion * 15) : 0;
-    const hop = obstacle?.kind === 'gap' ? Math.max(0, Math.sin(motion * 9)) * 0.035 : 0;
-    const depth = gestureMotion > 0.2 && obstacle?.kind === 'boulder' ? 0.12 * ease((gestureMotion - 0.2) / 0.45)
-      : gestureMotion > 0.2 && obstacle?.kind === 'crack' ? -0.13 * ease((gestureMotion - 0.2) / 0.45) : 0;
+    const acting = motion >= 2.5 && motion < 4;
+    const flap = acting && obstacle?.kind === 'ledge' ? 0.035 * Math.sin(gestureMotion * 15) : 0;
+    const hop = acting && (obstacle?.kind === 'gap' || obstacle?.ramp)
+      ? Math.max(0, Math.sin(gestureMotion * 9)) * 0.055 : 0;
+    const depth = -0.10 + (acting && obstacle?.kind === 'boulder' ? 0.12 * ease((gestureMotion - 1) / 0.45)
+      : acting && obstacle?.kind === 'crack' ? -0.13 * ease((gestureMotion - 1) / 0.45) : 0);
+    const ratio = STAGE.lightToScreen / (STAGE.lightToHand - depth);
+    const dx = this.demoJourneyX / ratio;
+    this.demoJourneyHop = hop * ratio;
     for (let joint = 0; joint < JOINT_COUNT; joint++) {
       const offset = joint * 3;
       this.posePositions[offset] += dx * frame.rx + (flap + hop) * frame.ux + depth * frame.nx;
       this.posePositions[offset + 1] += dx * frame.ry + (flap + hop) * frame.uy + depth * frame.ny;
       this.posePositions[offset + 2] += dx * frame.rz + (flap + hop) * frame.uz + depth * frame.nz;
     }
-    if (obstacle?.kind === 'crow' || obstacle?.kind === 'vine') {
+    if (acting && (obstacle?.kind === 'crow' || obstacle?.kind === 'vine')) {
       const close = (1 - Math.cos(gestureMotion * 13)) * 0.27;
       for (let axis = 0; axis < 3; axis++) {
         this.posePositions[4 * 3 + axis] += (this.posePositions[9 * 3 + axis] - this.posePositions[4 * 3 + axis]) * close;
       }
     }
-    if (obstacle?.kind === 'fog') {
+    if (acting && obstacle?.kind === 'fog') {
       const fan = 0.014 * Math.sin(gestureMotion * 13);
       for (let finger = 0; finger < 4; finger++) {
         const offset = FAN_TIP_JOINTS[finger] * 3;
@@ -689,30 +719,59 @@ export class TheaterSystem extends createSystem({
       }
     }
     this.demoHand.joints.set(this.posePositions);
-    this.demoHand.radii.set(pose.radii);
+    this.demoHand.radii.set(target.pose.radii);
     this.demoHand.valid = true;
     if (target.partner && !this.demoOneHand) {
-      this.poseToWorld(target.partner, this.posePositions2, 0, target.shifts[1]);
+      const partnerFrom = prior?.partner ?? this.demoFrom2;
+      for (let axis = 0; axis < this.ghostPose2.mats.length; axis++) {
+        this.ghostPose2.mats[axis] = partnerFrom.mats[axis] + (target.partner.mats[axis] - partnerFrom.mats[axis]) * morph;
+      }
+      this.ghostPose2.radii.set(target.partner.radii);
+      this.poseToWorld(this.ghostPose2, this.posePositions2, 0, target.shifts[1]);
       for (let joint = 0; joint < JOINT_COUNT; joint++) {
         const offset = joint * 3;
-        this.posePositions2[offset] += dx * frame.rx + flap * frame.ux;
-        this.posePositions2[offset + 1] += dx * frame.ry + flap * frame.uy;
-        this.posePositions2[offset + 2] += dx * frame.rz + flap * frame.uz;
+        this.posePositions2[offset] += dx * frame.rx + flap * frame.ux + depth * frame.nx;
+        this.posePositions2[offset + 1] += dx * frame.ry + flap * frame.uy + depth * frame.ny;
+        this.posePositions2[offset + 2] += dx * frame.rz + flap * frame.uz + depth * frame.nz;
       }
       this.demoHand2.joints.set(this.posePositions2);
       this.demoHand2.radii.set(target.partner.radii);
       this.demoHand2.valid = true;
     } else this.demoHand2.valid = false;
+    const light = this.lanternPos;
+    projectFromLight(this.demoHand.joints, this.demoHand.radii, light.x, light.y, light.z, frame, this.demoHand.flat);
+    if (this.demoHand2.valid) {
+      projectFromLight(this.demoHand2.joints, this.demoHand2.radii, light.x, light.y, light.z, frame, this.demoHand2.flat);
+    }
+    let foot = Infinity;
+    for (let side = 0; side < 2; side++) {
+      const hand = side === 0 ? this.demoHand : this.demoHand2;
+      if (!hand.valid || !hand.flat.valid) continue;
+      for (let joint = 0; joint < JOINT_COUNT; joint++) foot = Math.min(foot, hand.flat.y[joint] - hand.flat.r[joint]);
+    }
+    if (Number.isFinite(foot)) {
+      const lift = (-0.18 - foot) / ratio;
+      for (let side = 0; side < 2; side++) {
+        const hand = side === 0 ? this.demoHand : this.demoHand2;
+        if (!hand.valid) continue;
+        for (let joint = 0; joint < JOINT_COUNT; joint++) {
+          const offset = joint * 3;
+          hand.joints[offset] += lift * frame.ux;
+          hand.joints[offset + 1] += lift * frame.uy;
+          hand.joints[offset + 2] += lift * frame.uz;
+        }
+      }
+    }
     const gesture = this.demoJourneyGesture;
     gesture.bark = gesture.peck = gesture.snip = gesture.hop = gesture.fan = gesture.fly = false;
     gesture.giant = gesture.tiny = false;
-    if (obstacle && Math.abs(this.demoJourneyX - obstacle.x) <= 0.06 && motion > 0.5) {
-      const pulse = Math.floor((motion - 0.5) / 0.7);
-      if (gestureMotion >= 0.7 && pulse !== this.demoJourneyPulse) {
+    if (obstacle && Math.abs(this.demoJourneyX - obstacle.x) <= 0.06 && motion >= 3.1 && motion < 4.1) {
+      const pulse = motion < 3.85 ? 0 : 1;
+      if (pulse !== this.demoJourneyPulse) {
         this.demoJourneyPulse = pulse;
-        const ability = obstacle.ability;
-        if (ability === 'giant' || ability === 'tiny') gesture[ability] = true;
-        else gesture[ability] = true;
+        this.journeyView?.gesture(obstacle.ability, obstacle.x, this.animationTime);
+        this.journeyGestureAt = this.animationTime;
+        if (pulse === 1 || obstacle.kind === 'fog' || obstacle.ramp) gesture[obstacle.ability] = true;
       }
     }
   }
@@ -735,7 +794,7 @@ export class TheaterSystem extends createSystem({
     if (useDemo) {
       input.x = input.anchorX = this.demoJourneyX;
       input.y = -0.10;
-      input.anchorY = -0.12;
+      input.anchorY = -0.12 + this.demoJourneyHop;
     } else {
       const hand = this.journeyHands[0].valid ? this.journeyHands[0] : this.journeyHands[1];
       if (hand?.valid && hand.flat.valid) {
@@ -769,6 +828,15 @@ export class TheaterSystem extends createSystem({
           input.anchorY = (hand.flat.y[9] + hand.flat.y[14]) * 0.5;
         }
       } else input.x = input.y = input.anchorX = input.anchorY = 9;
+    }
+    const activeGesture = journey.current;
+    if (!useDemo && activeGesture && Math.abs(input.x - activeGesture.x) <= 0.12
+      && this.animationTime - this.journeyGestureAt >= 0.3) {
+      const ability = activeGesture.kind === 'vine' && gesture.snip ? 'snip' : activeGesture.ability;
+      if (gesture[ability]) {
+        this.journeyView?.gesture(ability, activeGesture.x, this.animationTime);
+        this.journeyGestureAt = this.animationTime;
+      }
     }
     journey.update(dt, input);
     if (journey.index !== this.journeyLastObstacleIndex) {
@@ -847,7 +915,7 @@ export class TheaterSystem extends createSystem({
     } else this.ghost.opacity = this.ghost2.opacity = 0;
     if (journey.completed) {
       this.painter.caption('The spark slips home into the quiet moon.', 1);
-      if (this.animationTime - this.journeyArrivedAt >= 1.5) this.enter(Phase.Finale);
+      if (this.animationTime - this.journeyArrivedAt >= 2) this.enter(Phase.Finale);
     } else if (!journey.carried && this.phaseTime < 3) {
       this.painter.caption('Hold a shape you know. Carry the light.', 1);
     } else if (active) this.painter.caption(journey.wait >= 25 ? 'Hold any form here to open the way.'
@@ -1721,6 +1789,19 @@ export class TheaterSystem extends createSystem({
       case Phase.Journey: this.updateJourney(dt, useDemo); break;
     }
 
+    if (this.phase === Phase.Journey) {
+      const stable = this.journeyInput.form.stable && this.journeyInput.form.form >= 0;
+      this.journeyPossession += ((stable ? 1 : 0) - this.journeyPossession) * Math.min(1, dt * 6);
+      if (stable) {
+        const eye = this.baked[this.journeyInput.form.form].def.eyes[0];
+        const hand = this.journeyHands[eye[3] ?? 0];
+        if (hand?.valid && hand.flat.valid) {
+          this.journeyEyeX = hand.flat.x[eye[0]] + (hand.flat.x[eye[1]] - hand.flat.x[eye[0]]) * eye[2];
+          this.journeyEyeY = hand.flat.y[eye[0]] + (hand.flat.y[eye[1]] - hand.flat.y[eye[0]]) * eye[2];
+        }
+      }
+    }
+
     const screenDistance = this.screenCentre.distanceTo(L);
     for (const hand of this.allHands) {
       if (!hand.valid || !hand.flat.valid) continue;
@@ -1734,13 +1815,17 @@ export class TheaterSystem extends createSystem({
       // Penumbra width W = flame radius * (paper - hand) / hand; Gaussian sigma ~ W/3.
       // A 2.4 cm effective flame keeps a mid-distance hand readable and still blooms near the lantern.
       const penumbraMetres = 0.024 * Math.max(0, screenDistance - distance) / distance;
-      p.shadow(hand.flat, Math.min(12, Math.max(0.8, (penumbraMetres * SHADOW_PX_PER_METRE) / 3)));
+      const blur = Math.min(12, Math.max(0.8, (penumbraMetres * SHADOW_PX_PER_METRE) / 3));
+      p.shadow(hand.flat, this.phase === Phase.Journey ? blur * (1 - this.journeyPossession * 0.55) : blur);
     }
     p.flushShadows(this.phase === Phase.Wake ? 0.35 : 0.9);
-    if (this.phase === Phase.Journey && this.journeyInput.form.stable && this.journeyInput.form.form >= 0) {
-      p.possess(this.journeyInput.anchorX, this.journeyInput.anchorY);
-      const nameAlpha = Math.max(0, 1 - (this.animationTime - this.journeyNameAt) / 1.25);
-      if (nameAlpha > 0) p.caption(this.baked[this.journeyInput.form.form].def.creature, nameAlpha, 0.26);
+    if (this.phase === Phase.Journey) {
+      if (this.journeyPossession > 0.01) p.possess(this.journeyEyeX, this.journeyEyeY, this.journeyPossession);
+      if (this.journeyInput.form.stable && this.journeyInput.form.form >= 0) {
+        p.formName(this.baked[this.journeyInput.form.form].def.creature, this.journeyEyeX + 0.06,
+          Math.min(0.25, this.journeyEyeY + 0.105),
+          this.journeyPossession * ease((this.animationTime - this.journeyNameAt) / 0.35));
+      }
     }
     if (this.phase !== Phase.Finale && this.phase !== Phase.Journey) p.progress(this.step, NIGHT_LENGTH);
 

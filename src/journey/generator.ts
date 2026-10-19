@@ -58,13 +58,23 @@ export function generateJourney(day: number, night: number, learned: readonly st
     const swap = Math.floor(random() * (index + 1));
     [picked[index], picked[swap]] = [picked[swap], picked[index]];
   }
+  if (night >= 4) {
+    const rock = picked.indexOf('giant');
+    const bird = picked.findIndex((ability) => ability === 'bark' || ability === 'peck' || ability === 'snip');
+    if (rock >= 0 && bird >= 0 && Math.abs(rock - bird) > 1) {
+      const beside = rock === 0 ? 1 : rock - 1;
+      [picked[bird], picked[beside]] = [picked[beside], picked[bird]];
+    }
+  }
   const obstacles: JourneyObstacle[] = picked.map((original, index) => ({
-    kind: KIND_BY_ABILITY[original], ability: substitute(original), x: -0.27 + (index + 1) * 0.53 / (length + 1),
+    kind: KIND_BY_ABILITY[original], ability: substitute(original), x: -0.27 + index * 0.51 / (length - 1),
     combined: false, ramp: oneHand && original === 'fly',
   }));
   if (night >= 4 && obstacles.length >= 4) {
-    const boulder = obstacles.find((obstacle) => obstacle.kind === 'boulder');
-    const other = obstacles.find((obstacle) => obstacle.kind === 'crow' || obstacle.kind === 'vine');
+    const rock = obstacles.findIndex((obstacle) => obstacle.kind === 'boulder');
+    const boulder = obstacles[rock];
+    const other = obstacles.find((obstacle, index) => Math.abs(index - rock) === 1
+      && (obstacle.kind === 'crow' || obstacle.kind === 'vine'));
     if (boulder && other && boulder !== other) {
       other.x = boulder.x;
       other.combined = true;
