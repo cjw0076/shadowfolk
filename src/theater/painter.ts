@@ -200,6 +200,7 @@ export class ScreenPainter {
   private captions: CaptionLayer[] = [];
   private perfCaption: CaptionLayer;
   private perfXrCaption: CaptionLayer;
+  private journeyCaption: CaptionLayer;
   private sparksMesh: InstancedMesh<PlaneGeometry, MeshBasicMaterial>;
   private sparkTransform = new Object3D();
   private paperX = 0;
@@ -306,6 +307,7 @@ export class ScreenPainter {
     for (let index = 0; index < 5; index++) this.captions.push(this.makeCaption(CW, CAPTION_H, 6));
     this.perfCaption = this.makeCaption(420, 48, 7);
     this.perfXrCaption = this.makeCaption(980, 42, 7);
+    this.journeyCaption = this.makeCaption(580, 44, 7);
     this.washi.onload = () => this.renderPaper();
     this.washi.src = `${import.meta.env?.BASE_URL ?? './'}textures/washi.jpg`;
     void playfairReady.then(ready => { this.fontReady = ready; });
@@ -405,6 +407,7 @@ export class ScreenPainter {
     for (let index = 0; index < this.captions.length; index++) this.captions[index].mesh.visible = false;
     this.perfCaption.mesh.visible = false;
     this.perfXrCaption.mesh.visible = false;
+    this.journeyCaption.mesh.visible = false;
     this.progressCalled = false;
     const s = this.sctx;
     s.setTransform(1, 0, 0, 1, 0, 0);
@@ -532,6 +535,10 @@ export class ScreenPainter {
     perf?.endCall('caption', started);
   }
 
+  journeyDebug(text: string): void {
+    this.drawCaption(this.journeyCaption, text, 0.92, SCREEN_H / 2 - 0.115, true);
+  }
+
   /** Small counter of woken creatures (top-right), drawn as dots. */
   progress(done: number, total: number): void {
     const started = perf ? performance.now() : 0;
@@ -572,7 +579,7 @@ export class ScreenPainter {
     if (layer.text !== text) {
       const context = layer.ctx;
       context.clearRect(0, 0, layer.canvas.width, layer.canvas.height);
-      const xrPerf = layer === this.perfXrCaption;
+      const xrPerf = layer === this.perfXrCaption || layer === this.journeyCaption;
       if (xrPerf) {
         context.fillStyle = 'rgba(20,14,12,0.88)';
         context.fillRect(0, 0, layer.canvas.width, layer.canvas.height);
