@@ -33,6 +33,9 @@ import { PreviewRoom } from './preview-room.js';
 import { WallLayer } from './wall.js';
 import { LightRays } from './rays.js';
 import { xrRenderStatusLine } from './xr-render.js';
+import { InkField } from '../play/ink-field.js';
+import { FolkWorld } from '../play/folk.js';
+import { PlayView } from '../play/view.js';
 
 const TARGET_CY = 0.02;
 /** Lantern placement relative to the seated head: ahead and below the eyes. */
@@ -222,6 +225,17 @@ export class TheaterSystem extends createSystem({
   private journeyDebug = typeof location !== 'undefined' && new URLSearchParams(location.search).has('journeyDebug');
   private journeyEnabled = typeof location === 'undefined' || !new URLSearchParams(location.search).has('noJourney');
   private journeyOnly = typeof location !== 'undefined' && new URLSearchParams(location.search).has('journeyOnly');
+  private playSandbox = typeof location !== 'undefined' && new URLSearchParams(location.search).has('playSandbox');
+  private playDebug = typeof location !== 'undefined' && new URLSearchParams(location.search).has('playDebug');
+  private playCell = typeof location !== 'undefined' && new URLSearchParams(location.search).get('playCell') === '0.008' ? 0.008 : 0.010;
+  private playField: InkField | null = null;
+  private playFolk: FolkWorld | null = null;
+  private playView: PlayView | null = null;
+  private playDemoPose!: HandPose;
+  private playDemoCup!: HandPose;
+  private playDemoAt = 0;
+  private playDemoAct = -1;
+  private playDemoSpawned = 0;
   private journey: JourneyRuntime | null = null;
   private journeyView: JourneyView | null = null;
   private journeyPlan: JourneyPlan | null = null;
@@ -382,8 +396,8 @@ export class TheaterSystem extends createSystem({
     this.demoHand2 = mk();
     this.allHands = [...this.hands, this.demoHand, this.demoHand2];
     this.journeyHands = [this.hands[0], this.hands[1]];
-    if (!this.idle) this.journeyGestures = new GestureDetector();
-    if ((this.journeyDebug || this.journeyEnabled || this.journeyOnly) && typeof Worker !== 'undefined') {
+    if (!this.idle && !this.playSandbox) this.journeyGestures = new GestureDetector();
+    if (!this.playSandbox && (this.journeyDebug || this.journeyEnabled || this.journeyOnly) && typeof Worker !== 'undefined') {
       this.journeyMatcher = new AsyncMatcher(this.baked.map((baked) => baked.template),
         this.journeyHands, this.baked.map((baked) => !!baked.partner));
       this.journeyForms = new FormTracker(this.baked, this.journeyMatcher);
@@ -394,9 +408,24 @@ export class TheaterSystem extends createSystem({
       this.inventWorker?.terminate();
       this.journeyView?.dispose();
     });
-    if (!this.idle) {
+    if (!this.idle && !this.playSandbox) {
       this.journeyView = new JourneyView();
       this.painter.root.add(this.journeyView.root);
+    }
+    if (this.playSandbox) {
+      this.playField = new InkField(this.playCell);
+      this.playField.setStaticRect(-0.5, -0.212, -0.06, -0.196);
+      this.playField.setStaticRect(0.06, -0.212, 0.30, -0.196);
+      this.playField.setStaticRect(0.30, -0.212, 0.32, -0.096);
+      this.playField.setStaticRect(0.32, -0.112, 0.5, -0.096);
+      this.playFolk = new FolkWorld(this.playField, 2026);
+      this.playFolk.configure({ waveCount: 5 });
+      this.playFolk.onEvent = (kind) => this.audio.play(kind);
+      this.playView = new PlayView(this.playField, this.playDebug);
+      this.painter.root.add(this.playView.root);
+      this.playDemoPose = orient(basePoses.relaxed(), [-25, 0, 0]);
+      this.playDemoCup = shape(basePoses.relaxed(), { index: 0.65, middle: 0.65, ring: 0.65, pinky: 0.65 });
+      this.cleanupFuncs.push(() => this.playView?.dispose());
     }
     this.mirrored = this.baked.map((b) => mirror(b.pose));
     this.demoFrom = basePoses.relaxed();
@@ -416,10 +445,12 @@ export class TheaterSystem extends createSystem({
         mode: this.mode, born: this.inventBorn, wall: this.wall.active,
         journey: this.journey ? { index: this.journey.index, spark: this.journey.spark,
           carried: this.journey.carried, completed: this.journey.completed } : null,
+        play: this.playFolk ? { count: this.playFolk.count, home: this.playFolk.homeCount,
+          ash: this.playFolk.ashCount } : null,
       });
     }
     this.newNight();
-    if (this.journeyOnly) this.beginJourney();
+    if (this.journeyOnly && !this.playSandbox) this.beginJourney();
     if (import.meta.env?.DEV) (window as unknown as { __theater: unknown }).__theater = this;
 
     this.cleanupFuncs.push(
@@ -978,9 +1009,16 @@ export class TheaterSystem extends createSystem({
     this.twoHandsSeen = false;
     this.bothHandsTime = 0;
     this.clearOneHandThisSession = this.saved.oneHand === true;
+    if (this.playSandbox) {
+      this.playFolk?.reset();
+      this.playFolk?.configure({ waveCount: 5 });
+      this.playDemoAt = 0;
+      this.playDemoAct = -1;
+      this.playDemoSpawned = 0;
+    }
     if (this.saved.oneHand) this.suppressTwoHandTargets();
     const session = this.renderer.xr.getSession?.();
-    if (session && typeof Worker !== 'undefined') {
+    if (session && !this.playSandbox && typeof Worker !== 'undefined') {
       try {
         this.asyncMatcher = new AsyncMatcher(this.baked.map((target) => target.template), this.allHands);
       } catch {
@@ -1650,6 +1688,52 @@ export class TheaterSystem extends createSystem({
     }
   }
 
+  private drivePlayDemo(dt: number): void {
+    if (!this.playFolk) return;
+    if (this.playDemoAt === 0) this.playDemoAt = this.animationTime;
+    const elapsed = this.animationTime - this.playDemoAt;
+    const act = elapsed < 12 ? 0 : elapsed < 18 ? 1 : 2;
+    if (act !== this.playDemoAct) {
+      this.playDemoAct = act;
+      this.playDemoSpawned = 0;
+      this.playFolk.reset();
+      this.playFolk.configure({ waveCount: act === 0 ? 5 : 0 });
+      if (act === 2) this.playFolk.spawn(0.235, -0.183);
+    }
+    const sceneTime = act === 0 ? elapsed : act === 1 ? elapsed - 12 : elapsed - 18;
+    if (act === 1) {
+      while (this.playDemoSpawned < 5 && sceneTime >= this.playDemoSpawned * 0.7) {
+        this.playFolk.spawn(-0.025, 0.08);
+        this.playDemoSpawned++;
+      }
+    }
+    const pose = act === 1 ? this.playDemoCup : this.playDemoPose;
+    const x = act === 1 ? -0.025 : act === 2 ? 0.23 + Math.max(0, Math.min(0.05, (sceneTime - 1) * 0.5)) : 0;
+    const y = act === 1 ? -0.23 : act === 2 ? -0.23 + Math.max(0, Math.min(0.12, (sceneTime - 1) * 1.2)) : -0.23;
+    this.demoHand.radii.set(pose.radii);
+    const light = this.lanternPos, frame = this.frame;
+    let meanX = 0, meanY = 0;
+    for (let joint = 0; joint < JOINT_COUNT; joint++) {
+      meanX += pose.mats[joint * 16 + 12]; meanY += pose.mats[joint * 16 + 13];
+    }
+    meanX /= JOINT_COUNT; meanY /= JOINT_COUNT;
+    const lightX = (light.x - frame.ox) * frame.rx + (light.y - frame.oy) * frame.ry + (light.z - frame.oz) * frame.rz;
+    const lightY = (light.x - frame.ox) * frame.ux + (light.y - frame.oy) * frame.uy + (light.z - frame.oz) * frame.uz;
+    const magnification = STAGE.lightToScreen / STAGE.lightToHand;
+    for (let joint = 0; joint < JOINT_COUNT; joint++) {
+      const offset = joint * 3;
+      const screenX = x + (pose.mats[joint * 16 + 12] - meanX) * magnification;
+      const screenY = y + (pose.mats[joint * 16 + 13] - meanY) * magnification;
+      const handX = (screenX - lightX) / magnification;
+      const handY = (screenY - lightY) / magnification;
+      this.demoHand.joints[offset] = light.x + handX * frame.rx + handY * frame.ux - STAGE.lightToHand * frame.nx;
+      this.demoHand.joints[offset + 1] = light.y + handX * frame.ry + handY * frame.uy - STAGE.lightToHand * frame.ny;
+      this.demoHand.joints[offset + 2] = light.z + handX * frame.rz + handY * frame.uz - STAGE.lightToHand * frame.nz;
+    }
+    this.demoHand.valid = true;
+    this.demoHand2.valid = false;
+  }
+
   update(delta: number, time: number): void {
     const started = perf?.beginFrame();
     try {
@@ -1712,7 +1796,7 @@ export class TheaterSystem extends createSystem({
     const anyReal = handMask !== 0;
     if (anyReal) this.handsSeenAt = time;
     else if (this.handsSeenAt < 0) this.handsSeenAt = time;
-    const useDemo = this.demo || (!this.immersive && !anyReal && !this.journeyOnly);
+    const useDemo = this.playSandbox ? this.demo : this.demo || (!this.immersive && !anyReal && !this.journeyOnly);
     if (this.immersive) this.handleCarry(time);
     this.phaseTime += dt;
 
@@ -1720,7 +1804,8 @@ export class TheaterSystem extends createSystem({
     const stencil = this.stencils[this.order[this.step % this.order.length]];
     const demoTarget = this.phase === Phase.Invent && this.inventTarget ? this.inventTarget : target;
     if (useDemo) {
-      if (this.phase === Phase.Journey) this.driveJourneyDemo(dt);
+      if (this.playSandbox) this.drivePlayDemo(dt);
+      else if (this.phase === Phase.Journey) this.driveJourneyDemo(dt);
       else this.driveDemo(demoTarget, this.animationTime);
     } else this.demoHand.valid = this.demoHand2.valid = false;
     // Filming in an emulator (`?capture` in XR): no passthrough shows the player's hands, so the wooden
@@ -1765,17 +1850,46 @@ export class TheaterSystem extends createSystem({
     // Shadows: project every hand from the lantern onto the paper.
     const p = this.painter;
     p.begin();
-    const needsMainMask = (this.phase === Phase.Seek && !this.asyncMatcher?.ready)
+    let playMs = 0;
+    const playClearAt = this.playField && perf ? performance.now() : 0;
+    this.playField?.beginFrame();
+    if (playClearAt) {
+      const elapsed = performance.now() - playClearAt;
+      playMs += elapsed;
+      perf?.playClear.push(elapsed);
+    }
+    const needsMainMask = !this.playSandbox && ((this.phase === Phase.Seek && !this.asyncMatcher?.ready)
       || (this.phase === Phase.Wake && this.wakeC0 !== null && this.phaseTime < this.wakeWalkAt())
-      || (this.phase === Phase.Invent && !this.inventBorn && !this.inventPending);
+      || (this.phase === Phase.Invent && !this.inventBorn && !this.inventPending));
     if (needsMainMask) this.live.clear();
     let casters = 0;
     const L = this.lanternPos;
     this.rays?.begin();
+    let playHandMask = 0;
     for (const h of this.allHands) {
       if (!h.valid) continue;
       projectFromLight(h.joints, h.radii, L.x, L.y, L.z, this.frame, h.flat);
       if (!h.flat.valid) continue;
+      if (this.playField && (useDemo ? h === this.demoHand || h === this.demoHand2 : h === this.hands[0] || h === this.hands[1])) {
+        const side = h === this.hands[0] || h === this.demoHand ? 0 : 1;
+        let depth = 0;
+        for (let joint = 0; joint < JOINT_COUNT; joint++) {
+          const offset = joint * 3;
+          depth += (L.x - h.joints[offset]) * this.frame.nx + (L.y - h.joints[offset + 1]) * this.frame.ny
+            + (L.z - h.joints[offset + 2]) * this.frame.nz;
+        }
+        const lightToScreen = (L.x - this.frame.ox) * this.frame.nx + (L.y - this.frame.oy) * this.frame.ny
+          + (L.z - this.frame.oz) * this.frame.nz;
+        const scale = lightToScreen / Math.max(0.03, depth / JOINT_COUNT) / (STAGE.lightToScreen / STAGE.lightToHand);
+        const playInkAt = perf ? performance.now() : 0;
+        this.playField.addHand(h.flat, scale, dt, side);
+        if (playInkAt) {
+          const elapsed = performance.now() - playInkAt;
+          playMs += elapsed;
+          perf?.playInk.push(elapsed);
+        }
+        playHandMask |= 1 << side;
+      }
       if (needsMainMask) {
         const maskStarted = perf ? performance.now() : 0;
         drawHand(this.live, h.flat);
@@ -1783,6 +1897,10 @@ export class TheaterSystem extends createSystem({
       }
       this.rays?.add(h.joints, L, this.frame, this.phase === Phase.Seek ? 1 : 0.35);
       casters++;
+    }
+    if (this.playField) {
+      if (!(playHandMask & 1)) this.playField.clearHand(0);
+      if (!(playHandMask & 2)) this.playField.clearHand(1);
     }
     if (this.journeyForms && this.journeyGestures && (this.phase === Phase.Journey || this.journeyDebug)) {
       this.journeyHands[0] = anyReal ? this.hands[0] : this.demoHand;
@@ -1865,7 +1983,19 @@ export class TheaterSystem extends createSystem({
       this.audio.bloom();
     }
 
-    switch (this.phase) {
+    if (this.playSandbox && this.playFolk && this.playField && this.playView) {
+      const began = perf ? performance.now() : 0;
+      this.litTarget = 1;
+      if (this.demo || (!this.settle && this.fitUntil === 0)) this.playFolk.update(dt);
+      if (perf) perf.playAgents.push(performance.now() - began);
+      const viewAt = perf ? performance.now() : 0;
+      this.playView.update(this.playFolk, this.playField, this.animationTime);
+      if (perf) perf.playView.push(performance.now() - viewAt);
+      perf?.play.push(playMs + performance.now() - began);
+      p.caption(this.demo ? this.playDemoAct === 0 ? 'A bridge of shadow.'
+        : this.playDemoAct === 1 ? 'A hand to catch them.' : 'A flick toward the moon.'
+        : 'Guide the Kindlings with your living shadow.', 0.95, 0.26);
+    } else switch (this.phase) {
       case Phase.Seek: this.seek(target, stencil, casters, dt, this.animationTime); break;
       case Phase.Wake: this.wake(target, stencil, this.animationTime); break;
       case Phase.Rest:
@@ -1915,7 +2045,7 @@ export class TheaterSystem extends createSystem({
           this.journeyPossession * ease((this.animationTime - this.journeyNameAt) / 0.35));
       }
     }
-    if (this.phase !== Phase.Finale && this.phase !== Phase.Journey) p.progress(this.step, NIGHT_LENGTH);
+    if (!this.playSandbox && this.phase !== Phase.Finale && this.phase !== Phase.Journey) p.progress(this.step, NIGHT_LENGTH);
 
     if (this.immersive && !anyReal && time - this.handsSeenAt > 2 && !this.demo) {
       p.caption('Set the controllers down. Just your hands.', 1, 0.27);
