@@ -13,6 +13,11 @@ class RuntimePerf {
   readonly update = new Samples();
   readonly painter = new Samples();
   readonly mask = new Samples();
+  readonly play = new Samples();
+  readonly playClear = new Samples();
+  readonly playInk = new Samples();
+  readonly playAgents = new Samples();
+  readonly playView = new Samples();
   readonly frameInterval = new Samples();
   readonly uploadBytes = new Samples();
   readonly uploadSubmissions = new Samples();

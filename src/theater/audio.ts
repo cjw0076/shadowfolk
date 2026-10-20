@@ -5,7 +5,7 @@
  * when the first hand enters its light. No audio files, nothing to license.
  */
 export type Voice = 'swim' | 'hop' | 'crawl' | 'bob' | 'fan' | 'flap' | 'stalk' | 'scuttle';
-export type CueKind = 'bloom' | 'voice' | 'chime' | 'rustle' | 'note' | 'settle' | 'hold' | 'crackle' | 'journey';
+export type CueKind = 'bloom' | 'voice' | 'chime' | 'rustle' | 'note' | 'settle' | 'hold' | 'crackle' | 'journey' | 'play';
 /** A sound cue at a time on the night's clock (recorded for offline rendering). */
 export interface Cue { t: number; kind: CueKind; arg?: number | string }
 export class TheaterAudio {
@@ -167,6 +167,7 @@ export class TheaterAudio {
         case 'hold': a.setHold(Number(c.arg ?? 0)); break;
         case 'crackle': a.crackle(Number(c.arg ?? 0.5)); break;
         case 'journey': a.journey(String(c.arg ?? 'pickup')); break;
+        case 'play': a.play(String(c.arg ?? 'walk')); break;
       }
     }
     a.at = null;
@@ -315,6 +316,13 @@ export class TheaterAudio {
       case 'boulder': this.tone(90, 68, 0, 0.6, 0.13, 'triangle'); break;
       case 'crack': this.tone(1047, 1568, 0, 0.5, 0.065); break;
     }
+  }
+
+  play(kind: string): void {
+    this.onCue?.('play', kind);
+    if (kind === 'walk') this.burst(1350, 3, 0, 0.035, 0.018);
+    else if (kind === 'ash') this.burst(730, 1.4, 0, 0.22, 0.08);
+    else if (kind === 'home') this.tone(660, 990, 0, 0.32, 0.055);
   }
 
   /** A single parade note (finale), from the same pentatonic scale as the chimes. */
