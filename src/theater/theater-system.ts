@@ -36,6 +36,9 @@ import { xrRenderStatusLine } from './xr-render.js';
 import { InkField } from '../play/ink-field.js';
 import { FolkWorld } from '../play/folk.js';
 import { PlayView } from '../play/view.js';
+import { arcNight, moonFill, validArcSave, type ArcSave } from '../play/arc.js';
+import { CrossingRuntime } from '../play/crossing.js';
+import type { HazardKind, LevelHazard } from '../play/levels.js';
 
 const TARGET_CY = 0.02;
 /** Lantern placement relative to the seated head: ahead and below the eyes. */
@@ -84,7 +87,7 @@ const VINE_FORM_IDS = ['duck', 'crab'] as const;
 const EMBER = 0.18;
 const STORE_KEY = 'shadow-theater.v1';
 
-enum Phase { Seek, Wake, Rest, Finale, Invent, Journey }
+enum Phase { Seek, Wake, Rest, Finale, Invent, Journey, Prologue, Crossing, Home, Lesson }
 
 const MAX_INVENTED = 8;
 const INVENT_HOLD = 1.4; // seconds a free shape must stay still to be born
@@ -113,6 +116,7 @@ interface Saved {
   oneHand?: boolean; oneHandAdaptations?: number; deferred?: string[];
   journeysCompleted?: number; abilityUses?: Record<string, number>;
   abilities?: Ability[]; lessonSkipped?: Ability[];
+  v3?: ArcSave;
 }
 
 function loadSaved(): Saved {
@@ -152,11 +156,11 @@ function loadSaved(): Saved {
           ? ABILITIES.filter((ability) => candidate.lessonSkipped!.includes(ability)) : [];
         return { nights, woken, order, carried: candidate.carried === true, invented,
           oneHand: candidate.oneHand === true, oneHandAdaptations, deferred, journeysCompleted, abilityUses,
-          abilities, lessonSkipped };
+          abilities, lessonSkipped, v3: validArcSave(candidate.v3, nights) };
       }
     }
   } catch { /* private mode: play without memory */ }
-  return { nights: 0, woken: {}, abilities: [], lessonSkipped: [] };
+  return { nights: 0, woken: {}, abilities: [], lessonSkipped: [], v3: validArcSave(null) };
 }
 
 function save(s: Saved): void {
@@ -226,16 +230,42 @@ export class TheaterSystem extends createSystem({
   private journeyEnabled = typeof location === 'undefined' || !new URLSearchParams(location.search).has('noJourney');
   private journeyOnly = typeof location !== 'undefined' && new URLSearchParams(location.search).has('journeyOnly');
   private playSandbox = typeof location !== 'undefined' && new URLSearchParams(location.search).has('playSandbox');
+  private classic = typeof location !== 'undefined' && new URLSearchParams(location.search).has('classic');
+  private crossingOnly = typeof location !== 'undefined' && new URLSearchParams(location.search).has('crossingOnly');
+  private forcedNight = typeof location !== 'undefined' && new URLSearchParams(location.search).has('night')
+    ? Number(new URLSearchParams(location.search).get('night')) : NaN;
+  private crossingSeed = typeof location !== 'undefined' && new URLSearchParams(location.search).has('seed')
+    ? Number(new URLSearchParams(location.search).get('seed')) : NaN;
   private playDebug = typeof location !== 'undefined' && new URLSearchParams(location.search).has('playDebug');
   private playCell = typeof location !== 'undefined' && new URLSearchParams(location.search).get('playCell') === '0.008' ? 0.008 : 0.010;
   private playField: InkField | null = null;
   private playFolk: FolkWorld | null = null;
   private playView: PlayView | null = null;
+  private crossing: CrossingRuntime | null = null;
+  private crossingCaption = '';
+  private crossingCaptionAt = -Infinity;
+  private crossingHintAt = -Infinity;
+  private crossingHintX = 0;
+  private crossingHintY = -0.23;
+  private crossingHomeAt = -Infinity;
+  private lessonOrder: number[] = [];
+  private lessonIndex = 0;
   private playDemoPose!: HandPose;
   private playDemoCup!: HandPose;
   private playDemoAt = 0;
   private playDemoAct = -1;
   private playDemoSpawned = 0;
+  private crossingDemoScreen = -1;
+  private crossingDemoAt = 0;
+  private crossingDemoFromX = -0.17;
+  private crossingDemoFromY = -0.23;
+  private crossingDemoX = -0.17;
+  private crossingDemoY = -0.23;
+  private crossingDemoFlicked = [new Uint8Array(48), new Uint8Array(48)];
+  private crossingDemoFlickAt = [-Infinity, -Infinity];
+  private crossingDemoFlickSlot = [-1, -1];
+  private crossingDemoCrowPose = new Float32Array(2);
+  private crossingDemoBoulderPose = new Float32Array(2);
   private journey: JourneyRuntime | null = null;
   private journeyView: JourneyView | null = null;
   private journeyPlan: JourneyPlan | null = null;
@@ -296,7 +326,7 @@ export class TheaterSystem extends createSystem({
   private reform: { old: number; elapsed: number } | null = null;
   private fresh = -1; // index into TARGETS of tonight's newly joined creature
   private nightTitle = '';
-  private moon = new Moon();
+  private moon = new Moon(0.11);
   private fullMoon = false;
   // Inventing a creature of your own after the finale.
   private inventStencils = new Map<string, Stencil>();
@@ -412,20 +442,52 @@ export class TheaterSystem extends createSystem({
       this.journeyView = new JourneyView();
       this.painter.root.add(this.journeyView.root);
     }
-    if (this.playSandbox) {
+    if ((this.playSandbox || !this.classic && !this.journeyOnly) && !this.idle) {
       this.playField = new InkField(this.playCell);
-      this.playField.setStaticRect(-0.5, -0.212, -0.06, -0.196);
-      this.playField.setStaticRect(0.06, -0.212, 0.30, -0.196);
-      this.playField.setStaticRect(0.30, -0.212, 0.32, -0.096);
-      this.playField.setStaticRect(0.32, -0.112, 0.5, -0.096);
+      if (this.playSandbox) {
+        this.playField.setStaticRect(-0.5, -0.212, -0.06, -0.196);
+        this.playField.setStaticRect(0.06, -0.212, 0.30, -0.196);
+        this.playField.setStaticRect(0.30, -0.212, 0.32, -0.096);
+        this.playField.setStaticRect(0.32, -0.112, 0.5, -0.096);
+      }
       this.playFolk = new FolkWorld(this.playField, 2026);
-      this.playFolk.configure({ waveCount: 5 });
-      this.playFolk.onEvent = (kind) => this.audio.play(kind);
+      if (this.playSandbox) {
+        this.playFolk.configure({ waveCount: 5 });
+        this.playFolk.onEvent = (kind) => this.audio.play(kind);
+      }
       this.playView = new PlayView(this.playField, this.playDebug);
       this.painter.root.add(this.playView.root);
+      this.playView.root.visible = this.playSandbox;
       this.playDemoPose = orient(basePoses.relaxed(), [-25, 0, 0]);
       this.playDemoCup = shape(basePoses.relaxed(), { index: 0.65, middle: 0.65, ring: 0.65, pinky: 0.65 });
-      this.cleanupFuncs.push(() => this.playView?.dispose());
+      if (!this.playSandbox) {
+        this.crossing = new CrossingRuntime(this.playField, this.playFolk, this.playView);
+        if (perf) this.crossing.onHazardTiming = (milliseconds) => perf!.playHazards.push(milliseconds);
+        this.crossing.onEvent = (event) => {
+          if (event.kind === 'home') {
+            this.audio.play('home');
+            this.audio.chime(event.home);
+            this.moon.setPhase(0.5 * Math.min(1, moonFill(this.saved.v3!.best) + event.home / Math.max(1, event.total) / 8));
+            if (this.phase === Phase.Prologue) {
+              this.crossingCaption = 'One spark home. The moon remembers.';
+              this.crossingCaptionAt = this.animationTime;
+            }
+          } else if (event.kind === 'ash') this.audio.play('ash');
+          else if (event.kind === 'warning') {
+            this.crossingCaption = 'The candle is nearly out.';
+            this.crossingCaptionAt = this.animationTime;
+            this.audio.play('hiss');
+          }
+        };
+        this.crossing.hazards.onHint = (kind, layout) => {
+          this.crossingHintAt = this.animationTime;
+          this.crossingHintX = layout.x;
+          this.crossingHintY = kind === 'rain' ? -0.055 : kind === 'crow' ? 0.04 : -0.23;
+          const wick = this.playFolk?.agents[0];
+          if (wick?.isWick && wick.state === 'walking') wick.heading = layout.x >= wick.x ? 1 : -1;
+        };
+      }
+      this.cleanupFuncs.push(() => { this.crossing?.hazards.dispose(); this.playView?.dispose(); });
     }
     this.mirrored = this.baked.map((b) => mirror(b.pose));
     this.demoFrom = basePoses.relaxed();
@@ -433,13 +495,14 @@ export class TheaterSystem extends createSystem({
     this.ghostPose = basePoses.relaxed();
     this.ghostPose2 = basePoses.relaxed();
     this.wall.onSettle = () => this.audio.settle();
+    this.wall.setFireflies(this.saved.v3?.fireflies ?? 0);
     // Tonight's moon sits in the paper's top-left corner, under the shadows.
-    this.moon.mesh.position.set(-SCREEN_W / 2 + 0.09, SCREEN_H / 2 - 0.085, 0.0002);
+    this.moon.mesh.position.set(SCREEN_W / 2 - 0.095, SCREEN_H / 2 - 0.09, 0.0002);
     this.painter.root.add(this.moon.mesh);
     const cap = captureControl();
     if (cap) this.audio.onCue = (kind, arg) => cap.cues.push({ t: cap.time, kind, arg });
     if (cap) {
-      const names = ['seek', 'wake', 'rest', 'finale', 'invent', 'journey'];
+      const names = ['seek', 'wake', 'rest', 'finale', 'invent', 'journey', 'prologue', 'crossing', 'home', 'lesson'];
       cap.state = () => ({
         phase: names[this.phase], step: this.step, target: this.baked[this.order[this.step % this.order.length]]?.def.id,
         mode: this.mode, born: this.inventBorn, wall: this.wall.active,
@@ -447,6 +510,10 @@ export class TheaterSystem extends createSystem({
           carried: this.journey.carried, completed: this.journey.completed } : null,
         play: this.playFolk ? { count: this.playFolk.count, home: this.playFolk.homeCount,
           ash: this.playFolk.ashCount } : null,
+        crossing: this.crossing ? { night: this.crossing.night, screen: this.crossing.screen,
+          home: this.crossing.home, ash: this.crossing.ash, lost: this.crossing.lost,
+          total: this.crossing.total, candle: this.crossing.candle, stars: this.crossing.stars,
+          finished: this.crossing.finished } : null,
       });
     }
     this.newNight();
@@ -516,6 +583,10 @@ export class TheaterSystem extends createSystem({
    * all are known. The rest of the order is seeded by date and night.
    */
   private newNight(): void {
+    if (!this.classic && !this.playSandbox && !this.journeyOnly && !this.idle) {
+      this.newArcNight();
+      return;
+    }
     this.inventWorker?.terminate();
     this.inventWorker = null;
     this.inventPending = false;
@@ -568,6 +639,88 @@ export class TheaterSystem extends createSystem({
     this.fullMoon = isFullMoon(phase);
     this.nightTitleAt = -1;
     this.enter(Phase.Seek);
+  }
+
+  private newArcNight(): void {
+    const progress = this.saved.v3 ?? (this.saved.v3 = validArcSave(null, this.saved.nights));
+    const night = Number.isSafeInteger(this.forcedNight) && this.forcedNight >= 0
+      ? this.forcedNight : this.crossingOnly ? Math.max(1, progress.night) : progress.prologue ? 0 : progress.night;
+    const plan = arcNight(night, this.arcSeed());
+    this.nightTitle = plan.moon;
+    this.step = 0;
+    this.order = plan.wakes.filter((id) => !(this.saved.woken[id] > 0))
+      .map((id) => TARGETS.findIndex((target) => target.id === id)).filter((index) => index >= 0);
+    this.lessonOrder = plan.wakes.filter((id) => this.saved.woken[id] > 0)
+      .map((id) => TARGETS.findIndex((target) => target.id === id)).filter((index) => index >= 0);
+    this.lessonIndex = 0;
+    this.fresh = this.order[0] ?? -1;
+    this.moon.setPhase(night > 8 ? moonPhase() : 0.5 * moonFill(progress.best));
+    this.moon.setStars(0);
+    this.fullMoon = night > 8 && isFullMoon(moonPhase());
+    this.nightTitleAt = -1;
+    if (night === 0 || this.crossingOnly) this.beginCrossing(night);
+    else if (this.order.length === 0) this.beginKnownLessons();
+    else this.enter(Phase.Seek);
+  }
+
+  private beginKnownLessons(): void {
+    if (this.lessonIndex >= this.lessonOrder.length) { this.beginCrossing(); return; }
+    this.enter(Phase.Lesson);
+  }
+
+  private arcSeed(): number {
+    return Number.isSafeInteger(this.crossingSeed) ? this.crossingSeed : Math.floor(Date.now() / 86400000);
+  }
+
+  private beginCrossing(night = Number.isSafeInteger(this.forcedNight) && this.forcedNight >= 0
+    ? this.forcedNight : this.saved.v3?.night ?? 1): void {
+    if (!this.crossing) return;
+    const params = new URLSearchParams(location.search);
+    const hazards = this.crossingOnly ? (params.get('hazards') ?? '').split(',')
+      .filter((kind): kind is HazardKind => ['gap', 'ledge', 'highLedge', 'river', 'crow', 'rain', 'thorns', 'gust', 'boulder'].includes(kind)) : undefined;
+    const count = Number(params.get('kindlings'));
+    this.crossing.start(night, this.arcSeed(), hazards,
+      this.crossingOnly && Number.isSafeInteger(count) && count > 0 ? Math.min(40, count) : undefined);
+    this.crossingDemoScreen = -1;
+    this.crossingDemoFlicked[0].fill(0);
+    this.crossingDemoFlicked[1].fill(0);
+    this.crossingDemoFlickAt[0] = this.crossingDemoFlickAt[1] = -Infinity;
+    this.crossingDemoFlickSlot[0] = this.crossingDemoFlickSlot[1] = -1;
+    this.crossingHintAt = -Infinity;
+    this.crossingCaption = night === 0 ? 'Every lantern in the shadow-world has gone out.'
+      : `${arcNight(night, this.arcSeed()).moon} · Guide them home.`;
+    this.crossingCaptionAt = this.animationTime;
+    this.crossingHomeAt = -Infinity;
+    this.playView!.root.visible = true;
+    this.enter(night === 0 ? Phase.Prologue : Phase.Crossing);
+  }
+
+  private finishCrossing(): void {
+    const crossing = this.crossing!;
+    const progress = this.saved.v3!;
+    this.playView!.root.visible = false;
+    if (crossing.night === 0) {
+      progress.prologue = false;
+      progress.night = 1;
+      if (this.forcedNight === 0) this.forcedNight = 1;
+      save(this.saved);
+      this.crossingCaption = 'Shadows sleep without light. Wake them.';
+      this.crossingCaptionAt = this.animationTime;
+      this.newArcNight();
+      return;
+    }
+    const fraction = crossing.home / Math.max(1, crossing.total);
+    if (crossing.night <= 8) progress.best[crossing.night] = Math.max(progress.best[crossing.night], fraction);
+    progress.fireflies += crossing.home;
+    progress.nightsPlayed++;
+    progress.night = crossing.night + 1;
+    this.saved.nights++;
+    save(this.saved);
+    this.wall.setFireflies(progress.fireflies, this.animationTime);
+    this.moon.setPhase(crossing.night > 8 ? moonPhase() : 0.5 * moonFill(progress.best));
+    this.moon.setStars(crossing.stars);
+    this.crossingHomeAt = this.animationTime;
+    this.enter(Phase.Home);
   }
 
   private replacement(slot: number): number {
@@ -1016,6 +1169,8 @@ export class TheaterSystem extends createSystem({
       this.playDemoAct = -1;
       this.playDemoSpawned = 0;
     }
+    if (this.crossing && (this.phase === Phase.Prologue || this.phase === Phase.Crossing))
+      this.beginCrossing(this.crossing.night);
     if (this.saved.oneHand) this.suppressTwoHandTargets();
     const session = this.renderer.xr.getSession?.();
     if (session && !this.playSandbox && typeof Worker !== 'undefined') {
@@ -1734,6 +1889,123 @@ export class TheaterSystem extends createSystem({
     this.demoHand2.valid = false;
   }
 
+  private setProjectedPlayHand(hand: LiveHand, pose: HandPose, x: number, y: number, scale = 1): void {
+    const light = this.lanternPos, frame = this.frame;
+    const magnification = STAGE.lightToScreen / STAGE.lightToHand;
+    const depth = STAGE.lightToHand / scale;
+    let meanX = 0, meanY = 0;
+    for (let joint = 0; joint < JOINT_COUNT; joint++) {
+      meanX += pose.mats[joint * 16 + 12]; meanY += pose.mats[joint * 16 + 13];
+    }
+    meanX /= JOINT_COUNT; meanY /= JOINT_COUNT;
+    const lightX = (light.x - frame.ox) * frame.rx + (light.y - frame.oy) * frame.ry + (light.z - frame.oz) * frame.rz;
+    const lightY = (light.x - frame.ox) * frame.ux + (light.y - frame.oy) * frame.uy + (light.z - frame.oz) * frame.uz;
+    for (let joint = 0; joint < JOINT_COUNT; joint++) {
+      const offset = joint * 3;
+      const screenX = x + (pose.mats[joint * 16 + 12] - meanX) * magnification * scale;
+      const screenY = y + (pose.mats[joint * 16 + 13] - meanY) * magnification * scale;
+      const handX = (screenX - lightX) / (magnification * scale);
+      const handY = (screenY - lightY) / (magnification * scale);
+      hand.joints[offset] = light.x + handX * frame.rx + handY * frame.ux - depth * frame.nx;
+      hand.joints[offset + 1] = light.y + handX * frame.ry + handY * frame.uy - depth * frame.ny;
+      hand.joints[offset + 2] = light.z + handX * frame.rz + handY * frame.uz - depth * frame.nz;
+    }
+    hand.radii.set(pose.radii);
+    hand.valid = true;
+  }
+
+  private driveCrossingDemo(): void {
+    const crossing = this.crossing;
+    if (!crossing || crossing.finished) { this.demoHand.valid = this.demoHand2.valid = false; return; }
+    if (crossing.screen !== this.crossingDemoScreen) {
+      this.crossingDemoScreen = crossing.screen;
+      this.crossingDemoAt = this.animationTime;
+      this.crossingDemoFromX = this.crossingDemoX;
+      this.crossingDemoFromY = this.crossingDemoY;
+      this.crossingDemoFlicked[0].fill(0);
+      this.crossingDemoFlicked[1].fill(0);
+      this.crossingDemoFlickAt[0] = this.crossingDemoFlickAt[1] = -Infinity;
+      this.crossingDemoFlickSlot[0] = this.crossingDemoFlickSlot[1] = -1;
+    }
+    const hazards = crossing.level.hazards;
+    const first = hazards[0];
+    const second = hazards[1];
+    const elapsed = this.animationTime - this.crossingDemoAt;
+    const targetX = first?.x ?? -0.17;
+    const targetY = first?.kind === 'rain' ? -0.055 : first?.kind === 'crow' ? 0.04
+      : first?.kind === 'ledge' || first?.kind === 'highLedge' || first?.kind === 'thorns' ? -0.15 : -0.23;
+    const travel = ease(elapsed / 1.4);
+    const x = this.crossingDemoFromX + (targetX - this.crossingDemoFromX) * travel;
+    const y = this.crossingDemoFromY + (targetY - this.crossingDemoFromY) * travel;
+    this.crossingDemoX = x;
+    this.crossingDemoY = y;
+    const specialFirst = first && (this.driveCrossingFlick(first, this.demoHand, 0)
+      || this.driveCrossingCrow(first, this.demoHand) || this.driveCrossingBoulder(first, this.demoHand));
+    if (!specialFirst) {
+      if (crossing.night === 0 && elapsed < 0.8) this.demoHand.valid = false;
+      else this.setProjectedPlayHand(this.demoHand, this.playDemoPose,
+        x,
+        first?.kind === 'ledge' || first?.kind === 'highLedge' ? y + 0.055 * Math.max(0, Math.sin(elapsed * 2.4)) : y,
+        first?.kind === 'rain' ? 1.45 : 1);
+    }
+    const specialSecond = second && (this.driveCrossingFlick(second, this.demoHand2, 1)
+      || this.driveCrossingCrow(second, this.demoHand2) || this.driveCrossingBoulder(second, this.demoHand2));
+    if (!specialSecond) {
+      if (second) this.setProjectedPlayHand(this.demoHand2, this.playDemoPose, second.x,
+        second.kind === 'rain' ? -0.055 : second.kind === 'crow' ? 0.04 : -0.23,
+        second.kind === 'rain' ? 1.45 : 1);
+      else this.demoHand2.valid = false;
+    }
+  }
+
+  private driveCrossingCrow(hazard: LevelHazard, hand: LiveHand): boolean {
+    if (hazard.kind !== 'crow') return false;
+    if (this.crossing?.hazards.crowPose(hazard.slot, this.crossingDemoCrowPose)) {
+      this.setProjectedPlayHand(hand, this.playDemoPose,
+        this.crossingDemoCrowPose[0], this.crossingDemoCrowPose[1], 1);
+    } else hand.valid = false;
+    return true;
+  }
+
+  private driveCrossingBoulder(hazard: LevelHazard, hand: LiveHand): boolean {
+    if (hazard.kind !== 'boulder') return false;
+    if (this.crossing?.hazards.boulderPose(hazard.slot, this.crossingDemoBoulderPose)) {
+      this.setProjectedPlayHand(hand, this.playDemoPose,
+        Math.min(0.40, this.crossingDemoBoulderPose[0] - 0.10), -0.16, 1);
+    } else hand.valid = false;
+    return true;
+  }
+
+  private driveCrossingFlick(hazard: LevelHazard, hand: LiveHand, side: number): boolean {
+    if (hazard.kind !== 'ledge' && hazard.kind !== 'highLedge' && hazard.kind !== 'thorns') return false;
+    if (this.crossingDemoFlickSlot[side] < 0) {
+      const left = hazard.x - hazard.width * 0.5;
+      for (let index = 0; index < (this.playFolk?.count ?? 0); index++) {
+        const agent = this.playFolk!.agents[index];
+        if (this.crossingDemoFlicked[side][index] || agent.state !== 'walking' || agent.heading < 0) continue;
+        if (agent.x < left - 0.10 || agent.x > left + 0.02) continue;
+        this.crossingDemoFlicked[side][index] = 1;
+        this.crossingDemoFlickSlot[side] = index;
+        this.crossingDemoFlickAt[side] = this.animationTime;
+        break;
+      }
+    }
+    if (this.crossingDemoFlickSlot[side] >= 0) {
+      const since = this.animationTime - this.crossingDemoFlickAt[side];
+      const high = hazard.kind === 'highLedge';
+      if (since < (high ? 0.36 : 0.28)) {
+        const progress = Math.min(1, since / (high ? 0.16 : 0.08));
+        this.setProjectedPlayHand(hand, this.playDemoPose,
+          hazard.x - hazard.width * 0.5 - 0.08 + (high ? 0.14 : 0.10) * progress,
+          -0.20 + (high ? 0.16 : 0.12) * progress, 2.5);
+        return true;
+      }
+      this.crossingDemoFlickSlot[side] = -1;
+    }
+    hand.valid = false;
+    return true;
+  }
+
   update(delta: number, time: number): void {
     const started = perf?.beginFrame();
     try {
@@ -1800,11 +2072,12 @@ export class TheaterSystem extends createSystem({
     if (this.immersive) this.handleCarry(time);
     this.phaseTime += dt;
 
-    const target = this.baked[this.order[this.step % this.order.length]];
-    const stencil = this.stencils[this.order[this.step % this.order.length]];
+    const target = this.baked[this.order[this.step % this.order.length] ?? 0];
+    const stencil = this.stencils[this.order[this.step % this.order.length] ?? 0];
     const demoTarget = this.phase === Phase.Invent && this.inventTarget ? this.inventTarget : target;
     if (useDemo) {
       if (this.playSandbox) this.drivePlayDemo(dt);
+      else if (this.phase === Phase.Prologue || this.phase === Phase.Crossing) this.driveCrossingDemo();
       else if (this.phase === Phase.Journey) this.driveJourneyDemo(dt);
       else this.driveDemo(demoTarget, this.animationTime);
     } else this.demoHand.valid = this.demoHand2.valid = false;
@@ -1822,6 +2095,10 @@ export class TheaterSystem extends createSystem({
     const flick = 0.92 + 0.05 * Math.sin(this.animationTime * 7.3) + 0.03 * Math.sin(this.animationTime * 17.1);
     const glow = (0.3 + 0.7 * this.lit) * flick;
     this.lantern.bodyMat.color.setRGB(glow, 0.81 * glow, 0.54 * glow);
+    const candle = this.crossing && (this.phase === Phase.Prologue || this.phase === Phase.Crossing)
+      ? this.crossing.candle : 1;
+    this.lantern.candle.scale.y = 0.35 + candle * 0.65;
+    this.lantern.candle.position.y = -0.039 + 0.021 * this.lantern.candle.scale.y;
     // A pinch near the lantern swells its halo: it can be picked up.
     this.lantern.halo.scale.setScalar((0.14 + 0.16 * this.lit) * (0.96 + 0.04 * flick) * (1 + 0.35 * this.carryNear + (this.carry ? 0.3 : 0)));
     this.lantern.halo.material.opacity = (0.38 + 0.18 * this.lit) * flick;
@@ -1834,7 +2111,7 @@ export class TheaterSystem extends createSystem({
     this.v3.set(0, 1, 0).applyQuaternion(this.q0);
     this.audio.place(this.v1, this.v2, this.v3, this.lanternPos, this.screenCentre);
     this.glowLight.position.copy(this.lanternPos);
-    this.glowLight.intensity = (0.12 + 0.95 * this.lit) * flick;
+    this.glowLight.intensity = (0.12 + 0.95 * this.lit) * flick * (0.7 + 0.3 * candle);
     this.wall.setLight(this.lit);
     // The room dims as the lantern blooms (passthrough only; the preview room is already dark).
     // House lights go down first, then the lantern blooms.
@@ -1852,7 +2129,8 @@ export class TheaterSystem extends createSystem({
     p.begin();
     let playMs = 0;
     const playClearAt = this.playField && perf ? performance.now() : 0;
-    this.playField?.beginFrame();
+    const activePlay = this.playSandbox || this.phase === Phase.Prologue || this.phase === Phase.Crossing;
+    if (activePlay) this.playField?.beginFrame();
     if (playClearAt) {
       const elapsed = performance.now() - playClearAt;
       playMs += elapsed;
@@ -1870,7 +2148,7 @@ export class TheaterSystem extends createSystem({
       if (!h.valid) continue;
       projectFromLight(h.joints, h.radii, L.x, L.y, L.z, this.frame, h.flat);
       if (!h.flat.valid) continue;
-      if (this.playField && (useDemo ? h === this.demoHand || h === this.demoHand2 : h === this.hands[0] || h === this.hands[1])) {
+      if (activePlay && this.playField && (useDemo ? h === this.demoHand || h === this.demoHand2 : h === this.hands[0] || h === this.hands[1])) {
         const side = h === this.hands[0] || h === this.demoHand ? 0 : 1;
         let depth = 0;
         for (let joint = 0; joint < JOINT_COUNT; joint++) {
@@ -1898,7 +2176,7 @@ export class TheaterSystem extends createSystem({
       this.rays?.add(h.joints, L, this.frame, this.phase === Phase.Seek ? 1 : 0.35);
       casters++;
     }
-    if (this.playField) {
+    if (activePlay && this.playField) {
       if (!(playHandMask & 1)) this.playField.clearHand(0);
       if (!(playHandMask & 2)) this.playField.clearHand(1);
     }
@@ -1995,6 +2273,35 @@ export class TheaterSystem extends createSystem({
       p.caption(this.demo ? this.playDemoAct === 0 ? 'A bridge of shadow.'
         : this.playDemoAct === 1 ? 'A hand to catch them.' : 'A flick toward the moon.'
         : 'Guide the Kindlings with your living shadow.', 0.95, 0.26);
+    } else if ((this.phase === Phase.Prologue || this.phase === Phase.Crossing) && this.crossing && this.playView && this.playField && this.playFolk) {
+      const began = perf ? performance.now() : 0;
+      if (this.demo || !this.immersive || !this.settle && this.fitUntil === 0) this.crossing.update(dt);
+      if (perf) perf.playAgents.push(performance.now() - began);
+      const viewAt = perf ? performance.now() : 0;
+      this.playView.update(this.playFolk, this.playField, this.animationTime);
+      this.playView.setWash(this.crossing.wiping ? this.crossing.wash : 0);
+      if (perf) perf.playView.push(performance.now() - viewAt);
+      perf?.play.push(playMs + performance.now() - began);
+      if (this.phase === Phase.Prologue) {
+        if (this.phaseTime > 2 && !this.awaitingLight && this.crossing.home === 0
+          && this.crossingCaption !== 'Yours is the last.') {
+          this.crossingCaption = 'Yours is the last.';
+          this.crossingCaptionAt = this.animationTime;
+        }
+        if (this.crossing.home === 0 && this.playFolk.count > 0) {
+          this.poseToWorld(this.playDemoPose, this.posePositions, 0, [-0.17, -0.22, 0]);
+          this.ghost.update(this.posePositions, this.playDemoPose.radii);
+          this.ghost.opacity = 0.28 * ease(this.phaseTime / 0.6);
+        } else this.ghost.opacity = 0;
+      } else if (this.animationTime - this.crossingHintAt < 3) {
+        this.poseToWorld(this.playDemoPose, this.posePositions, 0,
+          [this.crossingHintX, this.crossingHintY, 0]);
+        this.ghost.update(this.posePositions, this.playDemoPose.radii);
+        this.ghost.opacity = 0.3 * Math.min(ease((this.animationTime - this.crossingHintAt) / 0.4),
+          1 - ease((this.animationTime - this.crossingHintAt - 2.5) / 0.5));
+      } else this.ghost.opacity = 0;
+      if (this.animationTime - this.crossingCaptionAt < 4.5) p.caption(this.crossingCaption, 0.9, 0.25);
+      if (this.crossing.finished) this.finishCrossing();
     } else switch (this.phase) {
       case Phase.Seek: this.seek(target, stencil, casters, dt, this.animationTime); break;
       case Phase.Wake: this.wake(target, stencil, this.animationTime); break;
@@ -2004,6 +2311,22 @@ export class TheaterSystem extends createSystem({
       case Phase.Finale: this.finale(this.animationTime); break;
       case Phase.Invent: this.invent(dt, this.animationTime, casters); break;
       case Phase.Journey: this.updateJourney(dt, useDemo); break;
+      case Phase.Lesson: {
+        const lessonTarget = this.baked[this.lessonOrder[this.lessonIndex]];
+        if (lessonTarget) {
+          const ability = abilityForForm(lessonTarget.def.id);
+          p.caption(ability ? LESSON_COPY[ability] : 'Remember this shadow.', 1, 0.2);
+          this.poseToWorld(lessonTarget.pose, this.posePositions, 0, lessonTarget.shifts[0]);
+          this.ghost.update(this.posePositions, lessonTarget.pose.radii);
+          this.ghost.opacity = 0.28 * Math.min(ease(this.phaseTime / 0.4), 1 - ease((this.phaseTime - 2.6) / 0.4));
+        }
+        if (this.phaseTime >= 3) { this.lessonIndex++; this.beginKnownLessons(); }
+        break;
+      }
+      case Phase.Home:
+        p.caption(`${this.crossing?.home ?? 0} Kindlings came home.`, 1, 0.2);
+        if (this.phaseTime >= 8) this.enter(Phase.Finale);
+        break;
     }
 
     if (this.phase === Phase.Journey) {
@@ -2045,7 +2368,7 @@ export class TheaterSystem extends createSystem({
           this.journeyPossession * ease((this.animationTime - this.journeyNameAt) / 0.35));
       }
     }
-    if (!this.playSandbox && this.phase !== Phase.Finale && this.phase !== Phase.Journey) p.progress(this.step, NIGHT_LENGTH);
+    if (!this.playSandbox && this.classic && this.phase !== Phase.Finale && this.phase !== Phase.Journey) p.progress(this.step, NIGHT_LENGTH);
 
     if (this.immersive && !anyReal && time - this.handsSeenAt > 2 && !this.demo) {
       p.caption('Set the controllers down. Just your hands.', 1, 0.27);
@@ -2123,7 +2446,11 @@ export class TheaterSystem extends createSystem({
     // A newcomer shimmers the first time it appears.
     if (this.baked.indexOf(target) === this.fresh) {
       this.painter.sparks(0, TARGET_CY, (time * 0.35) % 1, 0.5);
-      if (this.phaseTime < 3.5) this.painter.caption('Someone new is waiting.', 1 - ease((this.phaseTime - 2.5) / 1), 0.27);
+      if (this.phaseTime < 3.5) this.painter.caption(
+        this.crossingCaption === 'Shadows sleep without light. Wake them.'
+          && this.animationTime - this.crossingCaptionAt < 4.5
+          ? this.crossingCaption : 'Someone new is waiting.',
+        1 - ease((this.phaseTime - 2.5) / 1), 0.27);
     }
 
     // Stuck? Fade in the ghost hand that shows the shape.
@@ -2263,7 +2590,9 @@ export class TheaterSystem extends createSystem({
     this.painter.caption(ability && t >= 0.9 && t < walkAt ? LESSON_COPY[ability] : target.def.line, capA);
     if (t >= Math.max(WAKE_TIME, walkAt + WALK_TIME + 0.35)) {
       this.step++;
-      if (this.step >= NIGHT_LENGTH) {
+      if (!this.classic && !this.journeyOnly && this.step >= this.order.length) {
+        this.beginKnownLessons();
+      } else if (this.step >= NIGHT_LENGTH) {
         this.saved.nights++;
         save(this.saved);
         if (this.journeyEnabled) this.beginJourney(); else this.enter(Phase.Finale);
@@ -2288,8 +2617,9 @@ export class TheaterSystem extends createSystem({
     const a = Math.min(ease(t / 0.8), 1 - ease((t - FINALE_TIME + 1) / 1));
     const eyePulse = ease((t - FINALE_TIME + 1.4) / 0.35) * (1 - ease((t - FINALE_TIME + 0.35) / 0.35));
     this.wall.cheer(a, eyePulse);
-    this.painter.caption(FINALE_CAPTION, a, 0.2);
-    const next = this.nextNewcomer();
+    this.painter.caption(this.classic || this.journeyOnly ? FINALE_CAPTION
+      : `${this.crossing?.home ?? 0} Kindlings found the moon.`, a, 0.2);
+    const next = this.classic || this.journeyOnly ? this.nextNewcomer() : -1;
     if (next >= 0 && t > FINALE_TIME * 0.45) {
       // Tease the next night's newcomer: a dark shape with blinking eyes peeking in at the left edge.
       const st = this.stencils[next];

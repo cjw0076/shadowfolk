@@ -8,7 +8,7 @@ try {
     const errors = [];
     page.on('pageerror', (error) => errors.push(String(error)));
     const url = new URL(base);
-    url.search = `?capture&demo&day=20378${enabled ? '' : '&noJourney'}`;
+    url.search = `?capture&demo&day=20378&classic${enabled ? '' : '&noJourney'}`;
     await page.goto(url.toString(), { waitUntil: 'load' });
     await page.waitForFunction(() => window.__capture && window.__theater, null, { timeout: 60000 });
     const result = await page.evaluate(async () => {
@@ -38,7 +38,7 @@ try {
     nights: 1, woken: { dog: 1, rabbit: 1, peacock: 1 }, order: ['dog', 'rabbit', 'peacock'],
   })));
   const url = new URL(base);
-  url.search = '?capture&day=20378';
+  url.search = '?capture&day=20378&classic';
   await page.goto(url.toString(), { waitUntil: 'load' });
   await page.waitForFunction(() => window.__theater?.journeyView, null, { timeout: 60000 });
   const restored = await page.evaluate(() => {

@@ -102,7 +102,11 @@ export class InkField {
       for (let column = palmFirstColumn; column <= palmLastColumn; column++) {
         const index = row * this.w + column;
         if (!this.palm.data[index]) continue;
-        if (isSoft) this.soft[index] = 1;
+        if (isSoft) {
+          this.soft[index] = 1;
+          this.vx[index] = jointVX[0];
+          this.vy[index] = jointVY[0];
+        }
         else { this.solid[index] = 1; this.vx[index] = jointVX[0]; this.vy[index] = jointVY[0]; }
       }
     }
@@ -127,7 +131,11 @@ export class InkField {
           const distance2 = distanceX * distanceX + distanceY * distanceY;
           const index = row * this.w + column;
           if (distance2 <= radius * radius) {
-            if (isSoft) this.soft[index] = 1;
+            if (isSoft) {
+              this.soft[index] = 1;
+              this.vx[index] = jointVX[first] + (jointVX[second] - jointVX[first]) * along;
+              this.vy[index] = jointVY[first] + (jointVY[second] - jointVY[first]) * along;
+            }
             else {
               this.solid[index] = 1;
               this.vx[index] = jointVX[first] + (jointVX[second] - jointVX[first]) * along;
@@ -137,7 +145,7 @@ export class InkField {
         }
       }
     }
-    if (band > 0) {
+    if (band > 0 && !isSoft) {
       const radiusCells = Math.ceil(band / this.cell);
       for (let row = Math.max(radiusCells, palmFirstRow); row <= Math.min(this.h - 1 - radiusCells, palmLastRow); row++) {
         for (let column = Math.max(radiusCells, palmFirstColumn); column <= Math.min(this.w - 1 - radiusCells, palmLastColumn); column++) {

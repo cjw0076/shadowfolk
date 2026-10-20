@@ -33,7 +33,7 @@ export default async function run({ page, frame }) {
       localStorage.removeItem('@immersive-web-emulation-runtime/persistent-anchors');
     });
     const url = new URL(target.url());
-    url.search = '?capture=keepdom&day=20378';
+    url.search = '?capture=keepdom&day=20378&classic';
     await target.goto(url.toString(), { waitUntil: 'load' });
     await target.waitForFunction(() => window.__theater && window.__capture && window.IWER_DEVICE, null, { timeout: 30000 });
     await target.waitForFunction(() => window.IWER_DEVICE.sessionOffered, null, { timeout: 30000 });

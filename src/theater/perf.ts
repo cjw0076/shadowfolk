@@ -17,6 +17,7 @@ class RuntimePerf {
   readonly playClear = new Samples();
   readonly playInk = new Samples();
   readonly playAgents = new Samples();
+  readonly playHazards = new Samples();
   readonly playView = new Samples();
   readonly frameInterval = new Samples();
   readonly uploadBytes = new Samples();
