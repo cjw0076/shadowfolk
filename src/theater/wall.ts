@@ -5,7 +5,8 @@
  * lives in the room and grows night after night.
  */
 import {
-  CanvasTexture, Group, LinearFilter, Matrix4, Mesh, MeshBasicMaterial, PlaneGeometry, SRGBColorSpace, Vector3,
+  AdditiveBlending, CanvasTexture, DynamicDrawUsage, Group, InstancedMesh, LinearFilter, Matrix4, Mesh, MeshBasicMaterial,
+  Object3D, PlaneGeometry, SRGBColorSpace, Vector3,
 } from '@iwsdk/core';
 import type { Stencil } from './painter.js';
 import { WallFit, wallClearance } from './room.js';
@@ -63,6 +64,9 @@ export class WallLayer {
   /** Woken shadows grow with the wall's distance behind the paper. */
   private scale = 1;
   private soft = new Map<Stencil, WallInk>();
+  private fireflies: InstancedMesh<PlaneGeometry, MeshBasicMaterial>;
+  private fireflyCount = 0;
+  private fireflyTransform = new Object3D();
   private v = new Vector3();
   private w = new Vector3();
   private basis = new Matrix4();
@@ -80,6 +84,26 @@ export class WallLayer {
     );
     this.mesh.renderOrder = -1;
     this.frame.add(this.mesh);
+    const glow = document.createElement('canvas');
+    glow.width = glow.height = 48;
+    const glowContext = glow.getContext('2d', { willReadFrequently: true })!;
+    const glowGradient = glowContext.createRadialGradient(24, 24, 1, 24, 24, 23);
+    glowGradient.addColorStop(0, '#fff9dd');
+    glowGradient.addColorStop(0.28, 'rgba(255,207,101,0.9)');
+    glowGradient.addColorStop(1, 'rgba(255,150,50,0)');
+    glowContext.fillStyle = glowGradient;
+    glowContext.fillRect(0, 0, 48, 48);
+    const glowTexture = new CanvasTexture(glow);
+    glowTexture.colorSpace = SRGBColorSpace;
+    glowTexture.generateMipmaps = false;
+    this.fireflies = new InstancedMesh(new PlaneGeometry(1, 1), new MeshBasicMaterial({
+      map: glowTexture, transparent: true, blending: AdditiveBlending, depthWrite: false, toneMapped: false,
+    }), 160);
+    this.fireflies.instanceMatrix.setUsage(DynamicDrawUsage);
+    this.fireflies.count = 0;
+    this.fireflies.frustumCulled = false;
+    this.fireflies.renderOrder = 6;
+    this.frame.add(this.fireflies);
     this.root.add(this.frame);
     for (let index = 0; index < 4; index++) {
       this.eyeOpenGeometry.attributes.uv.setX(index, this.eyeOpenGeometry.attributes.uv.getX(index) * 0.5);
@@ -126,6 +150,12 @@ export class WallLayer {
 
   setLight(level: number): void {
     this.mesh.material.opacity = Math.max(0, Math.min(1, level));
+    this.fireflies.material.opacity = Math.max(0.15, Math.min(1, level));
+  }
+
+  setFireflies(count: number): void {
+    this.fireflyCount = Math.max(0, Math.floor(count));
+    this.fireflies.count = Math.min(160, this.fireflyCount);
   }
 
   /** Wall-local coordinates of the ray from `from` through `through` (null if it misses). */
@@ -290,6 +320,18 @@ export class WallLayer {
 
   update(time: number): void {
     if (!this.fit) return;
+    for (let index = 0; index < this.fireflies.count; index++) {
+      const spreadX = ((Math.imul(index + 1, 1664525) >>> 0) / 4294967296 - 0.5) * this.wM * 0.85;
+      const spreadY = ((Math.imul(index + 7, 22695477) >>> 0) / 4294967296 - 0.5) * this.hM * 0.72;
+      const x = spreadX + 0.022 * Math.sin(time * 0.9 + index * 1.71);
+      const y = spreadY + 0.018 * Math.sin(time * 1.2 + index * 2.31);
+      const size = 0.018 + 0.009 * (0.5 + 0.5 * Math.sin(time * 4 + index * 3.7));
+      this.fireflyTransform.position.set(x, y, 0.003);
+      this.fireflyTransform.scale.set(size, size, 1);
+      this.fireflyTransform.updateMatrix();
+      this.fireflies.setMatrixAt(index, this.fireflyTransform.matrix);
+    }
+    this.fireflies.instanceMatrix.needsUpdate = this.fireflies.count > 0;
     let leaper = this.leaper;
     if (leaper && time - leaper.t0 >= LEAP_TIME) {
       this.leaper = leaper = null;

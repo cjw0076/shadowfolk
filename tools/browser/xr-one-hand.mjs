@@ -28,7 +28,7 @@ try {
     localStorage.removeItem('@immersive-web-emulation-runtime/persistent-anchors');
   });
   const url = new URL(base);
-  url.search = '?capture=keepdom&day=20378&first=butterfly';
+  url.search = '?capture=keepdom&day=20378&first=butterfly&classic';
   await page.goto(url.toString(), { waitUntil: 'load' });
   await page.waitForFunction(() => window.__capture && window.__theater && window.IWER_DEVICE?.sessionOffered,
     null, { timeout: 60000 });

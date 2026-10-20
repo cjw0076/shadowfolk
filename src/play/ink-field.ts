@@ -102,7 +102,11 @@ export class InkField {
       for (let column = palmFirstColumn; column <= palmLastColumn; column++) {
         const index = row * this.w + column;
         if (!this.palm.data[index]) continue;
-        if (isSoft) this.soft[index] = 1;
+        if (isSoft) {
+          this.soft[index] = 1;
+          this.vx[index] = jointVX[0];
+          this.vy[index] = jointVY[0];
+        }
         else { this.solid[index] = 1; this.vx[index] = jointVX[0]; this.vy[index] = jointVY[0]; }
       }
     }
@@ -127,7 +131,11 @@ export class InkField {
           const distance2 = distanceX * distanceX + distanceY * distanceY;
           const index = row * this.w + column;
           if (distance2 <= radius * radius) {
-            if (isSoft) this.soft[index] = 1;
+            if (isSoft) {
+              this.soft[index] = 1;
+              this.vx[index] = jointVX[first] + (jointVX[second] - jointVX[first]) * along;
+              this.vy[index] = jointVY[first] + (jointVY[second] - jointVY[first]) * along;
+            }
             else {
               this.solid[index] = 1;
               this.vx[index] = jointVX[first] + (jointVX[second] - jointVX[first]) * along;

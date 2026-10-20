@@ -7,7 +7,7 @@ try {
   const errors = [];
   page.on('pageerror', error => errors.push(String(error)));
   const url = new URL(base);
-  url.search = '?capture&demo&first=dog&noJourney';
+  url.search = '?capture&demo&first=dog&noJourney&classic';
   await page.goto(url.toString(), { waitUntil: 'load' });
   await page.waitForFunction(() => window.__capture && window.__theater?.baked, null, { timeout: 60000 });
   const result = await page.evaluate(async () => {

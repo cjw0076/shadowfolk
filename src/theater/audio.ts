@@ -323,6 +323,7 @@ export class TheaterAudio {
     if (kind === 'walk') this.burst(1350, 3, 0, 0.035, 0.018);
     else if (kind === 'ash') this.burst(730, 1.4, 0, 0.22, 0.08);
     else if (kind === 'home') this.tone(660, 990, 0, 0.32, 0.055);
+    else if (kind === 'hiss') this.burst(2200, 2.8, 0, 0.45, 0.12);
   }
 
   /** A single parade note (finale), from the same pentatonic scale as the chimes. */

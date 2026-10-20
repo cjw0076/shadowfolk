@@ -43,6 +43,7 @@ export interface Lantern {
   root: Group;
   body: Mesh;
   bodyMat: MeshBasicMaterial;
+  candle: Mesh;
   halo: Sprite;
   /** Warm pool of light on the table top around the lantern's foot. */
   pool: Mesh;
@@ -103,6 +104,11 @@ export function buildLantern(): Lantern {
   const body = new Mesh(new LatheGeometry(profile, 40), bodyMat);
   body.name = 'LanternBody';
   root.add(body);
+  const candle = new Mesh(new CylinderGeometry(0.0045, 0.0058, 0.042, 12),
+    new MeshBasicMaterial({ color: '#e9b96b', toneMapped: false }));
+  candle.name = 'CandleGauge';
+  candle.position.set(0.025, -0.018, 0.035);
+  root.add(candle);
   const ribMat = new MeshBasicMaterial({ color: new Color('#b97932'), transparent: true, opacity: 0.46 });
   for (let index = 1; index < 16; index++) {
     const y = -0.045 + (index / 16) * 0.09;
@@ -171,7 +177,7 @@ export function buildLantern(): Lantern {
     post.position.y = top - (h - 0.008) / 2;
     foot.position.y = top - h + 0.004;
   };
-  return { root, body, bodyMat, halo, pool, setStand };
+  return { root, body, bodyMat, candle, halo, pool, setStand };
 }
 
 export interface PaperScreen {

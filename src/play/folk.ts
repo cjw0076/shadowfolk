@@ -4,7 +4,7 @@ export type FolkState = 'inactive' | 'walking' | 'falling' | 'ash' | 'home';
 
 export interface Kindling {
   x: number; y: number; vx: number; vy: number; heading: number;
-  state: FolkState; fallStartY: number; age: number;
+  state: FolkState; fallStartY: number; age: number; homeAge: number;
   pushCooldown: number; tint: number; scale: number; isWick: boolean;
 }
 
@@ -14,7 +14,7 @@ const STEP = 1 / 120;
 
 export class FolkWorld {
   readonly agents: Kindling[] = Array.from({ length: MAX_FOLK }, () => ({
-    x: 0, y: 0, vx: 0, vy: 0, heading: 1, state: 'inactive', fallStartY: 0, age: 0, pushCooldown: 0,
+    x: 0, y: 0, vx: 0, vy: 0, heading: 1, state: 'inactive', fallStartY: 0, age: 0, homeAge: 0, pushCooldown: 0,
     tint: 0xffe0a0, scale: 1, isWick: false,
   }));
   count = 0;
@@ -59,7 +59,7 @@ export class FolkWorld {
     const agent = this.agents[this.count++];
     agent.x = x; agent.y = y; agent.vx = 0; agent.vy = 0;
     agent.heading = heading < 0 ? -1 : 1;
-    agent.state = 'falling'; agent.fallStartY = y; agent.age = 0; agent.pushCooldown = 0;
+    agent.state = 'falling'; agent.fallStartY = y; agent.age = 0; agent.homeAge = 0; agent.pushCooldown = 0;
     agent.isWick = this.count === 1;
     agent.tint = agent.isWick ? 0xfff5d2 : 0xffe0a0;
     agent.scale = agent.isWick ? 1.2 : 1;
@@ -84,7 +84,8 @@ export class FolkWorld {
     const cell = this.field.cell;
     for (let index = 0; index < this.count; index++) {
       const agent = this.agents[index];
-      if (agent.state === 'inactive' || agent.state === 'ash' || agent.state === 'home') continue;
+      if (agent.state === 'home') { agent.homeAge += STEP; continue; }
+      if (agent.state === 'inactive' || agent.state === 'ash') continue;
       agent.age += STEP;
       agent.pushCooldown = Math.max(0, agent.pushCooldown - STEP);
       if (agent.x >= this.doorX - this.doorW * 0.5 && agent.x <= this.doorX + this.doorW * 0.5
@@ -123,6 +124,15 @@ export class FolkWorld {
       const supportX = agent.x + agent.heading * RADIUS * 0.45;
       const support = this.field.sample(supportX, footY);
       const inSoft = this.field.sample(agent.x, agent.y) === 2 || support === 2;
+      const softIndex = inSoft ? this.field.index(agent.x, agent.y) : -1;
+      if (softIndex >= 0 && this.field.soft[softIndex] && this.field.vy[softIndex] > 0.25
+        && agent.pushCooldown === 0) {
+        agent.vx = Math.max(-1.6, Math.min(1.6, this.field.vx[softIndex] * 0.7));
+        agent.vy = Math.min(1.6, this.field.vy[softIndex] * 0.7);
+        agent.state = 'falling';
+        agent.fallStartY = agent.y;
+        agent.pushCooldown = 0.12;
+      }
       if (agent.state === 'walking') {
         if (support === 1) {
           const aheadX = agent.x + agent.heading * (RADIUS + cell * 0.5);

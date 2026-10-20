@@ -12,7 +12,7 @@ try {
   page.on('pageerror', error => errors.push(String(error)));
   page.on('console', message => { if (message.text().startsWith('NIGHT')) console.log(message.text()); });
   const url = new URL(base);
-  url.search = '?capture&demo&day=20378';
+  url.search = '?capture&demo&day=20378&classic';
   await page.goto(url.toString(), { waitUntil: 'load' });
   await page.waitForFunction(() => window.__capture && window.__theater?.baked, null, { timeout: 60000 });
   const result = await page.evaluate(async count => {
