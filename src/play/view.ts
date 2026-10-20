@@ -5,6 +5,7 @@ import {
 import { InkField } from './ink-field.js';
 import { FolkWorld } from './folk.js';
 import { KINDLING_CELLS, KINDLING_FOOT, KINDLING_FRAMES, kindlingAtlas, kindlingHalo } from './kindling-art.js';
+import { groundLine, ledge } from '../journey/props-art.js';
 import type { ScreenLevel } from './levels.js';
 
 function bakedCanvas(width: number, height: number): [HTMLCanvasElement, CanvasRenderingContext2D] {
@@ -44,6 +45,9 @@ export class PlayView {
   private readonly tintBySlot = new Float64Array(48).fill(0xffe0a0);
   private readonly frames = new InstancedBufferAttribute(new Float32Array(48), 1);
   private readonly terrain: Mesh<PlaneGeometry, MeshBasicMaterial>;
+  private readonly doorGlow: Mesh<PlaneGeometry, MeshBasicMaterial>;
+  private doorHomeCount = 0;
+  private doorPulseAt = -Infinity;
   private readonly field: InkField;
   private readonly terrainCanvas: HTMLCanvasElement;
   private readonly terrainContext: CanvasRenderingContext2D;
@@ -86,6 +90,14 @@ export class PlayView {
     }));
     this.terrain.position.z = 0.0022; this.terrain.renderOrder = 6;
     this.root.add(this.terrain);
+    this.doorGlow = new Mesh(new PlaneGeometry(1, 1), new MeshBasicMaterial({
+      map: particleTexture(true), color: '#ffd49a', transparent: true, opacity: 0.16,
+      blending: AdditiveBlending, depthWrite: false, toneMapped: false,
+    }));
+    this.doorGlow.position.set(0.43, -0.075, 0.0024);
+    this.doorGlow.scale.set(0.13, 0.19, 1);
+    this.doorGlow.renderOrder = 6.8;
+    this.root.add(this.doorGlow);
     this.wash = new Mesh(new PlaneGeometry(1, 0.66), new MeshBasicMaterial({
       color: '#2b211c', transparent: true, opacity: 0.94, depthWrite: false, toneMapped: false,
     }));
@@ -95,13 +107,16 @@ export class PlayView {
     this.root.add(this.wash);
     this.halo = this.instances(kindlingHalo(), 48, 6.5);
     this.halo.material.blending = AdditiveBlending;
-    this.folk = this.instances(kindlingAtlas(), 48, 7);
+    this.halo.geometry.scale(0.085 / 0.067, 0.085 / 0.067, 1);
+    this.halo.geometry.translate(0, 0, -0.0002);
+    const atlas = kindlingAtlas();
+    atlas.repeat.set(1 / KINDLING_CELLS, 1);
+    this.folk = this.instances(atlas, 48, 7);
+    this.halo.instanceMatrix = this.folk.instanceMatrix;
     this.folk.geometry.setAttribute('instanceFrame', this.frames);
     this.folk.material.onBeforeCompile = (shader) => {
-      shader.vertexShader = `attribute float instanceFrame; varying float vAtlasFrame;\n${shader.vertexShader}`
-        .replace('#include <begin_vertex>', '#include <begin_vertex>\n vAtlasFrame = instanceFrame;');
-      shader.fragmentShader = `varying float vAtlasFrame;\n${shader.fragmentShader}`
-        .replace('texture2D( map, vMapUv )', `texture2D( map, vec2((vMapUv.x + vAtlasFrame) / ${KINDLING_CELLS}.0, vMapUv.y) )`);
+      shader.vertexShader = `attribute float instanceFrame;\n${shader.vertexShader}`
+        .replace('#include <uv_vertex>', `#include <uv_vertex>\n vMapUv.x += instanceFrame / ${KINDLING_CELLS}.0;`);
     };
     this.ash = this.instances(particleTexture(false), 48, 8);
     this.sparkle = this.instances(particleTexture(true), 48, 9);
@@ -120,74 +135,72 @@ export class PlayView {
   }
 
   setLevel(level: ScreenLevel): void {
+    this.doorHomeCount = 0;
+    this.doorPulseAt = -Infinity;
     const context = this.terrainContext;
     context.clearRect(0, 0, this.terrainCanvas.width, this.terrainCanvas.height);
     const toX = (x: number) => (x + 0.5) * 1200;
     const toY = (y: number) => (0.33 - y) * 1200;
-    context.fillStyle = '#38241c';
-    for (let row = 0; row < this.field.h; row++) {
-      let start = -1;
-      for (let column = 0; column <= this.field.w; column++) {
-        const solid = column < this.field.w && this.field.staticSolid[row * this.field.w + column] !== 0;
-        if (solid && start < 0) start = column;
-        else if (!solid && start >= 0) {
-          const left = this.field.x0 + start * this.field.cell;
-          const right = this.field.x0 + column * this.field.cell;
-          const top = this.field.y0 + (row + 1) * this.field.cell;
-          context.fillRect(toX(left), toY(top), (right - left) * 1200, this.field.cell * 1200);
-          start = -1;
-        }
-      }
-    }
-    context.strokeStyle = '#5b3422';
-    context.lineWidth = 3;
+    const gaps = level.hazards.filter((hazard) => hazard.kind === 'gap' || hazard.kind === 'river')
+      .map((hazard) => {
+        const reach = hazard.width * 0.5 + (hazard.kind === 'river' ? 0.06 : 0);
+        return [toX(hazard.x - reach), toX(hazard.x + reach)] as const;
+      });
+    context.globalAlpha = 0.34;
+    context.drawImage(groundLine(1200, gaps), 0, toY(-0.2) - 38);
     for (const hazard of level.hazards) {
       const x = toX(hazard.x), width = hazard.width * 1200;
-      if (hazard.kind === 'river') {
-        context.fillStyle = 'rgba(84,135,156,0.58)';
-        context.fillRect(x - width / 2, toY(-0.15), width, 76);
-        context.strokeStyle = '#a9c4bd';
-        for (let offset = 0; offset < 3; offset++) {
-          const waterY = toY(-0.17) + offset * 16;
-          context.beginPath(); context.moveTo(x - width / 2, waterY);
-          context.quadraticCurveTo(x, waterY - 7, x + width / 2, waterY); context.stroke();
-        }
-      } else if (hazard.kind === 'thorns') {
-        context.fillStyle = '#4d3927';
-        for (let spike = 0; spike < 7; spike++) {
-          const spikeX = x - width / 2 + width * spike / 6;
-          context.beginPath(); context.moveTo(spikeX - 5, toY(-0.2));
-          context.lineTo(spikeX, toY(-0.13) + (spike % 2) * 9);
-          context.lineTo(spikeX + 5, toY(-0.2)); context.fill();
-        }
-      } else if (hazard.kind === 'rain') {
-        context.fillStyle = 'rgba(75,75,87,0.44)';
-        context.beginPath(); context.ellipse(x, toY(0.25), width * 0.5, 29, 0, 0, Math.PI * 2); context.fill();
-      } else if (hazard.kind === 'crow') {
-        context.fillStyle = '#30231f';
-        context.beginPath(); context.moveTo(x - 33, toY(0.19));
-        context.quadraticCurveTo(x, toY(0.3), x + 33, toY(0.19));
-        context.quadraticCurveTo(x, toY(0.22), x - 33, toY(0.19)); context.fill();
-      } else if (hazard.kind === 'boulder') {
-        context.fillStyle = '#6c5946';
-        context.beginPath(); context.arc(x, toY(-0.165), 38, 0, Math.PI * 2); context.fill();
-      } else if (hazard.kind === 'gust') {
-        context.strokeStyle = '#9d805e';
-        for (let line = 0; line < 3; line++) {
-          context.beginPath(); context.moveTo(x + 18, toY(-0.02) + line * 14);
-          context.quadraticCurveTo(x - 8, toY(0.01) + line * 14, x - 28, toY(-0.01) + line * 14); context.stroke();
-        }
+      if (hazard.kind === 'ledge' || hazard.kind === 'highLedge') {
+        const rise = hazard.kind === 'highLedge' ? 0.16 : 0.09;
+        context.drawImage(ledge(rise), x - width / 2, toY(-0.2 + rise) - 8, width, rise * 1200 + 18);
       }
     }
-    context.strokeStyle = '#4b2a1d'; context.lineWidth = 5;
+    context.globalAlpha = 1;
+    for (const hazard of level.hazards) {
+      if (hazard.kind !== 'gap') continue;
+      const left = toX(hazard.x - hazard.width * 0.5);
+      const right = toX(hazard.x + hazard.width * 0.5);
+      const edgeY = toY(-0.2);
+      const fall = context.createLinearGradient(0, edgeY + 4, 0, edgeY + 66);
+      fall.addColorStop(0, 'rgba(59,40,32,0.25)');
+      fall.addColorStop(1, 'rgba(59,40,32,0)');
+      context.fillStyle = fall;
+      context.beginPath();
+      context.ellipse((left + right) * 0.5, edgeY + 31, (right - left) * 0.52, 30, 0, 0, Math.PI * 2);
+      context.fill();
+      context.strokeStyle = 'rgba(77,45,29,0.66)';
+      context.lineWidth = 3.5;
+      for (const [edge, direction] of [[left, 1], [right, -1]] as const) {
+        context.beginPath();
+        context.moveTo(edge - direction * 9, edgeY - 3);
+        context.quadraticCurveTo(edge + direction * 6, edgeY + 3, edge + direction * 2, edgeY + 14);
+        context.bezierCurveTo(edge - direction * 2, edgeY + 25, edge + direction * 15, edgeY + 40,
+          edge + direction * 10, edgeY + 51);
+        context.stroke();
+      }
+      context.fillStyle = 'rgba(69,46,32,0.35)';
+      for (let pebble = 0; pebble < 5; pebble++) {
+        const pebbleX = left + (pebble + 0.5) * (right - left) / 5;
+        const pebbleY = edgeY + 32 + (pebble * 17 % 24);
+        context.beginPath();
+        context.ellipse(pebbleX, pebbleY, 2 + pebble % 2, 1.3, 0, 0, Math.PI * 2);
+        context.fill();
+      }
+    }
+    context.strokeStyle = '#704d34'; context.lineWidth = 3;
     context.beginPath(); context.moveTo(toX(-0.48), toY(-0.2));
     context.lineTo(toX(-0.48), toY(-0.15)); context.quadraticCurveTo(toX(-0.44), toY(-0.1), toX(-0.40), toY(-0.15));
     context.lineTo(toX(-0.40), toY(-0.2)); context.stroke();
-    context.fillStyle = '#b7874b'; context.beginPath();
+    context.fillStyle = '#c39966'; context.beginPath();
     context.ellipse(toX(-0.44), toY(-0.173), 7, 11, 0, 0, Math.PI * 2); context.fill();
-    context.fillStyle = '#3b241c'; context.beginPath();
+    const doorLight = context.createRadialGradient(toX(0.43), toY(-0.055), 4, toX(0.43), toY(-0.055), 91);
+    doorLight.addColorStop(0, 'rgba(255,230,172,0.48)');
+    doorLight.addColorStop(1, 'rgba(255,197,112,0)');
+    context.fillStyle = doorLight;
+    context.fillRect(toX(0.43) - 91, toY(-0.055) - 91, 182, 182);
+    context.fillStyle = '#704b35'; context.beginPath();
     context.ellipse(toX(0.43), toY(-0.015), 43, 83, 0, Math.PI, Math.PI * 2); context.fill();
-    context.fillStyle = '#b7874b'; context.beginPath();
+    context.fillStyle = '#efc98c'; context.beginPath();
     context.ellipse(toX(0.43), toY(-0.02), 30, 65, 0, Math.PI, Math.PI * 2); context.fill();
     this.terrain.material.map!.needsUpdate = true;
   }
@@ -216,6 +229,11 @@ export class PlayView {
   }
 
   update(world: FolkWorld, field: InkField, time: number): void {
+    if (world.homeCount > this.doorHomeCount) this.doorPulseAt = time;
+    this.doorHomeCount = world.homeCount;
+    const doorPulse = Math.max(0, 1 - (time - this.doorPulseAt) / 0.7);
+    this.doorGlow.material.opacity = 0.15 + doorPulse * 0.48;
+    this.doorGlow.scale.set(0.13 + doorPulse * 0.07, 0.19 + doorPulse * 0.08, 1);
     let visible = 0, ash = 0, sparkle = 0;
     let tintChanged = false;
     for (let index = 0; index < world.count; index++) {
@@ -250,16 +268,9 @@ export class PlayView {
       this.transform.rotation.z = agent.state === 'falling' ? Math.max(-0.45, Math.min(0.45, agent.vx * 0.3)) : 0;
       this.transform.updateMatrix();
       particle.setMatrixAt(slot, this.transform.matrix);
-      if (particle === this.folk) {
-        this.transform.scale.set(0.085 * agent.scale, 0.085 * agent.scale, 1);
-        this.transform.position.z = 0.0028;
-        this.transform.updateMatrix();
-        this.halo.setMatrixAt(slot, this.transform.matrix);
-      }
     }
     this.folk.count = this.halo.count = visible; this.ash.count = ash; this.sparkle.count = sparkle;
     this.folk.instanceMatrix.needsUpdate = visible > 0;
-    this.halo.instanceMatrix.needsUpdate = visible > 0;
     this.frames.needsUpdate = visible > 0;
     if (tintChanged && this.folk.instanceColor) this.folk.instanceColor.needsUpdate = true;
     this.ash.instanceMatrix.needsUpdate = ash > 0;
@@ -286,7 +297,7 @@ export class PlayView {
   }
 
   dispose(): void {
-    for (const mesh of [this.terrain, this.wash, this.folk, this.halo, this.ash, this.sparkle, this.debugMesh]) {
+    for (const mesh of [this.terrain, this.doorGlow, this.wash, this.folk, this.halo, this.ash, this.sparkle, this.debugMesh]) {
       if (!mesh) continue;
       mesh.geometry.dispose();
       mesh.material.map?.dispose();

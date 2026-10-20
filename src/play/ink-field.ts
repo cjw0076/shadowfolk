@@ -145,7 +145,7 @@ export class InkField {
         }
       }
     }
-    if (band > 0) {
+    if (band > 0 && !isSoft) {
       const radiusCells = Math.ceil(band / this.cell);
       for (let row = Math.max(radiusCells, palmFirstRow); row <= Math.min(this.h - 1 - radiusCells, palmLastRow); row++) {
         for (let column = Math.max(radiusCells, palmFirstColumn); column <= Math.min(this.w - 1 - radiusCells, palmLastColumn); column++) {

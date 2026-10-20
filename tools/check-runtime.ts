@@ -219,7 +219,7 @@ export async function run(): Promise<string[]> {
 
     const priorUrl = location.href;
     try {
-      history.replaceState(null, '', '?demo&demoOneHand&first=butterfly&day=20378');
+      history.replaceState(null, '', '?demo&demoOneHand&first=butterfly&day=20378&classic&noJourney');
       localStorage.removeItem('shadow-theater.v1');
       const { system: filmed } = make();
       filmed.init();

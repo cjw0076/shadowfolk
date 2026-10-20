@@ -66,6 +66,8 @@ export class WallLayer {
   private soft = new Map<Stencil, WallInk>();
   private fireflies: InstancedMesh<PlaneGeometry, MeshBasicMaterial>;
   private fireflyCount = 0;
+  private fireflyArrivalFrom = 0;
+  private fireflyArrivalAt = -Infinity;
   private fireflyTransform = new Object3D();
   private v = new Vector3();
   private w = new Vector3();
@@ -153,7 +155,11 @@ export class WallLayer {
     this.fireflies.material.opacity = Math.max(0.15, Math.min(1, level));
   }
 
-  setFireflies(count: number): void {
+  setFireflies(count: number, time = -Infinity): void {
+    if (count > this.fireflyCount && Number.isFinite(time)) {
+      this.fireflyArrivalFrom = this.fireflyCount;
+      this.fireflyArrivalAt = time;
+    }
     this.fireflyCount = Math.max(0, Math.floor(count));
     this.fireflies.count = Math.min(160, this.fireflyCount);
   }
@@ -323,8 +329,13 @@ export class WallLayer {
     for (let index = 0; index < this.fireflies.count; index++) {
       const spreadX = ((Math.imul(index + 1, 1664525) >>> 0) / 4294967296 - 0.5) * this.wM * 0.85;
       const spreadY = ((Math.imul(index + 7, 22695477) >>> 0) / 4294967296 - 0.5) * this.hM * 0.72;
-      const x = spreadX + 0.022 * Math.sin(time * 0.9 + index * 1.71);
-      const y = spreadY + 0.018 * Math.sin(time * 1.2 + index * 2.31);
+      const destinationX = spreadX + 0.022 * Math.sin(time * 0.9 + index * 1.71);
+      const destinationY = spreadY + 0.018 * Math.sin(time * 1.2 + index * 2.31);
+      const arrival = index >= this.fireflyArrivalFrom
+        ? ease((time - this.fireflyArrivalAt - (index - this.fireflyArrivalFrom) * 0.035) / 1.7) : 1;
+      const x = this.start[0] - this.cx + (destinationX - (this.start[0] - this.cx)) * arrival;
+      const y = this.start[1] - this.cy + (destinationY - (this.start[1] - this.cy)) * arrival
+        + Math.sin(arrival * Math.PI) * 0.16;
       const size = 0.018 + 0.009 * (0.5 + 0.5 * Math.sin(time * 4 + index * 3.7));
       this.fireflyTransform.position.set(x, y, 0.003);
       this.fireflyTransform.scale.set(size, size, 1);

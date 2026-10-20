@@ -28,6 +28,7 @@ export class CrossingRuntime {
   wiping = false;
   wash = 0;
   onEvent?: (event: CrossingEvent) => void;
+  onHazardTiming?: (milliseconds: number) => void;
   private elapsed = 0;
   private screenElapsed = 0;
   private warned = false;
@@ -73,7 +74,9 @@ export class CrossingRuntime {
         this.onEvent?.({ kind: 'warning', screen: this.screen, home: this.home, total: this.total });
       }
     }
+    const hazardStarted = this.onHazardTiming ? performance.now() : 0;
     this.hazards.update(dt);
+    if (this.onHazardTiming) this.onHazardTiming(performance.now() - hazardStarted);
     this.folk.update(dt);
     const resolved = this.folk.count >= this.level.kindlings
       && this.folk.homeCount + this.folk.ashCount >= this.level.kindlings;

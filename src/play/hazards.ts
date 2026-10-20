@@ -1,8 +1,8 @@
 import {
-  BoxGeometry, ConeGeometry, DataTexture, DynamicDrawUsage, Group, InstancedMesh, LinearFilter,
-  Mesh, MeshBasicMaterial, Object3D, PlaneGeometry, RGBAFormat, RepeatWrapping, SphereGeometry,
-  UnsignedByteType,
+  CanvasTexture, DynamicDrawUsage, Group, InstancedMesh, LinearFilter, Mesh, MeshBasicMaterial,
+  Object3D, PlaneGeometry, RepeatWrapping, SRGBColorSpace,
 } from '@iwsdk/core';
+import { boulder, crow, crowFlying, fogBank, ledge, vineCurtain } from '../journey/props-art.js';
 import type { HazardKind, ScreenLevel } from './levels.js';
 import { FolkWorld, type Kindling } from './folk.js';
 import { InkField } from './ink-field.js';
@@ -104,14 +104,16 @@ interface RuntimeHazard extends HazardLayout {
   boulderNext: number;
 }
 
+type HazardSprite = Mesh<PlaneGeometry, MeshBasicMaterial>;
+
 interface HazardVisual {
   root: Group;
-  crow: Group | null;
-  crowWings: [Mesh, Mesh] | null;
+  textures: CanvasTexture[];
+  crow: HazardSprite | null;
   drops: InstancedMesh | null;
-  boulder: Mesh | null;
-  wind: Mesh[];
-  waterTexture: DataTexture | null;
+  boulder: HazardSprite | null;
+  wind: HazardSprite[];
+  waterTexture: CanvasTexture | null;
 }
 
 interface PlacementOverride {
@@ -249,46 +251,190 @@ function makeRuntime(layout: HazardLayout, seed: number): RuntimeHazard {
   return hazard;
 }
 
-function addMesh(
+type HazardArt = {
+  crowAtlas: HTMLCanvasElement;
+  rainCloud: HTMLCanvasElement;
+  river: HTMLCanvasElement;
+  bramble: HTMLCanvasElement;
+  gust: HTMLCanvasElement;
+  boulderAtlas: HTMLCanvasElement;
+  gap: HTMLCanvasElement;
+  ledge: HTMLCanvasElement;
+};
+
+let bakedHazardArt: HazardArt | null = null;
+
+function frameAtlas(frames: HTMLCanvasElement[]): HTMLCanvasElement {
+  const width = Math.max(...frames.map((frame) => frame.width));
+  const height = Math.max(...frames.map((frame) => frame.height));
+  const canvas = document.createElement('canvas');
+  canvas.width = width * frames.length;
+  canvas.height = height;
+  const context = canvas.getContext('2d', { willReadFrequently: true })!;
+  frames.forEach((frame, index) => context.drawImage(frame,
+    width * index + (width - frame.width) * 0.5, (height - frame.height) * 0.5));
+  return canvas;
+}
+
+function riverArt(): HTMLCanvasElement {
+  const canvas = document.createElement('canvas');
+  canvas.width = 256;
+  canvas.height = 64;
+  const context = canvas.getContext('2d', { willReadFrequently: true })!;
+  const wash = context.createLinearGradient(0, 8, 0, 58);
+  wash.addColorStop(0, 'rgba(73, 99, 111, 0)');
+  wash.addColorStop(0.45, 'rgba(73, 99, 111, 0.32)');
+  wash.addColorStop(1, 'rgba(73, 99, 111, 0.08)');
+  context.fillStyle = wash;
+  context.beginPath();
+  context.ellipse(128, 36, 126, 25, 0, 0, Math.PI * 2);
+  context.fill();
+  context.lineCap = 'round';
+  context.strokeStyle = 'rgba(35, 22, 15, 0.52)';
+  context.lineWidth = 3;
+  context.beginPath();
+  context.moveTo(10, 24);
+  context.bezierCurveTo(66, 18, 112, 29, 162, 23);
+  context.bezierCurveTo(196, 19, 222, 20, 246, 17);
+  context.stroke();
+  context.lineWidth = 2.2;
+  context.beginPath();
+  context.moveTo(5, 43);
+  context.bezierCurveTo(58, 38, 112, 47, 164, 41);
+  context.bezierCurveTo(198, 37, 224, 40, 251, 35);
+  context.stroke();
+  return canvas;
+}
+
+function rainCloudArt(): HTMLCanvasElement {
+  const canvas = document.createElement('canvas');
+  canvas.width = 280;
+  canvas.height = 176;
+  const context = canvas.getContext('2d', { willReadFrequently: true })!;
+  context.drawImage(fogBank(0.45), 0, 0);
+  context.beginPath();
+  context.moveTo(47, 110);
+  context.bezierCurveTo(35, 95, 45, 78, 67, 77);
+  context.bezierCurveTo(71, 52, 103, 49, 118, 68);
+  context.bezierCurveTo(134, 43, 177, 49, 184, 76);
+  context.bezierCurveTo(207, 61, 239, 77, 234, 99);
+  context.bezierCurveTo(246, 119, 221, 129, 202, 120);
+  context.quadraticCurveTo(178, 135, 151, 119);
+  context.quadraticCurveTo(124, 137, 99, 119);
+  context.quadraticCurveTo(65, 132, 47, 110);
+  context.closePath();
+  context.fillStyle = 'rgba(66,72,83,0.31)';
+  context.fill();
+  context.strokeStyle = 'rgba(44,48,58,0.62)';
+  context.lineWidth = 3;
+  context.stroke();
+  context.strokeStyle = 'rgba(136,155,164,0.56)';
+  context.lineWidth = 2;
+  for (let streak = 0; streak < 4; streak++) {
+    const x = 87 + streak * 31;
+    context.beginPath();
+    context.moveTo(x, 131 + streak % 2 * 3);
+    context.lineTo(x - 3, 151 + streak % 2 * 5);
+    context.stroke();
+  }
+  return canvas;
+}
+
+function gustArt(): HTMLCanvasElement {
+  const canvas = document.createElement('canvas');
+  canvas.width = 192;
+  canvas.height = 96;
+  const context = canvas.getContext('2d', { willReadFrequently: true })!;
+  context.lineCap = 'round';
+  context.lineJoin = 'round';
+  context.strokeStyle = 'rgba(35, 22, 15, 0.72)';
+  context.fillStyle = 'rgba(35, 22, 15, 0.68)';
+  context.lineWidth = 3.2;
+  context.beginPath();
+  context.moveTo(12, 55);
+  context.bezierCurveTo(57, 18, 125, 78, 180, 33);
+  context.stroke();
+  for (let index = 0; index < 4; index++) {
+    const x = 38 + index * 35;
+    const y = 43 + Math.sin(index * 1.7) * 13;
+    const direction = index % 2 === 0 ? -1 : 1;
+    context.beginPath();
+    context.moveTo(x - 7, y + direction * 5);
+    context.quadraticCurveTo(x + 1, y - direction * 14, x + 17, y - direction * 8);
+    context.quadraticCurveTo(x + 8, y + direction * 3, x - 7, y + direction * 5);
+    context.fill();
+    context.lineWidth = 1.5;
+    context.beginPath();
+    context.moveTo(x - 5, y + direction * 4);
+    context.lineTo(x + 13, y - direction * 7);
+    context.stroke();
+    context.lineWidth = 3.2;
+  }
+  return canvas;
+}
+
+function gapArt(): HTMLCanvasElement {
+  const canvas = document.createElement('canvas');
+  canvas.width = 192;
+  canvas.height = 48;
+  const context = canvas.getContext('2d', { willReadFrequently: true })!;
+  const wash = context.createLinearGradient(0, 8, 0, 48);
+  wash.addColorStop(0, 'rgba(35, 22, 15, 0)');
+  wash.addColorStop(0.55, 'rgba(35, 22, 15, 0.34)');
+  wash.addColorStop(1, 'rgba(35, 22, 15, 0.12)');
+  context.fillStyle = wash;
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.strokeStyle = 'rgba(35, 22, 15, 0.66)';
+  context.lineWidth = 1.5;
+  for (let index = -16; index < 38; index += 8) {
+    context.beginPath();
+    context.moveTo(index, 14);
+    context.lineTo(index + 26, 45);
+    context.moveTo(canvas.width - index, 14);
+    context.lineTo(canvas.width - index - 26, 45);
+    context.stroke();
+  }
+  return canvas;
+}
+
+function hazardArt(): HazardArt {
+  if (!bakedHazardArt) {
+    bakedHazardArt = {
+      crowAtlas: frameAtlas([crow(true), ...[0, 1, 2, 3].map((frame) => crowFlying(frame))]),
+      rainCloud: rainCloudArt(),
+      river: riverArt(),
+      bramble: vineCurtain(),
+      gust: gustArt(),
+      boulderAtlas: frameAtlas([boulder(0), boulder(0.65), boulder(1)]),
+      gap: gapArt(),
+      ledge: ledge(220),
+    };
+  }
+  return bakedHazardArt;
+}
+
+function createHazardTexture(visual: HazardVisual, source: HTMLCanvasElement): CanvasTexture {
+  const texture = new CanvasTexture(source);
+  texture.colorSpace = SRGBColorSpace;
+  texture.generateMipmaps = false;
+  texture.minFilter = texture.magFilter = LinearFilter;
+  visual.textures.push(texture);
+  return texture;
+}
+
+function addInkSprite(
   parent: Group,
-  geometry: BoxGeometry | ConeGeometry | PlaneGeometry | SphereGeometry,
-  color: string,
-  options: { transparent?: boolean; opacity?: number } = {},
-): Mesh {
-  const material = new MeshBasicMaterial({
-    color,
-    transparent: options.transparent ?? false,
-    opacity: options.opacity ?? 1,
-    depthWrite: options.transparent ? false : true,
-    toneMapped: false,
-  });
-  const mesh = new Mesh(geometry, material);
+  map: CanvasTexture,
+  width: number,
+  height: number,
+  opacity = 1,
+): HazardSprite {
+  const material = new MeshBasicMaterial({ map, transparent: true, opacity, depthWrite: false, toneMapped: false });
+  const mesh = new Mesh(new PlaneGeometry(width, height), material);
   mesh.renderOrder = 8;
   mesh.frustumCulled = false;
   parent.add(mesh);
   return mesh;
-}
-
-function rippleTexture(): DataTexture {
-  const width = 32, height = 16;
-  const data = new Uint8Array(width * height * 4);
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const offset = (y * width + x) * 4;
-      const stripe = Math.sin((x / width) * Math.PI * 4 + Math.sin((y / height) * Math.PI * 2) * 0.8);
-      data[offset] = 226;
-      data[offset + 1] = 244;
-      data[offset + 2] = 238;
-      data[offset + 3] = stripe > 0.72 ? 190 : 20;
-    }
-  }
-  const texture = new DataTexture(data, width, height, RGBAFormat, UnsignedByteType);
-  texture.wrapS = RepeatWrapping;
-  texture.wrapT = RepeatWrapping;
-  texture.minFilter = LinearFilter;
-  texture.magFilter = LinearFilter;
-  texture.needsUpdate = true;
-  return texture;
 }
 
 function newVisual(layout: HazardLayout): HazardVisual {
@@ -296,59 +442,37 @@ function newVisual(layout: HazardLayout): HazardVisual {
   root.name = `hazard-${layout.kind}-${layout.slot}`;
   root.position.set(layout.x, 0, 0.0035);
   root.renderOrder = 8;
-  const visual: HazardVisual = { root, crow: null, crowWings: null, drops: null, boulder: null, wind: [], waterTexture: null };
+  const visual: HazardVisual = {
+    root, textures: [], crow: null, drops: null, boulder: null, wind: [], waterTexture: null,
+  };
   const width = layout.width;
+  const art = hazardArt();
 
   if (layout.kind === 'gap') {
-    const gapShade = addMesh(root, new PlaneGeometry(1, 1), '#241b1a');
-    gapShade.position.set(0, layout.floorY - 0.018, 0);
-    gapShade.scale.set(width, 0.035, 1);
+    const gap = addInkSprite(root, createHazardTexture(visual, art.gap), width, 0.035, 0.34);
+    gap.position.set(0, layout.floorY - 0.018, 0.001);
   } else if (layout.kind === 'ledge' || layout.kind === 'highLedge') {
-    const block = addMesh(root, new BoxGeometry(1, 1, 0.003), '#543827');
-    block.position.set(0, layout.floorY + layout.rise * 0.5, 0);
-    block.scale.set(width, layout.rise, 1);
-    const top = addMesh(root, new PlaneGeometry(1, 1), '#8a6040');
-    top.position.set(0, layout.floorY + layout.rise, 0.001);
-    top.scale.set(width, 0.007, 1);
+    const face = addInkSprite(root, createHazardTexture(visual, art.ledge), width, layout.rise, 0.34);
+    face.position.set(0, layout.floorY + layout.rise * 0.5, 0.001);
   } else if (layout.kind === 'river') {
-    visual.waterTexture = rippleTexture();
-    const water = new Mesh(new PlaneGeometry(1, 1), new MeshBasicMaterial({
-      color: '#548da0', map: visual.waterTexture, transparent: true, opacity: 0.86, depthWrite: false,
-      toneMapped: false,
-    }));
+    visual.waterTexture = createHazardTexture(visual, art.river);
+    visual.waterTexture.wrapS = RepeatWrapping;
+    visual.waterTexture.repeat.x = 1.5;
+    const water = addInkSprite(root, visual.waterTexture, width, 0.034, 0.86);
     water.position.set(0, layout.floorY - layout.dip * 0.55, 0);
-    water.scale.set(width, 0.028, 1);
     water.renderOrder = 9;
-    root.add(water);
   } else if (layout.kind === 'crow') {
-    const crow = new Group();
-    crow.position.set(0, layout.floorY + 0.16, 0.008);
-    visual.crow = crow;
-    const body = addMesh(crow, new SphereGeometry(1, 10, 7), '#282329');
-    body.scale.set(0.016, 0.009, 0.004);
-    const head = addMesh(crow, new SphereGeometry(1, 8, 6), '#282329');
-    head.position.set(0.012, 0.006, 0);
-    head.scale.set(0.007, 0.007, 0.004);
-    const beak = addMesh(crow, new ConeGeometry(0.004, 0.009, 3), '#b88746');
-    beak.position.set(0.02, 0.004, 0);
-    beak.rotation.z = -Math.PI / 2;
-    const leftWing = addMesh(crow, new PlaneGeometry(0.023, 0.009), '#211d22');
-    leftWing.position.set(-0.002, 0.001, -0.001);
-    const rightWing = addMesh(crow, new PlaneGeometry(0.023, 0.009), '#211d22');
-    rightWing.position.set(-0.002, 0.001, 0.001);
-    visual.crowWings = [leftWing, rightWing];
-    root.add(crow);
+    const crowMap = createHazardTexture(visual, art.crowAtlas);
+    crowMap.repeat.set(1 / 5, 1);
+    visual.crow = addInkSprite(root, crowMap, 0.16, 0.151, 0.96);
+    visual.crow.position.set(0, layout.floorY + 0.16, 0.008);
+    visual.crow.renderOrder = 9;
   } else if (layout.kind === 'rain') {
-    const cloud = addMesh(root, new SphereGeometry(1, 10, 7), '#77706c');
+    const cloud = addInkSprite(root, createHazardTexture(visual, art.rainCloud), width * 0.96, 0.105, 0.76);
+    cloud.material.color.set('#e1e7e8');
     cloud.position.set(0, 0.075, 0.004);
-    cloud.scale.set(width * 0.31, 0.018, 0.006);
-    for (const offset of [-0.055, 0, 0.055]) {
-      const puff = addMesh(root, new SphereGeometry(1, 8, 6), '#89817a');
-      puff.position.set(offset, 0.085, 0.004);
-      puff.scale.set(0.043, 0.017, 0.005);
-    }
     const dropGeometry = new PlaneGeometry(0.0022, 0.017);
-    const dropMaterial = new MeshBasicMaterial({ color: '#c4e1e8', transparent: true, opacity: 0.82, depthWrite: false });
+    const dropMaterial = new MeshBasicMaterial({ color: '#718794', transparent: true, opacity: 0.5, depthWrite: false });
     visual.drops = new InstancedMesh(dropGeometry, dropMaterial, MAX_RAINDROPS);
     visual.drops.instanceMatrix.setUsage(DynamicDrawUsage);
     visual.drops.count = 0;
@@ -356,47 +480,39 @@ function newVisual(layout: HazardLayout): HazardVisual {
     visual.drops.frustumCulled = false;
     root.add(visual.drops);
   } else if (layout.kind === 'thorns') {
-    const ground = addMesh(root, new PlaneGeometry(1, 1), '#443124');
-    ground.position.set(0, layout.floorY + 0.004, 0);
-    ground.scale.set(width, 0.009, 1);
-    for (const offset of [-width * 0.32, 0, width * 0.32]) {
-      const thorn = addMesh(root, new ConeGeometry(0.009, 0.033, 3), '#463123');
-      thorn.position.set(offset, layout.floorY + 0.025, 0.001);
-    }
+    const bramble = addInkSprite(root, createHazardTexture(visual, art.bramble), 0.06, width, 0.84);
+    bramble.rotation.z = -Math.PI / 2;
+    bramble.position.set(0, layout.floorY + 0.03, 0.002);
   } else if (layout.kind === 'gust') {
-    for (let index = 0; index < 3; index++) {
-      const streak = addMesh(root, new PlaneGeometry(0.055, 0.0025), '#d6c4a5', { transparent: true, opacity: 0.5 });
-      streak.position.set(-0.025 + index * 0.018, layout.floorY + 0.025 + index * 0.018, 0.001);
+    const gustTexture = createHazardTexture(visual, art.gust);
+    for (let index = 0; index < 4; index++) {
+      const streak = addInkSprite(root, gustTexture, 0.072, 0.036, 0.72);
+      streak.position.set(-0.03 + index * 0.018, layout.floorY + 0.025 + index * 0.016, 0.002);
+      streak.rotation.z = (index - 1.5) * 0.08;
       visual.wind.push(streak);
     }
   } else if (layout.kind === 'boulder') {
-    visual.boulder = addMesh(root, new SphereGeometry(1, 12, 9), '#665345');
-    visual.boulder.scale.setScalar(layout.radius);
+    const boulderMap = createHazardTexture(visual, art.boulderAtlas);
+    boulderMap.repeat.set(1 / 3, 1);
+    visual.boulder = addInkSprite(root, boulderMap, 0.113, 0.1, 0.9);
     visual.boulder.position.set(width * 0.5 + layout.radius, layout.floorY + layout.radius, 0.006);
     visual.boulder.visible = false;
-    const mark = addMesh(root, new SphereGeometry(1, 7, 5), '#826b56');
-    mark.scale.set(0.012, 0.005, 0.002);
-    mark.position.set(width * 0.5 + layout.radius, layout.floorY + layout.radius + 0.006, 0.007);
-    mark.visible = false;
   }
   return visual;
 }
 
-function disposeVisual(root: Group): void {
-  root.traverse((object) => {
+function disposeVisual(visual: HazardVisual): void {
+  visual.root.traverse((object) => {
     const mesh = object as Mesh;
     mesh.geometry?.dispose();
     if (Array.isArray(mesh.material)) {
-      for (const material of mesh.material) {
-        if (material instanceof MeshBasicMaterial) material.map?.dispose();
-        material.dispose();
-      }
+      for (const material of mesh.material) material.dispose();
     } else if (mesh.material) {
-      if (mesh.material instanceof MeshBasicMaterial) mesh.material.map?.dispose();
       mesh.material.dispose();
     }
   });
-  root.clear();
+  for (const texture of visual.textures) texture.dispose();
+  visual.root.clear();
 }
 
 function isActive(agent: Kindling): boolean {
@@ -492,9 +608,11 @@ export class HazardWorld {
       const randomHazard = makeRuntime(layoutHazard(entry.kind, slot, layoutRng, entry), seed);
       this.hazards[slot] = randomHazard;
       this.layouts.push(randomHazard);
-      const visual = newVisual(randomHazard);
-      this.visuals[slot] = visual;
-      this.view.add(visual.root);
+      if (typeof document !== 'undefined') {
+        const visual = newVisual(randomHazard);
+        this.visuals[slot] = visual;
+        this.view.add(visual.root);
+      }
     }
   }
 
@@ -516,7 +634,8 @@ export class HazardWorld {
         case 'ledge':
         case 'highLedge': break;
       }
-      this.updateVisual(hazard, this.visuals[slot]!, delta);
+      const visual = this.visuals[slot];
+      if (visual) this.updateVisual(hazard, visual, delta);
     }
     this.observeAsh();
   }
@@ -533,6 +652,22 @@ export class HazardWorld {
     return solutions;
   }
 
+  crowPose(slot: HazardSlot, out: Float32Array): boolean {
+    const hazard = this.hazards[slot];
+    if (!hazard || hazard.kind !== 'crow' || hazard.crowMode !== 1) return false;
+    out[0] = hazard.crowX;
+    out[1] = hazard.crowY;
+    return true;
+  }
+
+  boulderPose(slot: HazardSlot, out: Float32Array): boolean {
+    const hazard = this.hazards[slot];
+    if (!hazard || hazard.kind !== 'boulder' || !hazard.boulderActive) return false;
+    out[0] = hazard.boulderX;
+    out[1] = hazard.floorY + hazard.radius;
+    return true;
+  }
+
   dispose(): void {
     this.clearVisuals();
     this.hazards[0] = this.hazards[1] = null;
@@ -542,7 +677,7 @@ export class HazardWorld {
   private clearVisuals(): void {
     for (let slot = 0; slot < 2; slot++) {
       const visual = this.visuals[slot];
-      if (visual) disposeVisual(visual.root);
+      if (visual) disposeVisual(visual);
       this.visuals[slot] = null;
     }
     this.view.clear();
@@ -714,7 +849,7 @@ export class HazardWorld {
       hazard.boulderNext -= dt;
       if (hazard.boulderNext > 0) return;
       hazard.boulderActive = true;
-      hazard.boulderX = hazard.x + hazard.width * 0.5 + hazard.radius;
+      hazard.boulderX = this.folk.doorX + this.folk.doorW * 0.5 + hazard.radius;
       hazard.boulderBlockedFor = 0;
       hazard.boulderWasBlocked = false;
       hazard.boulderNext += 8;
@@ -748,7 +883,7 @@ export class HazardWorld {
       this.stats.boulderHits++;
       this.onEvent?.({ kind: 'boulder-hit', hazard: hazard.kind, x: hazard.boulderX, y: boulderY, agent });
     }
-    if (hazard.boulderX < hazard.x - hazard.width * 0.5 - hazard.radius) {
+    if (hazard.boulderX < this.folk.spawnX - hazard.radius) {
       hazard.boulderActive = false;
       hazard.boulderNext = 8;
     }
@@ -759,11 +894,9 @@ export class HazardWorld {
     if (visual.crow) {
       visual.crow.visible = hazard.crowMode !== 2;
       visual.crow.position.set(hazard.crowX - hazard.x, hazard.crowY, 0.008);
-      if (visual.crowWings) {
-        const flap = hazard.crowMode === 1 ? Math.sin(hazard.clock * 24) * 0.55 : 0.08;
-        visual.crowWings[0].rotation.z = flap;
-        visual.crowWings[1].rotation.z = -flap;
-      }
+      const frame = hazard.crowMode === 1 ? 1 + Math.floor(hazard.clock * 12) % 4 : 0;
+      visual.crow.material.map!.offset.x = frame / 5;
+      visual.crow.scale.x = hazard.crowMode === 1 && hazard.crowTargetX < hazard.crowStartX ? -1 : 1;
     }
     if (visual.drops) {
       let visible = 0;
@@ -788,7 +921,8 @@ export class HazardWorld {
       visual.boulder.visible = hazard.boulderActive;
       visual.boulder.position.x = hazard.boulderX - hazard.x;
       visual.boulder.position.y = hazard.floorY + hazard.radius;
-      visual.boulder.rotation.z = -hazard.clock * 6;
+      const frame = Math.floor(hazard.clock * 8) % 3;
+      visual.boulder.material.map!.offset.x = frame / 3;
     }
   }
 
@@ -814,8 +948,9 @@ export class HazardWorld {
     for (let slot = 0; slot < 2; slot++) {
       const hazard = this.hazards[slot];
       if (!hazard || (hazard.kind !== 'gap' && hazard.kind !== 'river' && hazard.kind !== 'rain' && hazard.kind !== 'boulder')) continue;
-      const current = Math.abs(x - hazard.x);
-      if (current > hazard.width * 0.5 + 0.04 || current >= distance) continue;
+      const current = Math.abs(x - (hazard.kind === 'boulder' ? hazard.boulderX : hazard.x));
+      const reach = hazard.kind === 'boulder' ? hazard.radius + 0.04 : hazard.width * 0.5 + 0.04;
+      if (current > reach || current >= distance) continue;
       distance = current;
       closest = hazard;
     }

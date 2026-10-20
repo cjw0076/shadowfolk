@@ -264,6 +264,8 @@ export class TheaterSystem extends createSystem({
   private crossingDemoFlicked = [new Uint8Array(48), new Uint8Array(48)];
   private crossingDemoFlickAt = [-Infinity, -Infinity];
   private crossingDemoFlickSlot = [-1, -1];
+  private crossingDemoCrowPose = new Float32Array(2);
+  private crossingDemoBoulderPose = new Float32Array(2);
   private journey: JourneyRuntime | null = null;
   private journeyView: JourneyView | null = null;
   private journeyPlan: JourneyPlan | null = null;
@@ -460,6 +462,7 @@ export class TheaterSystem extends createSystem({
       this.playDemoCup = shape(basePoses.relaxed(), { index: 0.65, middle: 0.65, ring: 0.65, pinky: 0.65 });
       if (!this.playSandbox) {
         this.crossing = new CrossingRuntime(this.playField, this.playFolk, this.playView);
+        if (perf) this.crossing.onHazardTiming = (milliseconds) => perf!.playHazards.push(milliseconds);
         this.crossing.onEvent = (event) => {
           if (event.kind === 'home') {
             this.audio.play('home');
@@ -641,7 +644,7 @@ export class TheaterSystem extends createSystem({
   private newArcNight(): void {
     const progress = this.saved.v3 ?? (this.saved.v3 = validArcSave(null, this.saved.nights));
     const night = Number.isSafeInteger(this.forcedNight) && this.forcedNight >= 0
-      ? this.forcedNight : progress.prologue ? 0 : progress.night;
+      ? this.forcedNight : this.crossingOnly ? Math.max(1, progress.night) : progress.prologue ? 0 : progress.night;
     const plan = arcNight(night, this.arcSeed());
     this.nightTitle = plan.moon;
     this.step = 0;
@@ -652,6 +655,7 @@ export class TheaterSystem extends createSystem({
     this.lessonIndex = 0;
     this.fresh = this.order[0] ?? -1;
     this.moon.setPhase(night > 8 ? moonPhase() : 0.5 * moonFill(progress.best));
+    this.moon.setStars(0);
     this.fullMoon = night > 8 && isFullMoon(moonPhase());
     this.nightTitleAt = -1;
     if (night === 0 || this.crossingOnly) this.beginCrossing(night);
@@ -712,8 +716,9 @@ export class TheaterSystem extends createSystem({
     progress.night = crossing.night + 1;
     this.saved.nights++;
     save(this.saved);
-    this.wall.setFireflies(progress.fireflies);
+    this.wall.setFireflies(progress.fireflies, this.animationTime);
     this.moon.setPhase(crossing.night > 8 ? moonPhase() : 0.5 * moonFill(progress.best));
+    this.moon.setStars(crossing.stars);
     this.crossingHomeAt = this.animationTime;
     this.enter(Phase.Home);
   }
@@ -1934,21 +1939,41 @@ export class TheaterSystem extends createSystem({
     const y = this.crossingDemoFromY + (targetY - this.crossingDemoFromY) * travel;
     this.crossingDemoX = x;
     this.crossingDemoY = y;
-    const flickFirst = first && this.driveCrossingFlick(first, this.demoHand, 0);
-    if (!flickFirst) {
+    const specialFirst = first && (this.driveCrossingFlick(first, this.demoHand, 0)
+      || this.driveCrossingCrow(first, this.demoHand) || this.driveCrossingBoulder(first, this.demoHand));
+    if (!specialFirst) {
       if (crossing.night === 0 && elapsed < 0.8) this.demoHand.valid = false;
       else this.setProjectedPlayHand(this.demoHand, this.playDemoPose,
-        first?.kind === 'crow' ? x + 0.11 * Math.sin(elapsed * 3) : x,
+        x,
         first?.kind === 'ledge' || first?.kind === 'highLedge' ? y + 0.055 * Math.max(0, Math.sin(elapsed * 2.4)) : y,
         first?.kind === 'rain' ? 1.45 : 1);
     }
-    const flickSecond = second && this.driveCrossingFlick(second, this.demoHand2, 1);
-    if (!flickSecond) {
+    const specialSecond = second && (this.driveCrossingFlick(second, this.demoHand2, 1)
+      || this.driveCrossingCrow(second, this.demoHand2) || this.driveCrossingBoulder(second, this.demoHand2));
+    if (!specialSecond) {
       if (second) this.setProjectedPlayHand(this.demoHand2, this.playDemoPose, second.x,
         second.kind === 'rain' ? -0.055 : second.kind === 'crow' ? 0.04 : -0.23,
         second.kind === 'rain' ? 1.45 : 1);
       else this.demoHand2.valid = false;
     }
+  }
+
+  private driveCrossingCrow(hazard: LevelHazard, hand: LiveHand): boolean {
+    if (hazard.kind !== 'crow') return false;
+    if (this.crossing?.hazards.crowPose(hazard.slot, this.crossingDemoCrowPose)) {
+      this.setProjectedPlayHand(hand, this.playDemoPose,
+        this.crossingDemoCrowPose[0], this.crossingDemoCrowPose[1], 1);
+    } else hand.valid = false;
+    return true;
+  }
+
+  private driveCrossingBoulder(hazard: LevelHazard, hand: LiveHand): boolean {
+    if (hazard.kind !== 'boulder') return false;
+    if (this.crossing?.hazards.boulderPose(hazard.slot, this.crossingDemoBoulderPose)) {
+      this.setProjectedPlayHand(hand, this.playDemoPose,
+        Math.min(0.40, this.crossingDemoBoulderPose[0] - 0.10), -0.16, 1);
+    } else hand.valid = false;
+    return true;
   }
 
   private driveCrossingFlick(hazard: LevelHazard, hand: LiveHand, side: number): boolean {
@@ -1967,11 +1992,12 @@ export class TheaterSystem extends createSystem({
     }
     if (this.crossingDemoFlickSlot[side] >= 0) {
       const since = this.animationTime - this.crossingDemoFlickAt[side];
-      if (since < 0.28) {
-        const progress = Math.min(1, since / 0.08);
+      const high = hazard.kind === 'highLedge';
+      if (since < (high ? 0.36 : 0.28)) {
+        const progress = Math.min(1, since / (high ? 0.16 : 0.08));
         this.setProjectedPlayHand(hand, this.playDemoPose,
-          hazard.x - hazard.width * 0.5 - 0.08 + 0.10 * progress,
-          -0.20 + (hazard.kind === 'highLedge' ? 0.20 : 0.12) * progress, 2.5);
+          hazard.x - hazard.width * 0.5 - 0.08 + (high ? 0.14 : 0.10) * progress,
+          -0.20 + (high ? 0.16 : 0.12) * progress, 2.5);
         return true;
       }
       this.crossingDemoFlickSlot[side] = -1;
@@ -2299,7 +2325,6 @@ export class TheaterSystem extends createSystem({
       }
       case Phase.Home:
         p.caption(`${this.crossing?.home ?? 0} Kindlings came home.`, 1, 0.2);
-        p.caption('★'.repeat(this.crossing?.stars ?? 0), 1, -0.2);
         if (this.phaseTime >= 8) this.enter(Phase.Finale);
         break;
     }
@@ -2421,7 +2446,11 @@ export class TheaterSystem extends createSystem({
     // A newcomer shimmers the first time it appears.
     if (this.baked.indexOf(target) === this.fresh) {
       this.painter.sparks(0, TARGET_CY, (time * 0.35) % 1, 0.5);
-      if (this.phaseTime < 3.5) this.painter.caption('Someone new is waiting.', 1 - ease((this.phaseTime - 2.5) / 1), 0.27);
+      if (this.phaseTime < 3.5) this.painter.caption(
+        this.crossingCaption === 'Shadows sleep without light. Wake them.'
+          && this.animationTime - this.crossingCaptionAt < 4.5
+          ? this.crossingCaption : 'Someone new is waiting.',
+        1 - ease((this.phaseTime - 2.5) / 1), 0.27);
     }
 
     // Stuck? Fade in the ghost hand that shows the shape.

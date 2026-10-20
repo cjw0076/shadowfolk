@@ -95,12 +95,16 @@ export function generateScreens(
   }
 
   const newest = arc.troubles[0] ?? 'gap';
-  const secondary = arc.troubles.length > 1 ? arc.troubles.slice(1) : [newest];
+  const secondaryPool = arc.troubles.length > 1 ? arc.troubles.slice(1) : [newest];
   const pickRandom = seededRandom(levelSeed(seed, safeNight, 17));
   return arc.kindlings.map((kindlings, index) => {
+    const secondary = index === 0 ? newest
+      : safeNight >= 7 && index === 1 ? 'boulder'
+      : safeNight >= 7 ? ['highLedge', 'gap', 'river'][Math.floor(pickRandom() * 3)] as HazardKind
+        : secondaryPool[Math.floor(pickRandom() * secondaryPool.length)];
     const kinds: HazardKind[] = index === 0
       ? [newest]
-      : [newest, secondary[Math.floor(pickRandom() * secondary.length)]];
+      : [newest, secondary];
     return makeScreen(index, kinds, kindlings, seed, safeNight);
   });
 }

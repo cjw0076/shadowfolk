@@ -23,6 +23,8 @@ export class Moon {
   private canvas = document.createElement('canvas');
   private texture: CanvasTexture;
   private material: MeshBasicMaterial;
+  private phase = 0;
+  private stars = 0;
 
   constructor(diameter = 0.075) {
     this.canvas.width = this.canvas.height = 128;
@@ -36,6 +38,7 @@ export class Moon {
 
   /** Paint the phase once (each night): lit part as light through the paper, the rest a faint scorched ring. */
   setPhase(p: number): void {
+    this.phase = p;
     const c = this.canvas, g = c.getContext('2d', { willReadFrequently: true })!, N = c.width, R = N * 0.31, cx = N / 2, cy = N / 2;
     g.clearRect(0, 0, N, N);
     const glow = g.createRadialGradient(cx, cy, R * 0.6, cx, cy, N / 2);
@@ -58,11 +61,37 @@ export class Moon {
         const z = Math.sqrt(1 - d2);
         const lit = Math.max(0, Math.min(1, (u * sx + z * sz) * 6 + 0.5));
         // Lit: light through the hole. Dark: the paper is still there, so only a faint ash tint.
-        img.data[k] = 255; img.data[k + 1] = 244 - 20 * (1 - lit); img.data[k + 2] = 214 - 60 * (1 - lit);
-        img.data[k + 3] = 255 * (0.12 + 0.86 * lit);
+        img.data[k] = 120 + 135 * lit;
+        img.data[k + 1] = 88 + 156 * lit;
+        img.data[k + 2] = 56 + 158 * lit;
+        img.data[k + 3] = 255 * (0.28 + 0.7 * lit);
       }
     }
     g.putImageData(img, 0, 0);
+    g.strokeStyle = 'rgba(72,31,14,0.8)';
+    g.lineWidth = 5;
+    g.beginPath(); g.arc(cx, cy, R + 2, 0, Math.PI * 2); g.stroke();
+    g.strokeStyle = 'rgba(219,147,68,0.8)';
+    g.lineWidth = 1.5;
+    g.beginPath(); g.arc(cx, cy, R - 1, 0, Math.PI * 2); g.stroke();
+    for (let star = 0; star < this.stars; star++) {
+      const centreX = 43 + star * 21;
+      g.fillStyle = '#6e482b';
+      g.beginPath();
+      for (let point = 0; point < 10; point++) {
+        const angle = -Math.PI / 2 + point * Math.PI / 5;
+        const radius = point % 2 === 0 ? 8 : 3.4;
+        const x = centreX + Math.cos(angle) * radius;
+        const y = 114 + Math.sin(angle) * radius;
+        if (point === 0) g.moveTo(x, y); else g.lineTo(x, y);
+      }
+      g.closePath(); g.fill();
+    }
     this.texture.needsUpdate = true;
+  }
+
+  setStars(count: number): void {
+    this.stars = Math.max(0, Math.min(3, Math.floor(count)));
+    this.setPhase(this.phase);
   }
 }
