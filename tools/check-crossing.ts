@@ -406,7 +406,8 @@ async function runP2Suite(
   const crowTrials: HazardTrial[] = [];
   let invalidLayouts = 0;
 
-  for (let night = 1; night <= NIGHT_COUNT; night++) {
+  const nightList = (process.env.CROSSING_NIGHTS ?? '').split(',').map(Number).filter((night) => night >= 1);
+  for (const night of nightList.length ? nightList : Array.from({ length: NIGHT_COUNT }, (_, index) => index + 1)) {
     const solverTrials: CrossingTrial[] = [];
     const noHandTrials: CrossingTrial[] = [];
     const layoutChecks: Record<string, unknown>[] = [];

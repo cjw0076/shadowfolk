@@ -25,9 +25,15 @@ const OLD_FRIENDS = ['peacock', 'rabbit', 'snail', 'dog', 'duck', 'fish', 'eleph
 export function arcNight(number: number, seed = 1): ArcNight {
   if (number <= 8) return NIGHTS[Math.max(0, Math.floor(number))];
   const mixed = (Math.imul(seed | 0, 1664525) + 1013904223) >>> 0;
-  const start = mixed % NIGHTS[8].troubles.length;
-  const pool = NIGHTS[8].troubles;
-  const troubles: ArcTrouble[] = [pool[start], pool[(start + 3) % pool.length], pool[(start + 6) % pool.length]];
+  // Daily nights: three different troubles from the whole pool, in a date-seeded order.
+  const pool = [...NIGHTS[8].troubles];
+  let state = mixed || 1;
+  for (let index = pool.length - 1; index > 0; index--) {
+    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+    const swap = state % (index + 1);
+    [pool[index], pool[swap]] = [pool[swap], pool[index]];
+  }
+  const troubles: ArcTrouble[] = pool.slice(0, 3);
   return { number, moon: 'Lantern Night', wakes: [OLD_FRIENDS[(mixed >>> 8) % OLD_FRIENDS.length]], troubles, kindlings: [6, 7, 8] };
 }
 
