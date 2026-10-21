@@ -6,6 +6,7 @@ export interface Kindling {
   x: number; y: number; vx: number; vy: number; heading: number;
   state: FolkState; fallStartY: number; age: number; homeAge: number;
   pushCooldown: number; tint: number; scale: number; isWick: boolean;
+  carried: boolean;
 }
 
 const MAX_FOLK = 48;
@@ -15,7 +16,7 @@ const STEP = 1 / 120;
 export class FolkWorld {
   readonly agents: Kindling[] = Array.from({ length: MAX_FOLK }, () => ({
     x: 0, y: 0, vx: 0, vy: 0, heading: 1, state: 'inactive', fallStartY: 0, age: 0, homeAge: 0, pushCooldown: 0,
-    tint: 0xffe0a0, scale: 1, isWick: false,
+    tint: 0xffe0a0, scale: 1, isWick: false, carried: false,
   }));
   count = 0;
   homeCount = 0;
@@ -60,6 +61,7 @@ export class FolkWorld {
     agent.x = x; agent.y = y; agent.vx = 0; agent.vy = 0;
     agent.heading = heading < 0 ? -1 : 1;
     agent.state = 'falling'; agent.fallStartY = y; agent.age = 0; agent.homeAge = 0; agent.pushCooldown = 0;
+    agent.carried = false;
     agent.isWick = this.count === 1;
     agent.tint = agent.isWick ? 0xfff5d2 : 0xffe0a0;
     agent.scale = agent.isWick ? 1.2 : 1;
@@ -86,6 +88,7 @@ export class FolkWorld {
       const agent = this.agents[index];
       if (agent.state === 'home') { agent.homeAge += STEP; continue; }
       if (agent.state === 'inactive' || agent.state === 'ash') continue;
+      if (agent.carried) continue;
       agent.age += STEP;
       agent.pushCooldown = Math.max(0, agent.pushCooldown - STEP);
       if (agent.x >= this.doorX - this.doorW * 0.5 && agent.x <= this.doorX + this.doorW * 0.5

@@ -11,6 +11,8 @@ export class InkField {
   readonly vx: Float32Array;
   readonly vy: Float32Array;
   readonly staticSolid: Uint8Array;
+  readonly summonUntil: Float32Array;
+  summonTime = 0;
   private readonly palm: Mask;
   private readonly palmX = new Float32Array(PALM.length);
   private readonly palmY = new Float32Array(PALM.length);
@@ -29,6 +31,7 @@ export class InkField {
     this.vx = new Float32Array(length);
     this.vy = new Float32Array(length);
     this.staticSolid = new Uint8Array(length);
+    this.summonUntil = new Float32Array(length);
     this.palm = new Mask(this.w, this.h, this.x0, this.y0, cell);
   }
 
@@ -46,7 +49,21 @@ export class InkField {
     this.velocityY[side].fill(0);
   }
 
-  clearStatic(): void { this.staticSolid.fill(0); }
+  clearStatic(): void { this.staticSolid.fill(0); this.summonUntil.fill(0); }
+
+  setSummonRect(left: number, bottom: number, right: number, top: number, duration: number): void {
+    const firstX = Math.max(0, Math.floor((left - this.x0) / this.cell));
+    const lastX = Math.min(this.w - 1, Math.ceil((right - this.x0) / this.cell) - 1);
+    const firstY = Math.max(0, Math.floor((bottom - this.y0) / this.cell));
+    const lastY = Math.min(this.h - 1, Math.ceil((top - this.y0) / this.cell) - 1);
+    const until = this.summonTime + duration;
+    for (let row = firstY; row <= lastY; row++) {
+      for (let column = firstX; column <= lastX; column++) {
+        const index = row * this.w + column;
+        this.summonUntil[index] = Math.max(this.summonUntil[index], until);
+      }
+    }
+  }
 
   setStaticRect(left: number, bottom: number, right: number, top: number): void {
     const firstX = Math.max(0, Math.floor((left - this.x0) / this.cell));
@@ -66,7 +83,8 @@ export class InkField {
 
   sample(x: number, y: number): number {
     const index = this.index(x, y);
-    return index < 0 ? 0 : this.staticSolid[index] ? 1 : this.solid[index] ? 1 : this.soft[index] ? 2 : 0;
+    return index < 0 ? 0 : this.staticSolid[index] || this.summonUntil[index] > this.summonTime ? 1
+      : this.solid[index] ? 1 : this.soft[index] ? 2 : 0;
   }
 
   addHand(flat: FlatHand, scale: number, dt: number, side: number): void {

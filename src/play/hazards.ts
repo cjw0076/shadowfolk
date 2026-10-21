@@ -76,6 +76,8 @@ export interface HazardEvent {
 
 interface RuntimeHazard extends HazardLayout {
   clock: number;
+  suppressedUntil: number;
+  removed: boolean;
   random: number;
   casualties: number;
   hinted: boolean;
@@ -261,6 +263,8 @@ function makeRuntime(layout: HazardLayout, seed: number): RuntimeHazard {
   const hazard: RuntimeHazard = {
     ...layout,
     clock: 0,
+    suppressedUntil: 0,
+    removed: false,
     random,
     casualties: 0,
     hinted: false,
@@ -763,7 +767,7 @@ function disposeVisual(visual: HazardVisual): void {
 }
 
 function isActive(agent: Kindling): boolean {
-  return agent.state === 'walking' || agent.state === 'falling';
+  return !agent.carried && (agent.state === 'walking' || agent.state === 'falling');
 }
 
 function hasDynamicSolid(field: InkField, x: number, y: number): boolean {
@@ -928,6 +932,83 @@ export class HazardWorld {
     return true;
   }
 
+  repelCrow(x: number, radius: number, seconds: number): boolean {
+    let repelled = false;
+    for (const hazard of this.hazards) {
+      if (!hazard || hazard.kind !== 'crow' || Math.abs(hazard.crowX - x) > radius) continue;
+      hazard.crowMode = 2;
+      hazard.crowTimer = Math.max(hazard.crowTimer, seconds);
+      hazard.crowSwatted = true;
+      hazard.crowSwatElapsed = 0;
+      hazard.crowSwatX = hazard.crowX;
+      hazard.crowSwatY = hazard.crowY;
+      this.stats.crowSwats++;
+      this.onEvent?.({ kind: 'crow-swat', hazard: 'crow', x: hazard.crowX, y: hazard.crowY });
+      repelled = true;
+    }
+    return repelled;
+  }
+
+  suspendRain(x: number, radius: number, seconds: number): boolean {
+    let found = false;
+    for (const hazard of this.hazards) {
+      if (!hazard || hazard.kind !== 'rain' || Math.abs(hazard.x - x) > radius) continue;
+      hazard.suppressedUntil = Math.max(hazard.suppressedUntil, hazard.clock + seconds);
+      hazard.rainActive.fill(0);
+      found = true;
+    }
+    return found;
+  }
+
+  disableThorns(x: number, radius: number): boolean {
+    let found = false;
+    for (const hazard of this.hazards) {
+      if (!hazard || hazard.kind !== 'thorns' || hazard.removed || Math.abs(hazard.x - x) > radius) continue;
+      hazard.removed = true;
+      const left = hazard.x - hazard.width * 0.5;
+      const right = hazard.x + hazard.width * 0.5;
+      for (let row = 0; row < this.field.h; row++) {
+        const y = this.field.y0 + (row + 0.5) * this.field.cell;
+        if (y < hazard.floorY || y > hazard.floorY + 0.045) continue;
+        for (let column = 0; column < this.field.w; column++) {
+          const px = this.field.x0 + (column + 0.5) * this.field.cell;
+          if (px >= left && px <= right) this.field.staticSolid[row * this.field.w + column] = 0;
+        }
+      }
+      const visual = this.visuals[hazard.slot];
+      if (visual) visual.root.visible = false;
+      found = true;
+    }
+    return found;
+  }
+
+  cancelGust(x: number, radius: number, seconds: number): boolean {
+    let found = false;
+    for (const hazard of this.hazards) {
+      if (!hazard || hazard.kind !== 'gust' || Math.abs(hazard.x - x) > radius) continue;
+      hazard.suppressedUntil = Math.max(hazard.suppressedUntil, hazard.clock + seconds);
+      found = true;
+    }
+    return found;
+  }
+
+  shieldGust(x: number, radius: number, seconds: number): boolean {
+    return this.cancelGust(x, radius, seconds);
+  }
+
+  shatterBoulder(x: number, radius: number): boolean {
+    let found = false;
+    for (const hazard of this.hazards) {
+      if (!hazard || hazard.kind !== 'boulder' || !hazard.boulderActive || Math.abs(hazard.boulderX - x) > radius) continue;
+      hazard.boulderActive = false;
+      hazard.boulderNext = 8;
+      this.stats.bouldersCrumbled++;
+      this.onEvent?.({ kind: 'boulder-crumble', hazard: 'boulder', x: hazard.boulderX, y: hazard.floorY + hazard.radius });
+      found = true;
+    }
+    return found;
+  }
+
   dispose(): void {
     this.clearVisuals();
     this.hazards[0] = this.hazards[1] = null;
@@ -1061,6 +1142,7 @@ export class HazardWorld {
   }
 
   private updateRain(hazard: RuntimeHazard, dt: number): void {
+    if (hazard.clock < hazard.suppressedUntil) return;
     hazard.rainAccumulator += dt * 30;
     while (hazard.rainAccumulator >= 1) {
       hazard.rainAccumulator -= 1;
@@ -1114,6 +1196,7 @@ export class HazardWorld {
   }
 
   private updateThorns(hazard: RuntimeHazard): void {
+    if (hazard.removed) return;
     const left = hazard.x - hazard.width * 0.5 - STEP_RADIUS;
     const right = hazard.x + hazard.width * 0.5 + STEP_RADIUS;
     for (let index = 0; index < this.folk.count; index++) {
@@ -1129,6 +1212,7 @@ export class HazardWorld {
   }
 
   private updateGust(hazard: RuntimeHazard, dt: number): void {
+    if (hazard.clock < hazard.suppressedUntil) return;
     const phase = hazard.clock % 5;
     if (phase >= 2) return;
     const left = hazard.x - hazard.width * 0.5;
@@ -1279,6 +1363,13 @@ export class HazardWorld {
   }
 
   private updateRainVisual(hazard: RuntimeHazard, visual: HazardVisual, dt: number): void {
+    if (hazard.clock < hazard.suppressedUntil) {
+      visual.root.position.y = Math.min(0.18, (hazard.suppressedUntil - hazard.clock) * 0.08);
+      if (visual.rainStreaks) visual.rainStreaks.visible = false;
+      return;
+    }
+    visual.root.position.y = 0;
+    if (visual.rainStreaks) visual.rainStreaks.visible = true;
     const streaks = visual.rainStreaks!;
     const streakX = visual.rainStreakX!;
     const progress = visual.rainStreakProgress!;

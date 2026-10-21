@@ -324,6 +324,10 @@ export class TheaterAudio {
     else if (kind === 'ash') this.burst(730, 1.4, 0, 0.22, 0.08);
     else if (kind === 'home') this.tone(660, 990, 0, 0.32, 0.055);
     else if (kind === 'hiss') this.burst(2200, 2.8, 0, 0.45, 0.12);
+    else if (kind === 'summon') {
+      this.burst(1450, 2.2, 0, 0.34, 0.095);
+      this.tone(290, 720, 0.05, 0.38, 0.042, 'triangle');
+    }
     else if (kind === 'caw') {
       this.burst(1250, 1.6, 0, 0.21, 0.12);
       this.tone(420, 210, 0, 0.22, 0.08, 'sawtooth');

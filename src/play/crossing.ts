@@ -4,6 +4,7 @@ import { HazardWorld } from './hazards.js';
 import { InkField } from './ink-field.js';
 import { applyLevel, generateScreens, type HazardKind, type ScreenLevel } from './levels.js';
 import { PlayView } from './view.js';
+import { SummonWorld } from './summons.js';
 
 export interface CrossingEvent {
   kind: 'home' | 'ash' | 'screen' | 'finished' | 'warning';
@@ -15,6 +16,7 @@ export interface CrossingEvent {
 
 export class CrossingRuntime {
   readonly hazards: HazardWorld;
+  readonly summons: SummonWorld;
   readonly levels: ScreenLevel[] = [];
   night = 1;
   screen = 0;
@@ -36,6 +38,8 @@ export class CrossingRuntime {
   constructor(readonly field: InkField, readonly folk: FolkWorld, readonly view: PlayView) {
     this.hazards = new HazardWorld(field, folk);
     this.view.root.add(this.hazards.view);
+    this.summons = new SummonWorld(field, folk, this.hazards);
+    this.view.root.add(this.summons.root);
     this.folk.onEvent = (kind, agent) => {
       if (kind === 'home') { this.home++; this.onEvent?.({ kind: 'home', agent, screen: this.screen, home: this.home, total: this.total }); }
       else if (kind === 'ash') { this.ash++; this.onEvent?.({ kind: 'ash', agent, screen: this.screen, home: this.home, total: this.total }); }
@@ -53,6 +57,7 @@ export class CrossingRuntime {
     this.stars = 0;
     this.finished = this.wiping = this.warned = false;
     this.wash = 0;
+    this.summons.reset();
     this.startScreen();
   }
 
@@ -75,6 +80,7 @@ export class CrossingRuntime {
       }
     }
     const hazardStarted = this.onHazardTiming ? performance.now() : 0;
+    this.summons.update(dt);
     this.hazards.update(dt);
     if (this.onHazardTiming) this.onHazardTiming(performance.now() - hazardStarted);
     this.folk.update(dt);
@@ -92,6 +98,7 @@ export class CrossingRuntime {
     this.folk.reset();
     this.folk.configure({ waveCount: level.kindlings });
     this.hazards.start(level);
+    this.summons.start(level);
     this.view.setLevel(level);
     this.onEvent?.({ kind: 'screen', screen: this.screen, home: this.home, total: this.total });
   }

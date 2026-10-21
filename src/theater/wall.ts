@@ -55,6 +55,7 @@ export class WallLayer {
   private x0 = 0; private y1 = 0; private wM = 1; private hM = 1;
   private cx = 0; private cy = 0;
   private residents: Resident[] = [];
+  private cooldownUntil = new Map<string, number>();
   private slots: [number, number][] = [];
   private leaper: Leaper | null = null;
   private start: [number, number] = [0, 0];
@@ -300,6 +301,8 @@ export class WallLayer {
 
   has(id: string): boolean { return this.residents.some((r) => r.id === id); }
 
+  setSummonCooldown(id: string, until: number): void { this.cooldownUntil.set(id, until); }
+
   /** A freshly woken creature steps off the paper and finds its place on the wall. */
   leap(id: string, st: Stencil, time: number): boolean {
     if (!this.fit) return false;
@@ -355,6 +358,10 @@ export class WallLayer {
       if (leaper?.r === r) { sprite.group.visible = false; continue; }
       const hop = this.celebrate * Math.abs(Math.sin(time * 4 + r.seed * 3)) * 0.05;
       this.placeSprite(sprite, r.x, r.y + hop, this.scale, 0, time, r.seed);
+      if (time < (this.cooldownUntil.get(r.id) ?? 0)) {
+        sprite.eyesOpen.material.opacity *= 0.2;
+        sprite.eyesBlink.material.opacity *= 0.2;
+      }
     }
     if (leaper) {
       const k = (time - leaper.t0) / LEAP_TIME;
