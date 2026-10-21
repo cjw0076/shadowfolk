@@ -27,6 +27,7 @@ import { SCREEN_H, SCREEN_W, SHADOW_PX_PER_METRE, ScreenPainter, Stencil, Stenci
 import { RigAnchor } from './anchor.js';
 import { LANTERN_ON_TABLE, Surface, TableFit, WallFit, fitPinWall, fitTable, fitWall } from './room.js';
 import { GhostHand, Lantern, PaperScreen, RoomDim, buildLantern, buildRoomDim, buildScreen } from './stage.js';
+import { SkinHand } from './skin-hand.js';
 import { captureControl } from '../capture.js';
 import { Moon, isFullMoon, moonPhase } from './moon.js';
 import { PreviewRoom } from './preview-room.js';
@@ -119,6 +120,10 @@ function validInvented(v: unknown): v is Invented {
 interface LiveHand {
   joints: Float32Array;
   radii: Float32Array;
+  /** Demo play hands are flattened onto one depth for an exact shadow; this restores each joint's
+   * depth along its own light ray (metres, same ray, same shadow), only for drawing the stand-in. */
+  relief: Float32Array;
+  reliefOn: boolean;
   flat: FlatHand;
   valid: boolean;
   lastSeen: number;
@@ -195,8 +200,8 @@ export class TheaterSystem extends createSystem({
   private screen!: PaperScreen;
   private ghost!: GhostHand;
   private ghost2!: GhostHand; // second hint hand for two-hand creatures
-  private puppeteer!: GhostHand; // visible demo hand in the browser preview
-  private puppeteer2!: GhostHand;
+  private puppeteer!: SkinHand; // visible demo hand in the browser preview
+  private puppeteer2!: SkinHand;
   private baked!: BakedTarget[];
   private stencils!: Stencil[];
 
@@ -389,6 +394,7 @@ export class TheaterSystem extends createSystem({
   private allHands: LiveHand[] = [];
   private mirrored: HandPose[] = [];
   private demoHand!: LiveHand;
+  private reliefJoints = [new Float32Array(JOINT_COUNT * 3), new Float32Array(JOINT_COUNT * 3)];
   private demoHand2!: LiveHand;
   private live = new Mask(170, 120, -0.68, -0.48, 0.008);
   private matcher = new Matcher();
@@ -436,8 +442,8 @@ export class TheaterSystem extends createSystem({
     this.screen = buildScreen(this.painter);
     this.ghost = new GhostHand();
     this.ghost2 = new GhostHand('GhostHand2');
-    this.puppeteer = new GhostHand('DemoHand', '#c99877', true);
-    this.puppeteer2 = new GhostHand('DemoHand2', '#c99877', true);
+    this.puppeteer = new SkinHand('DemoHand', 'left');
+    this.puppeteer2 = new SkinHand('DemoHand2', 'right');
     for (const o of [this.lantern.root, this.screen.root, this.ghost.root, this.ghost2.root,
       this.puppeteer.root, this.puppeteer2.root, this.wall.root, this.preview.root, this.dim.mesh, this.glowLight]) {
       this.world.createTransformEntity(o);
@@ -449,6 +455,7 @@ export class TheaterSystem extends createSystem({
     for (const v of this.saved.invented ?? []) this.inventStencils.set(v.id, this.inventedStencil(v));
     const mk = (): LiveHand => ({
       joints: new Float32Array(JOINT_COUNT * 3), radii: new Float32Array(JOINT_COUNT),
+      relief: new Float32Array(JOINT_COUNT), reliefOn: false,
       flat: new FlatHand(), valid: false, lastSeen: -1,
     });
     this.hands = [mk(), mk()];
@@ -2007,15 +2014,31 @@ export class TheaterSystem extends createSystem({
     this.demoHand2.valid = false;
   }
 
+  /** Joints for drawing the stand-in hand: a flattened demo hand regains its depth along each light ray. */
+  private standInJoints(hand: LiveHand, slot: number): Float32Array {
+    if (!hand.reliefOn) return hand.joints;
+    const out = this.reliefJoints[slot], light = this.lanternPos, frame = this.frame;
+    for (let joint = 0; joint < JOINT_COUNT; joint++) {
+      const offset = joint * 3;
+      const dx = hand.joints[offset] - light.x, dy = hand.joints[offset + 1] - light.y, dz = hand.joints[offset + 2] - light.z;
+      const depth = -(dx * frame.nx + dy * frame.ny + dz * frame.nz);
+      const k = depth > 1e-3 ? Math.max(0.5, (depth + hand.relief[joint]) / depth) : 1;
+      out[offset] = light.x + dx * k; out[offset + 1] = light.y + dy * k; out[offset + 2] = light.z + dz * k;
+    }
+    return out;
+  }
+
   private setProjectedPlayHand(hand: LiveHand, pose: HandPose, x: number, y: number, scale = 1): void {
     const light = this.lanternPos, frame = this.frame;
     const magnification = STAGE.lightToScreen / STAGE.lightToHand;
     const depth = STAGE.lightToHand / scale;
-    let meanX = 0, meanY = 0;
+    let meanX = 0, meanY = 0, meanZ = 0;
     for (let joint = 0; joint < JOINT_COUNT; joint++) {
-      meanX += pose.mats[joint * 16 + 12]; meanY += pose.mats[joint * 16 + 13];
+      meanX += pose.mats[joint * 16 + 12]; meanY += pose.mats[joint * 16 + 13]; meanZ += pose.mats[joint * 16 + 14];
     }
-    meanX /= JOINT_COUNT; meanY /= JOINT_COUNT;
+    meanX /= JOINT_COUNT; meanY /= JOINT_COUNT; meanZ /= JOINT_COUNT;
+    for (let joint = 0; joint < JOINT_COUNT; joint++) hand.relief[joint] = pose.mats[joint * 16 + 14] - meanZ;
+    hand.reliefOn = true;
     const lightX = (light.x - frame.ox) * frame.rx + (light.y - frame.oy) * frame.ry + (light.z - frame.oz) * frame.rz;
     const lightY = (light.x - frame.ox) * frame.ux + (light.y - frame.oy) * frame.uy + (light.z - frame.oz) * frame.uz;
     for (let joint = 0; joint < JOINT_COUNT; joint++) {
@@ -2282,6 +2305,7 @@ export class TheaterSystem extends createSystem({
     const target = this.baked[this.order[this.step % this.order.length] ?? 0];
     const stencil = this.stencils[this.order[this.step % this.order.length] ?? 0];
     const demoTarget = this.phase === Phase.Invent && this.inventTarget ? this.inventTarget : target;
+    this.demoHand.reliefOn = this.demoHand2.reliefOn = false;
     if (useDemo) {
       if (this.playSandbox) this.drivePlayDemo(dt);
       else if (this.phase === Phase.Prologue || this.phase === Phase.Crossing) this.driveCrossingDemo();
@@ -2302,9 +2326,9 @@ export class TheaterSystem extends createSystem({
     const shown = this.demoHand.valid ? this.demoHand : this.immersive && captureControl() && this.hands[0].valid ? this.hands[0] : null;
     const shown2 = this.demoHand2.valid ? this.demoHand2 : this.immersive && captureControl() && this.hands[1].valid ? this.hands[1] : null;
     this.puppeteer.opacity = shown ? 1 : 0;
-    if (shown) this.puppeteer.update(shown.joints, shown.radii);
+    if (shown) this.puppeteer.update(this.standInJoints(shown, 0), shown.radii);
     this.puppeteer2.opacity = shown2 ? 1 : 0;
-    if (shown2) this.puppeteer2.update(shown2.joints, shown2.radii);
+    if (shown2) this.puppeteer2.update(this.standInJoints(shown2, 1), shown2.radii);
 
     // Lantern: a dim ember until a hand reaches its light, then a warm flicker.
     this.lit += (this.litTarget - this.lit) * Math.min(1, dt * 3.5);

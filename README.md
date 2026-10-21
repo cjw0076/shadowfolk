@@ -67,6 +67,7 @@ npm run build
 
 ## Credits
 - Base hand poses are derived from the captured hand configurations in [IWER](https://github.com/meta-quest/immersive-web-emulation-runtime) (MIT, Meta Platforms).
+- The filming stand-in hand mesh (`public/gltf/hands/`) is the generic hand from [@webxr-input-profiles/assets](https://github.com/immersive-web/webxr-input-profiles) (MIT).
 - Textures were generated for this project; see `public/textures/CREDITS.md`.
 - Playfair Display is used under the SIL Open Font License (`public/fonts/OFL.txt`).
 - All sound is synthesised at runtime.
