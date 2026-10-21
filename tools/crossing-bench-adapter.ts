@@ -504,6 +504,14 @@ function validateLayout(value: unknown, night: number, seed: number): { valid: b
     if (level.index !== index) errors.push(`screen ${index}: index mismatch`);
     if (level.kindlings !== arc.kindlings[index]) errors.push(`screen ${index}: kindling count mismatch`);
     const newest = arc.troubles[0] ?? 'gap';
+    if (night >= 9) {
+      const [first, second = first, third = second] = arc.troubles;
+      const expected = [[first], [first, second], [second, third]][index] ?? [];
+      if (level.hazards.length !== expected.length || expected.some((kind, slot) => level.hazards[slot]?.kind !== kind)) {
+        errors.push(`screen ${index} must hold daily troubles ${expected.join('+')}`);
+      }
+      continue;
+    }
     if (index === 0) {
       if (level.hazards.length !== 1 || level.hazards[0]?.kind !== newest) errors.push('screen 0 must contain only the newest trouble');
     } else {

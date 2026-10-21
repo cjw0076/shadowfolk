@@ -97,6 +97,12 @@ export function generateScreens(
   const newest = arc.troubles[0] ?? 'gap';
   const secondaryPool = arc.troubles.length > 1 ? arc.troubles.slice(1) : [newest];
   const pickRandom = seededRandom(levelSeed(seed, safeNight, 17));
+  if (safeNight >= 9) {
+    // Daily nights: tonight's first trouble alone, then it pairs with the second, then the second with the third.
+    const [first, second = first, third = second] = arc.troubles as HazardKind[];
+    const plan: HazardKind[][] = [[first], [first, second], [second, third]];
+    return arc.kindlings.map((kindlings, index) => makeScreen(index, plan[index], kindlings, seed, safeNight));
+  }
   return arc.kindlings.map((kindlings, index) => {
     const secondary = index === 0 ? newest
       : safeNight >= 7 && index === 1 ? 'boulder'
