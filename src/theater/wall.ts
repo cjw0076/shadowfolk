@@ -330,15 +330,17 @@ export class WallLayer {
   update(time: number): void {
     if (!this.fit) return;
     for (let index = 0; index < this.fireflies.count; index++) {
-      const spreadX = ((Math.imul(index + 1, 1664525) >>> 0) / 4294967296 - 0.5) * this.wM * 0.85;
-      const spreadY = ((Math.imul(index + 7, 22695477) >>> 0) / 4294967296 - 0.5) * this.hM * 0.72;
+      const spreadX = ((index * 0.61803398875 + 0.13) % 1 - 0.5) * this.wM * 0.85;
+      const spreadY = ((index * 0.754877666 + 0.37) % 1 - 0.5) * this.hM * 0.72;
       const destinationX = spreadX + 0.022 * Math.sin(time * 0.9 + index * 1.71);
       const destinationY = spreadY + 0.018 * Math.sin(time * 1.2 + index * 2.31);
       const arrival = index >= this.fireflyArrivalFrom
         ? ease((time - this.fireflyArrivalAt - (index - this.fireflyArrivalFrom) * 0.035) / 1.7) : 1;
-      const x = this.start[0] - this.cx + (destinationX - (this.start[0] - this.cx)) * arrival;
+      const swirl = this.celebrate * 0.12;
+      const x = this.start[0] - this.cx + (destinationX - (this.start[0] - this.cx)) * arrival
+        + swirl * Math.cos(time * 2.1 + index * 2.4);
       const y = this.start[1] - this.cy + (destinationY - (this.start[1] - this.cy)) * arrival
-        + Math.sin(arrival * Math.PI) * 0.16;
+        + Math.sin(arrival * Math.PI) * 0.16 + swirl * Math.sin(time * 2.1 + index * 2.4);
       const size = 0.018 + 0.009 * (0.5 + 0.5 * Math.sin(time * 4 + index * 3.7));
       this.fireflyTransform.position.set(x, y, 0.003);
       this.fireflyTransform.scale.set(size, size, 1);
@@ -357,7 +359,8 @@ export class WallLayer {
       const sprite = this.sprites[index];
       if (leaper?.r === r) { sprite.group.visible = false; continue; }
       const hop = this.celebrate * Math.abs(Math.sin(time * 4 + r.seed * 3)) * 0.05;
-      this.placeSprite(sprite, r.x, r.y + hop, this.scale, 0, time, r.seed);
+      const walk = this.celebrate * Math.sin(time * 1.4 + r.seed * 3) * 0.08;
+      this.placeSprite(sprite, r.x + walk, r.y + hop, this.scale, 0, time, r.seed);
       if (time < (this.cooldownUntil.get(r.id) ?? 0)) {
         sprite.eyesOpen.material.opacity *= 0.2;
         sprite.eyesBlink.material.opacity *= 0.2;

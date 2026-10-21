@@ -29,6 +29,7 @@ export class Moon {
   private flash = 0;
   private flashMaterial: MeshBasicMaterial;
   private stars = 0;
+  private queen = false;
 
   constructor(diameter = 0.075) {
     this.canvas.width = this.canvas.height = 128;
@@ -51,6 +52,12 @@ export class Moon {
   /** Paint the phase once (each night): lit part as light through the paper, the rest a faint scorched ring. */
   setPhase(p: number): void {
     this.phase = this.targetPhase = Math.max(0, Math.min(1, p));
+    this.paintPhase();
+  }
+
+  setQueen(visible: boolean): void {
+    if (this.queen === visible) return;
+    this.queen = visible;
     this.paintPhase();
   }
 
@@ -109,6 +116,17 @@ export class Moon {
     g.strokeStyle = 'rgba(219,147,68,0.8)';
     g.lineWidth = 1.5;
     g.beginPath(); g.arc(cx, cy, R - 1, 0, Math.PI * 2); g.stroke();
+    if (this.queen) {
+      g.fillStyle = 'rgba(24,18,28,0.88)';
+      g.beginPath();
+      g.moveTo(cx, cy + 12);
+      g.bezierCurveTo(cx - 8, cy - 16, cx - 34, cy - 22, cx - 30, cy + 5);
+      g.bezierCurveTo(cx - 22, cy + 17, cx - 8, cy + 16, cx, cy + 9);
+      g.bezierCurveTo(cx + 8, cy + 16, cx + 22, cy + 17, cx + 30, cy + 5);
+      g.bezierCurveTo(cx + 34, cy - 22, cx + 8, cy - 16, cx, cy + 12);
+      g.fill();
+      g.beginPath(); g.ellipse(cx, cy + 8, 4, 13, 0, 0, Math.PI * 2); g.fill();
+    }
     for (let star = 0; star < this.stars; star++) {
       const centreX = 43 + star * 21;
       g.fillStyle = '#6e482b';

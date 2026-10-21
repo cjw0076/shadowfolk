@@ -40,6 +40,7 @@ export function arcNight(number: number, seed = 1): ArcNight {
 export interface ArcSave {
   night: number;
   prologue: boolean;
+  complete: boolean;
   best: number[];
   fireflies: number;
   nightsPlayed: number;
@@ -54,6 +55,7 @@ export function validArcSave(value: unknown, oldNights = 0): ArcSave {
   return {
     night: Number.isSafeInteger(source.night) && source.night! >= 0 ? source.night! : 1,
     prologue: typeof source.prologue === 'boolean' ? source.prologue : oldNights === 0,
+    complete: source.complete === true,
     best,
     fireflies: Number.isSafeInteger(source.fireflies) && source.fireflies! >= 0 ? source.fireflies! : 0,
     nightsPlayed: Number.isSafeInteger(source.nightsPlayed) && source.nightsPlayed! >= 0 ? source.nightsPlayed! : 0,

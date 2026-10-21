@@ -21,6 +21,7 @@ export class CrossingRuntime {
   night = 1;
   screen = 0;
   candle = 1;
+  candlePenaltySeconds = 0;
   home = 0;
   ash = 0;
   lost = 0;
@@ -54,6 +55,8 @@ export class CrossingRuntime {
     this.screen = 0;
     this.home = this.ash = this.lost = this.elapsed = 0;
     this.candle = 1;
+    this.candlePenaltySeconds = 0;
+    this.folk.walkSpeedFactor = 1;
     this.stars = 0;
     this.finished = this.wiping = this.warned = false;
     this.wash = 0;
@@ -73,7 +76,7 @@ export class CrossingRuntime {
     this.screenElapsed += dt;
     if (this.night !== 0) {
       this.elapsed += dt;
-      this.candle = Math.max(0, 1 - this.elapsed / 150);
+      this.candle = Math.max(0, 1 - (this.elapsed + this.candlePenaltySeconds) / 150);
       if (!this.warned && this.screenElapsed >= 40) {
         this.warned = true;
         this.onEvent?.({ kind: 'warning', screen: this.screen, home: this.home, total: this.total });

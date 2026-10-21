@@ -39,7 +39,9 @@ import { FolkWorld } from '../play/folk.js';
 import { PlayView } from '../play/view.js';
 import { arcNight, moonFill, validArcSave, type ArcSave } from '../play/arc.js';
 import { CrossingRuntime } from '../play/crossing.js';
+import { MothWorld, type MothAgent, type MothPoint, type MothStage } from '../play/moths.js';
 import { SummonTrigger } from '../play/summon-trigger.js';
+import { MothView } from './moths.js';
 import type { SummonKind } from '../play/summon-contract.js';
 import type { HazardKind, LevelHazard } from '../play/levels.js';
 
@@ -208,6 +210,21 @@ export class TheaterSystem extends createSystem({
   private frame: ScreenFrame = { ox: 0, oy: 0, oz: 0, rx: 1, ry: 0, rz: 0, ux: 0, uy: 1, uz: 0, nx: 0, ny: 0, nz: 1 };
   private lanternPos = new Vector3();
   private screenCentre = new Vector3();
+  private mothHead = new Vector3();
+  private mothMoon = new Vector3();
+  private mothStage: MothStage = { flame: this.lanternPos, paper: this.screenCentre,
+    right: new Vector3(), head: this.mothHead, moon: this.mothMoon };
+  private moths = new MothWorld();
+  private mothView = new MothView();
+  private mothRealHands: LiveHand[] = [];
+  private mothDemoHands: LiveHand[] = [];
+  private mothControllerPoints = [new Vector3(), new Vector3()];
+  private mothControllers: (MothPoint | null)[] = [null, null];
+  private mothSoundAt = 0;
+  private mothDemoReachAt = -Infinity;
+  private mothDemoReachUntil = -Infinity;
+  private mothDemoReachTarget = new Vector3();
+  private endingMoonLit = false;
   private fwd = new Vector3(0, 0, -1);
   private right = new Vector3(1, 0, 0);
   private anchor = new Vector3(); // where a hand naturally casts a centred shadow
@@ -283,6 +300,7 @@ export class TheaterSystem extends createSystem({
   private lessonIndex = 0;
   private lessonSummonFired = false;
   private playDemoPose!: HandPose;
+  private playDemoPose2!: HandPose;
   private playDemoCup!: HandPose;
   private playDemoAt = 0;
   private playDemoAct = -1;
@@ -463,6 +481,21 @@ export class TheaterSystem extends createSystem({
     this.demoHand = mk();
     this.demoHand2 = mk();
     this.allHands = [...this.hands, this.demoHand, this.demoHand2];
+    this.mothRealHands = this.hands;
+    this.mothDemoHands = [this.demoHand, this.demoHand2];
+    this.world.createTransformEntity(this.mothView.root);
+    this.painter.root.add(this.mothView.paperRoot);
+    this.moths.onEvent = (event) => {
+      if (event === 'gutter') {
+        if (this.crossing) this.crossing.candlePenaltySeconds += 5;
+        this.audio.play('hiss');
+      } else if (event === 'shoo') this.audio.play('moth-swat');
+      else if (event === 'peel') this.audio.play('moth-flutter');
+      else if (event === 'queen-moon') {
+        this.moon.setQueen(true);
+      }
+    };
+    this.cleanupFuncs.push(() => this.mothView.dispose());
     this.journeyHands = [this.hands[0], this.hands[1]];
     if (!this.idle && !this.playSandbox) this.journeyGestures = new GestureDetector();
     if (!this.playSandbox && (this.journeyDebug || this.journeyEnabled || this.journeyOnly || !this.classic) && typeof Worker !== 'undefined') {
@@ -499,6 +532,7 @@ export class TheaterSystem extends createSystem({
       this.painter.root.add(this.playView.root);
       this.playView.root.visible = this.playSandbox;
       this.playDemoPose = orient(basePoses.relaxed(), [-25, 0, 0]);
+      this.playDemoPose2 = mirror(this.playDemoPose);
       this.playDemoCup = shape(basePoses.relaxed(), { index: 0.65, middle: 0.65, ring: 0.65, pinky: 0.65 });
       if (!this.playSandbox) {
         this.crossing = new CrossingRuntime(this.playField, this.playFolk, this.playView);
@@ -549,6 +583,7 @@ export class TheaterSystem extends createSystem({
     this.ghostPose2 = basePoses.relaxed();
     this.wall.onSettle = () => this.audio.settle();
     this.wall.setFireflies(this.saved.v3?.fireflies ?? 0);
+    this.moon.setQueen(this.saved.v3?.complete === true);
     // Tonight's moon sits in the paper's top-left corner, under the shadows.
     this.moon.mesh.position.set(SCREEN_W / 2 - 0.095, SCREEN_H / 2 - 0.09, 0.0002);
     this.painter.root.add(this.moon.mesh);
@@ -720,6 +755,7 @@ export class TheaterSystem extends createSystem({
     this.lessonIndex = 0;
     this.fresh = this.order[0] ?? -1;
     this.moon.setPhase(night > 8 ? moonPhase() : 0.5 * moonFill(this.moonPreviewBest ?? progress.best));
+    this.moon.setQueen(progress.complete && night > 8);
     this.moon.setStars(0);
     this.fullMoon = night > 8 && isFullMoon(moonPhase());
     this.nightTitleAt = -1;
@@ -783,11 +819,15 @@ export class TheaterSystem extends createSystem({
     ? this.forcedNight : this.saved.v3?.night ?? 1): void {
     if (!this.crossing) return;
     const params = new URLSearchParams(location.search);
-    const hazards = this.crossingOnly ? (params.get('hazards') ?? '').split(',')
+    const hazards = this.crossingOnly && params.has('hazards') ? (params.get('hazards') ?? '').split(',')
       .filter((kind): kind is HazardKind => ['gap', 'ledge', 'highLedge', 'river', 'crow', 'rain', 'thorns', 'gust', 'boulder'].includes(kind)) : undefined;
     const count = Number(params.get('kindlings'));
     this.crossing.start(night, this.arcSeed(), hazards,
       this.crossingOnly && Number.isSafeInteger(count) && count > 0 ? Math.min(40, count) : undefined);
+    this.moths.start(night, this.arcSeed(), moonPhase());
+    this.mothDemoReachAt = this.mothDemoReachUntil = -Infinity;
+    this.endingMoonLit = false;
+    if (night === 8) this.moon.setQueen(false);
     this.playFolk?.configure({ spawnX: -0.44 });
     this.summonTrigger.reset();
     this.summonForms?.reset();
@@ -845,6 +885,7 @@ export class TheaterSystem extends createSystem({
     this.wall.setFireflies(progress.fireflies, this.animationTime);
     this.moon.setPhase(crossing.night > 8 ? moonPhase() : 0.5 * moonFill(this.moonPreviewBest ?? progress.best));
     this.moon.setStars(crossing.stars);
+    if (crossing.night === 8) this.moths.beginQueenVictory();
     this.crossingHomeAt = this.animationTime;
     this.enter(Phase.Home);
   }
@@ -1847,6 +1888,52 @@ export class TheaterSystem extends createSystem({
     }
   }
 
+  private updateMoths(dt: number, anyReal: boolean, useDemo: boolean): void {
+    const crossing = this.crossing;
+    const active = !!crossing && crossing.night >= 6
+      && (this.phase === Phase.Crossing || this.phase === Phase.Home || this.phase === Phase.Finale);
+    this.mothView.root.visible = this.mothView.paperRoot.visible = active;
+    if (!active) return;
+    this.camera.getWorldPosition(this.mothHead);
+    this.mothMoon.copy(this.screenCentre).addScaledVector(this.right, SCREEN_W / 2 - 0.095);
+    this.mothMoon.y += SCREEN_H / 2 - 0.09;
+    (this.mothStage.right as Vector3).copy(this.right);
+    this.mothControllers[0] = this.mothControllers[1] = null;
+    if (this.immersive) {
+      const frame = this.renderer.xr.getFrame?.() as XRFrame | undefined;
+      const reference = this.renderer.xr.getReferenceSpace?.();
+      if (frame && reference) {
+        const matrix = this.player.matrixWorld.elements;
+        for (const source of frame.session.inputSources) {
+          if (source.hand || source.handedness !== 'left' && source.handedness !== 'right') continue;
+          const space = source.gripSpace ?? source.targetRaySpace;
+          const pose = space ? frame.getPose(space, reference) : null;
+          if (!pose) continue;
+          const position = pose.transform.position;
+          const point = this.mothControllerPoints[source.handedness === 'left' ? 0 : 1];
+          point.set(matrix[0] * position.x + matrix[4] * position.y + matrix[8] * position.z + matrix[12],
+            matrix[1] * position.x + matrix[5] * position.y + matrix[9] * position.z + matrix[13],
+            matrix[2] * position.x + matrix[6] * position.y + matrix[10] * position.z + matrix[14]);
+          this.mothControllers[source.handedness === 'left' ? 0 : 1] = point;
+        }
+      }
+    }
+    this.moths.update(dt, this.mothStage, useDemo && !anyReal ? this.mothDemoHands : this.mothRealHands,
+      this.mothControllers);
+    this.mothView.update(this.moths, this.mothStage);
+    for (const agent of this.moths.agents) {
+      if (agent.phase === 'hidden' || agent.phase === 'paper' || agent.phase === 'moon') continue;
+      this.audio.placeMoth(agent);
+      if (this.animationTime >= this.mothSoundAt) {
+        this.audio.play('moth-flutter');
+        this.mothSoundAt = this.animationTime + (agent.queen ? 0.6 : 0.42);
+      }
+      break;
+    }
+    if (this.playFolk) this.playFolk.walkSpeedFactor = this.moths.gutterSeconds > 0 ? 0.5 : 1;
+    if (this.moths.isFestival) this.wall.cheer(0.35);
+  }
+
   /** Lay a hand-space pose out in the world around the anchor, facing the lantern. */
   private poseToWorld(p: HandPose, out: Float32Array, lift: number, shift: readonly number[] = ZERO3): void {
     let cx = 0, cy = 0, cz = 0;
@@ -2058,6 +2145,27 @@ export class TheaterSystem extends createSystem({
     hand.valid = true;
   }
 
+  private setDemoCupHand(hand: LiveHand): void {
+    const light = this.lanternPos, frame = this.frame, joints = hand.joints;
+    const bases = [1, 5, 10, 15, 20];
+    const lateral = [-0.065, -0.045, -0.015, 0.015, 0.045];
+    joints[0] = light.x - frame.nx * 0.08 - frame.ux * 0.07;
+    joints[1] = light.y - frame.ny * 0.08 - frame.uy * 0.07;
+    joints[2] = light.z - frame.nz * 0.08 - frame.uz * 0.07;
+    for (let finger = 0; finger < bases.length; finger++) {
+      const count = finger === 0 ? 4 : 5;
+      for (let segment = 0; segment < count; segment++) {
+        const index = (bases[finger] + segment) * 3;
+        const x = lateral[finger], y = -0.025 + segment * 0.026;
+        joints[index] = light.x - frame.nx * 0.08 + frame.rx * x + frame.ux * y;
+        joints[index + 1] = light.y - frame.ny * 0.08 + frame.ry * x + frame.uy * y;
+        joints[index + 2] = light.z - frame.nz * 0.08 + frame.rz * x + frame.uz * y;
+      }
+    }
+    hand.radii.fill(0.008);
+    hand.valid = true;
+  }
+
   private driveCrossingDemo(): void {
     const crossing = this.crossing;
     if (!crossing || crossing.finished) { this.demoHand.valid = this.demoHand2.valid = false; return; }
@@ -2149,10 +2257,48 @@ export class TheaterSystem extends createSystem({
     const specialSecond = second && (this.driveCrossingFlick(second, this.demoHand2, 1)
       || this.driveCrossingCrow(second, this.demoHand2, 1) || this.driveCrossingBoulder(second, this.demoHand2));
     if (!specialSecond) {
-      if (second) this.setProjectedPlayHand(this.demoHand2, this.playDemoPose, second.x,
+      if (second) this.setProjectedPlayHand(this.demoHand2, this.playDemoPose2, second.x,
         second.kind === 'rain' ? -0.055 : second.kind === 'crow' ? 0.04 : -0.23,
         second.kind === 'rain' ? 1.45 : 1);
       else this.demoHand2.valid = false;
+    }
+    if (!second && crossing.night >= 6 && elapsed > 5) {
+      let reachable: MothAgent | null = null;
+      for (const moth of this.moths.agents) {
+        if (moth.phase !== 'approach' && moth.phase !== 'orbit' && moth.phase !== 'dive'
+          && moth.phase !== 'queenDive') continue;
+        if (Math.hypot(moth.x - this.lanternPos.x, moth.y - this.lanternPos.y,
+          moth.z - this.lanternPos.z) > 0.35) continue;
+        reachable = moth;
+        break;
+      }
+      if (reachable && this.animationTime >= this.mothDemoReachUntil) {
+        this.mothDemoReachAt = this.animationTime;
+        this.mothDemoReachUntil = this.animationTime + 0.9;
+      }
+      if (this.animationTime < this.mothDemoReachUntil) {
+        if (reachable) this.mothDemoReachTarget.set(reachable.x, reachable.y, reachable.z);
+        if (!this.demoHand.valid && first)
+          this.setProjectedPlayHand(this.demoHand, this.playDemoPose, first.x, targetY);
+        this.setProjectedPlayHand(this.demoHand2, this.playDemoPose2, 0.75, 0.12);
+        const joints = this.demoHand2.joints;
+        const reach = Math.min(ease((this.animationTime - this.mothDemoReachAt) / 0.28),
+          1 - ease((this.animationTime - this.mothDemoReachUntil + 0.25) / 0.25));
+        const shiftX = (this.mothDemoReachTarget.x - joints[27]) * reach;
+        const shiftY = (this.mothDemoReachTarget.y - joints[28]) * reach;
+        const shiftZ = (this.mothDemoReachTarget.z - joints[29]) * reach;
+        for (let joint = 0; joint < joints.length; joint += 3) {
+          joints[joint] += shiftX;
+          joints[joint + 1] += shiftY;
+          joints[joint + 2] += shiftZ;
+        }
+      }
+    }
+    if (crossing.night === 8 && elapsed > 5) {
+      const queen = this.moths.agents[this.moths.agents.length - 1];
+      if (queen.phase === 'queenDive' && Math.hypot(queen.x - this.lanternPos.x,
+        queen.y - this.lanternPos.y, queen.z - this.lanternPos.z) < 0.4)
+        this.setDemoCupHand(this.demoHand2);
     }
   }
 
@@ -2207,7 +2353,7 @@ export class TheaterSystem extends createSystem({
     if (this.crossing?.hazards.crowPose(hazard.slot, this.crossingDemoCrowPose)) {
       if (!Number.isFinite(this.crossingDemoCrowAt[side])) this.crossingDemoCrowAt[side] = this.animationTime;
       const sweep = Math.max(0, Math.min(1, (this.animationTime - this.crossingDemoCrowAt[side]) / 0.18));
-      this.setProjectedPlayHand(hand, this.playDemoPose,
+      this.setProjectedPlayHand(hand, side === 1 ? this.playDemoPose2 : this.playDemoPose,
         this.crossingDemoCrowPose[0] - 0.10 + 0.22 * sweep, this.crossingDemoCrowPose[1], 1.65);
     } else {
       this.crossingDemoCrowAt[side] = -Infinity;
@@ -2219,7 +2365,7 @@ export class TheaterSystem extends createSystem({
   private driveCrossingBoulder(hazard: LevelHazard, hand: LiveHand): boolean {
     if (hazard.kind !== 'boulder') return false;
     if (this.crossing?.hazards.boulderPose(hazard.slot, this.crossingDemoBoulderPose)) {
-      this.setProjectedPlayHand(hand, this.playDemoPose,
+      this.setProjectedPlayHand(hand, hand === this.demoHand2 ? this.playDemoPose2 : this.playDemoPose,
         Math.min(0.40, this.crossingDemoBoulderPose[0] - 0.10), -0.16, 1);
     } else hand.valid = false;
     return true;
@@ -2244,7 +2390,7 @@ export class TheaterSystem extends createSystem({
       const high = hazard.kind === 'highLedge';
       if (since < (high ? 0.36 : 0.28)) {
         const progress = Math.min(1, since / (high ? 0.16 : 0.08));
-        this.setProjectedPlayHand(hand, this.playDemoPose,
+        this.setProjectedPlayHand(hand, side === 1 ? this.playDemoPose2 : this.playDemoPose,
           hazard.x - hazard.width * 0.5 - 0.08 + (high ? 0.14 : 0.10) * progress,
           -0.20 + (high ? 0.16 : 0.12) * progress, 2.5);
         return true;
@@ -2341,6 +2487,7 @@ export class TheaterSystem extends createSystem({
       else if (this.phase === Phase.Journey) this.driveJourneyDemo(dt);
       else this.driveDemo(demoTarget, this.animationTime);
     } else this.demoHand.valid = this.demoHand2.valid = false;
+    this.updateMoths(dt, anyReal, useDemo);
     // Filming in an emulator (`?capture` in XR): no passthrough shows the player's hands, so the wooden
     // stand-in follows the real tracked joints. On a headset, real hands are seen through passthrough.
     const shown = this.demoHand.valid ? this.demoHand : this.immersive && captureControl() && this.hands[0].valid ? this.hands[0] : null;
@@ -2357,7 +2504,8 @@ export class TheaterSystem extends createSystem({
     this.lantern.bodyMat.color.setRGB(glow, 0.81 * glow, 0.54 * glow);
     const candle = this.crossing && (this.phase === Phase.Prologue || this.phase === Phase.Crossing)
       ? this.crossing.candle : 1;
-    this.lantern.candle.scale.y = 0.35 + candle * 0.65;
+    const mothLight = this.moths.flameFactor;
+    this.lantern.candle.scale.y = (0.35 + candle * 0.65) * mothLight;
     this.lantern.candle.position.y = -0.039 + 0.021 * this.lantern.candle.scale.y;
     // A pinch near the lantern swells its halo: it can be picked up.
     this.lantern.halo.scale.setScalar((0.14 + 0.16 * this.lit) * (0.96 + 0.04 * flick) * (1 + 0.35 * this.carryNear + (this.carry ? 0.3 : 0)));
@@ -2371,17 +2519,17 @@ export class TheaterSystem extends createSystem({
     this.v3.set(0, 1, 0).applyQuaternion(this.q0);
     this.audio.place(this.v1, this.v2, this.v3, this.lanternPos, this.screenCentre);
     this.glowLight.position.copy(this.lanternPos);
-    this.glowLight.intensity = (0.12 + 0.95 * this.lit) * flick * (0.7 + 0.3 * candle);
-    this.wall.setLight(this.lit);
+    this.glowLight.intensity = (0.12 + 0.95 * this.lit) * flick * (0.7 + 0.3 * candle) * mothLight;
+    this.wall.setLight(this.lit * mothLight);
     // The room dims as the lantern blooms (passthrough only; the preview room is already dark).
     // House lights go down first, then the lantern blooms.
     const houseDown = this.immersive ? ease((this.animationTime - Math.max(0, this.sessionAt)) / 2.5) : 0;
     this.dim.update(this.camera.getWorldPosition(this.v0), this.lanternPos, (0.55 + 0.17 * this.lit) * houseDown);
-    const finaleDim = this.phase === Phase.Finale
+    const finaleDim = this.phase === Phase.Finale && this.crossing?.night !== 8
       ? ease((this.phaseTime - FINALE_TIME + 2.2) / 2.2) : this.phase === Phase.Invent ? 0.45 : 0;
     this.paperDim += (finaleDim - this.paperDim) * Math.min(1, dt * 2.5);
     const brightPaper = 0.32 + 0.68 * this.lit;
-    const paperTone = brightPaper + (0.32 + 0.68 * EMBER - brightPaper) * this.paperDim;
+    const paperTone = (brightPaper + (0.32 + 0.68 * EMBER - brightPaper) * this.paperDim) * mothLight;
     this.painter.setTone(paperTone);
 
     // Shadows: project every hand from the lantern onto the paper.
@@ -2594,7 +2742,9 @@ export class TheaterSystem extends createSystem({
         break;
       }
       case Phase.Home:
-        p.caption(`${this.crossing?.home ?? 0} Kindlings came home.`, 1, 0.2);
+        p.caption(this.crossing?.night === 8 && this.moths.queenOnMoon
+          ? 'Even moths only wanted the light.'
+          : `${this.crossing?.home ?? 0} Kindlings came home.`, 1, 0.2);
         if (this.phaseTime >= 8) this.enter(Phase.Finale);
         break;
     }
@@ -2874,6 +3024,12 @@ export class TheaterSystem extends createSystem({
 
   private finale(time: number): void {
     const t = this.phaseTime;
+    const ending = !this.classic && !this.journeyOnly && this.crossing?.night === 8;
+    const duration = ending ? 20 : FINALE_TIME;
+    if (ending && !this.endingMoonLit) {
+      this.moon.arrive(0.5);
+      this.endingMoonLit = true;
+    }
     const n = this.order.length;
     for (let k = 0; k < n; k++) {
       const st = this.stencils[this.order[k]];
@@ -2884,10 +3040,10 @@ export class TheaterSystem extends createSystem({
       if (t > 0.05 && this.finaleX[k] < 0 && x >= 0) this.audio.note(k + this.step);
       this.finaleX[k] = x;
     }
-    const a = Math.min(ease(t / 0.8), 1 - ease((t - FINALE_TIME + 1) / 1));
-    const eyePulse = ease((t - FINALE_TIME + 1.4) / 0.35) * (1 - ease((t - FINALE_TIME + 0.35) / 0.35));
+    const a = Math.min(ease(t / 0.8), 1 - ease((t - duration + 1) / 1));
+    const eyePulse = ease((t - duration + 1.4) / 0.35) * (1 - ease((t - duration + 0.35) / 0.35));
     this.wall.cheer(a, eyePulse);
-    this.painter.caption(this.classic || this.journeyOnly ? FINALE_CAPTION
+    this.painter.caption(ending ? 'The shadow-world is awake.' : this.classic || this.journeyOnly ? FINALE_CAPTION
       : `${this.crossing?.home ?? 0} Kindlings found the moon.`, a, 0.2);
     const next = this.classic || this.journeyOnly ? this.nextNewcomer() : -1;
     if (next >= 0 && t > FINALE_TIME * 0.45) {
@@ -2897,9 +3053,14 @@ export class TheaterSystem extends createSystem({
       this.painter.creature(st, -SCREEN_W / 2 - st.w * 0.5 + st.w * 0.45 * peek, -0.05, 0.6, 0.1, false, Math.sin(time * 3) > 0.9, 0.85 * peek);
       this.painter.caption('Someone new waits for the next night.', a * 0.8, -0.24);
     } else {
-      this.painter.caption(this.wall.active ? 'They will wait for you on the wall.' : 'Come back after dark for new shapes.', a * 0.8, -0.24);
+      this.painter.caption(ending ? 'Come back tomorrow night.'
+        : this.wall.active ? 'They will wait for you on the wall.' : 'Come back after dark for new shapes.', a * 0.8, -0.24);
     }
-    if (t >= FINALE_TIME) {
+    if (t >= duration) {
+      if (ending) {
+        this.saved.v3!.complete = true;
+        save(this.saved);
+      }
       this.wall.cheer(0);
       this.finaleX.fill(0);
       this.inventBorn = false;

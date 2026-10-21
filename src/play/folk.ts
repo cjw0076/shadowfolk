@@ -28,6 +28,8 @@ export class FolkWorld {
   spawnX = -0.44;
   spawnY = -0.185;
   waveCount = 0;
+  walkSpeedFactor = 1;
+  softWalkFactor = 0.5;
   onEvent?: (kind: 'walk' | 'ash' | 'home', agent: Kindling) => void;
   private clock = 0;
   private accumulator = 0;
@@ -145,7 +147,7 @@ export class FolkWorld {
             while (height <= 2 && this.field.sample(aheadX, aheadY + height * cell) === 1) height++;
             if (height <= 2) agent.y += height * cell;
             else agent.heading = -agent.heading;
-          } else agent.x += agent.heading * 0.055 * STEP;
+          } else agent.x += agent.heading * 0.055 * this.walkSpeedFactor * (inSoft ? this.softWalkFactor : 1) * STEP;
           const supportIndex = this.field.index(supportX, footY);
           const inkY = supportIndex >= 0 ? this.field.vy[supportIndex] : 0;
           if (inkY > 0.14 && agent.pushCooldown === 0 && supportIndex >= 0 && this.field.solid[supportIndex]) {

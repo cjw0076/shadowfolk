@@ -22,9 +22,11 @@ export class TheaterAudio {
   /** Spatial buses: the lantern (drone, hum, flame) and the stage (creatures, chimes). */
   private lanternOut?: GainNode;
   private stageOut?: GainNode;
+  private mothOut?: GainNode;
   private lanternPan?: PannerNode;
   private stagePan?: PannerNode;
-  private bus: 'lantern' | 'stage' = 'stage';
+  private mothPan?: PannerNode;
+  private bus: 'lantern' | 'stage' | 'moth' = 'stage';
   private crackleIn = 0.6;
   private hum?: { osc: OscillatorNode; gain: GainNode };
   private noise?: AudioBuffer;
@@ -86,6 +88,7 @@ export class TheaterAudio {
     };
     [this.lanternOut, this.lanternPan] = busOut();
     [this.stageOut, this.stagePan] = busOut();
+    [this.mothOut, this.mothPan] = busOut();
 
     // Lantern drone: two soft detuned tones through a low-pass, slowly breathing.
     const lp = ctx.createBiquadFilter();
@@ -126,7 +129,8 @@ export class TheaterAudio {
 
   private now(): number { return this.at ?? this.ctx!.currentTime; }
 
-  private out(): AudioNode { return (this.bus === 'lantern' ? this.lanternOut : this.stageOut) ?? this.master!; }
+  private out(): AudioNode { return (this.bus === 'lantern' ? this.lanternOut
+    : this.bus === 'moth' ? this.mothOut : this.stageOut) ?? this.master!; }
 
   /** Place the listener (head) and the two sound sources in world space; call every frame. */
   place(head: { x: number; y: number; z: number }, fwd: { x: number; y: number; z: number },
@@ -146,6 +150,13 @@ export class TheaterAudio {
     }
     this.lanternPan.positionX.value = lantern.x; this.lanternPan.positionY.value = lantern.y; this.lanternPan.positionZ.value = lantern.z;
     this.stagePan.positionX.value = stage.x; this.stagePan.positionY.value = stage.y; this.stagePan.positionZ.value = stage.z;
+  }
+
+  placeMoth(point: { x: number; y: number; z: number }): void {
+    if (!this.mothPan) return;
+    this.mothPan.positionX.value = point.x;
+    this.mothPan.positionY.value = point.y;
+    this.mothPan.positionZ.value = point.z;
   }
 
   /** Render a recorded cue list with the same synth, for a video soundtrack. */
@@ -327,6 +338,16 @@ export class TheaterAudio {
     else if (kind === 'summon') {
       this.burst(1450, 2.2, 0, 0.34, 0.095);
       this.tone(290, 720, 0.05, 0.38, 0.042, 'triangle');
+    }
+    else if (kind === 'moth-flutter') {
+      this.bus = 'moth';
+      this.burst(3400, 5, 0, 0.11, 0.085);
+      this.bus = 'stage';
+    }
+    else if (kind === 'moth-swat') {
+      this.bus = 'moth';
+      this.burst(1900, 3, 0, 0.28, 0.13);
+      this.bus = 'stage';
     }
     else if (kind === 'caw') {
       this.burst(1250, 1.6, 0, 0.21, 0.12);
