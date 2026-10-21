@@ -324,6 +324,11 @@ export class TheaterAudio {
     else if (kind === 'ash') this.burst(730, 1.4, 0, 0.22, 0.08);
     else if (kind === 'home') this.tone(660, 990, 0, 0.32, 0.055);
     else if (kind === 'hiss') this.burst(2200, 2.8, 0, 0.45, 0.12);
+    else if (kind === 'caw') {
+      this.burst(1250, 1.6, 0, 0.21, 0.12);
+      this.tone(420, 210, 0, 0.22, 0.08, 'sawtooth');
+      this.tone(310, 175, 0.13, 0.19, 0.055, 'sawtooth');
+    }
   }
 
   /** A single parade note (finale), from the same pentatonic scale as the chimes. */
