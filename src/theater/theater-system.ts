@@ -2106,25 +2106,29 @@ export class TheaterSystem extends createSystem({
       if (crossing.summons.spawn(this.summonDemoKind, this.summonDemoX, -0.18))
         this.summonDemoScreen = crossing.screen;
     }
+    let showingCharge = false;
     if (this.phase === Phase.Crossing && this.summonDemoKind && elapsed >= chargeAt && elapsed < fireAt) {
       const index = JOURNEY_TARGET_INDEX[this.summonDemoKind];
       const summonTarget = this.baked[index];
       if (summonTarget) {
-        this.setProjectedPlayHand(this.demoHand, summonTarget.pose, this.summonDemoX, -0.055);
-        if (summonTarget.partner) this.setProjectedPlayHand(this.demoHand2, summonTarget.partner, this.summonDemoX + 0.12, -0.055);
-        else this.demoHand2.valid = false;
+        if (this.summonFilm) {
+          this.setProjectedPlayHand(this.demoHand, summonTarget.pose, this.summonDemoX, -0.055);
+          if (summonTarget.partner) this.setProjectedPlayHand(this.demoHand2, summonTarget.partner, this.summonDemoX + 0.12, -0.055);
+          else this.demoHand2.valid = false;
+        }
         crossing.summons.setCharge(this.summonDemoKind, this.summonDemoX, -0.055,
           Math.max(0, Math.min(1, (elapsed - chargeAt) / 0.8)));
-        return;
+        if (this.summonFilm) return;
+        showingCharge = true;
       }
     }
-    if (this.summonFilm && this.summonDemoKind === 'elephant'
+    if (this.summonFilm && (this.summonDemoKind === 'elephant' || this.summonDemoKind === 'rabbit')
       && this.summonDemoScreen === crossing.screen) {
       this.demoHand.valid = this.demoHand2.valid = false;
       crossing.summons.setCharge(null, 0, 0, 0);
       return;
     }
-    crossing.summons.setCharge(null, 0, 0, 0);
+    if (!showingCharge) crossing.summons.setCharge(null, 0, 0, 0);
     const targetX = first?.x ?? -0.17;
     const targetY = first?.kind === 'rain' ? -0.055 : first?.kind === 'crow' ? 0.04
       : first?.kind === 'ledge' || first?.kind === 'highLedge' || first?.kind === 'thorns' ? -0.15 : -0.23;
@@ -2158,7 +2162,7 @@ export class TheaterSystem extends createSystem({
     if (!crossing || !forms || useDemo || !anyReal
       || this.phase !== Phase.Crossing && this.phase !== Phase.Lesson || crossing.wiping) {
       this.summonTrigger.reset();
-      crossing?.summons.setCharge(null, 0, 0, 0);
+      if (!useDemo || this.phase !== Phase.Crossing) crossing?.summons.setCharge(null, 0, 0, 0);
       return;
     }
     this.journeyHands[0] = this.hands[0];
