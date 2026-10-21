@@ -183,6 +183,8 @@ function updateButterfly(agent: SummonAgent, context: SummonContext): void {
 
   const rise = ledge.kind === 'highLedge' ? 0.16 : 0.09;
   context.carry(agent, walker, ledge.x + ledge.width * 0.5 + 0.025, walker.y + rise, 0.4);
+  const companion = context.walkerNear(walker.x - 0.035, 0.075, walker.x);
+  if (companion) context.board(agent, companion);
   agent.timer = 1.5;
 }
 

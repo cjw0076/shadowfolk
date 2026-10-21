@@ -17,6 +17,7 @@ export interface SummonAgent {
   uses: number;
   state: number;
   target: Kindling | null;
+  readonly passengers: Kindling[];
   fromX: number;
   fromY: number;
   toX: number;
@@ -35,6 +36,7 @@ export interface SummonContext {
   nearest(kind: HazardKind, x: number): { x: number; width: number; kind: HazardKind } | null;
   walkerNear(x: number, radius: number, beforeX?: number): Kindling | null;
   carry(agent: SummonAgent, walker: Kindling, toX: number, toY: number, duration: number): void;
+  board(agent: SummonAgent, walker: Kindling): boolean;
   advanceCarry(agent: SummonAgent): boolean;
   addBridge(left: number, right: number, bottom: number, top: number, duration: number): void;
 }

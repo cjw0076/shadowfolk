@@ -6,7 +6,6 @@ const WALKER_FLOOR_Y = -0.185;
 const SNAIL_SPEED = 0.05;
 const BRIDGE_DURATION = 10;
 const RABBIT_CARRYING = 1;
-const SNAIL_APPROACHING = 1;
 const SNAIL_LAYING = 2;
 const SNAIL_DONE = 3;
 
@@ -14,13 +13,22 @@ function updatePeacock(agent: SummonAgent, context: SummonContext): void {
   if (agent.age >= GIFT_LIFETIME) return;
 
   const zoneEnd = agent.x + 0.30;
+  const gap = context.nearest('gap', agent.x + 0.15);
   for (let index = 0; index < context.folk.count; index++) {
     const walker = context.folk.agents[index];
     if ((walker.state !== 'walking' && walker.state !== 'falling')
       || walker.x < agent.x || walker.x > zoneEnd) continue;
+    if (gap && walker.state === 'walking'
+      && walker.x >= gap.x - gap.width * 0.5 - 0.03
+      && walker.x < gap.x - gap.width * 0.5) {
+      walker.state = 'falling';
+      walker.y += 0.065;
+      walker.fallStartY = walker.y;
+      walker.vy = 0.035;
+    }
     if (walker.state === 'falling' && walker.vy < -0.05) walker.vy = -0.05;
     const direction = walker.heading < 0 ? -1 : 1;
-    if (walker.vx * direction < 0.15) walker.vx = direction * 0.15;
+    if (walker.vx * direction < 0.20) walker.vx = direction * 0.20;
   }
 
   context.hazards.cancelGust(agent.x + 0.15, 0.15, Math.max(0.08, context.dt * 2));
@@ -30,13 +38,24 @@ function updateRabbit(agent: SummonAgent, context: SummonContext): void {
   if (agent.target) {
     if (context.advanceCarry(agent)) {
       agent.uses++;
-      agent.target = null;
-      agent.state = 0;
-      agent.timer = 0.12;
+      agent.state = 2;
+      agent.timer = 0;
     }
     return;
   }
   if (agent.age >= GIFT_LIFETIME || agent.uses >= 3) return;
+
+  if (agent.state === 2) {
+    const hazard = context.nearest('gap', agent.x) ?? context.nearest('river', agent.x)
+      ?? context.nearest('thorns', agent.x);
+    if (hazard) {
+      const nearX = hazard.x - hazard.width * 0.5 - (hazard.kind === 'river' ? 0.08 : 0.04);
+      agent.x = Math.max(nearX, agent.x - 0.50 * context.dt);
+      agent.y = WALKER_FLOOR_Y + Math.sin(Math.min(1, (agent.x - nearX) / 0.30) * Math.PI) * 0.055;
+      if (agent.x <= nearX) { agent.state = 0; agent.timer = 0.08; }
+    } else agent.state = 0;
+    return;
+  }
 
   if (agent.timer > 0) {
     agent.timer = Math.max(0, agent.timer - context.dt);
@@ -81,7 +100,8 @@ function updateRabbit(agent: SummonAgent, context: SummonContext): void {
   }
 
   context.carry(agent, walker, farX, WALKER_FLOOR_Y, 1.2);
-  agent.target = walker;
+  const companion = context.walkerNear(walker.x - 0.035, 0.075, walker.x);
+  if (companion) context.board(agent, companion);
   agent.state = RABBIT_CARRYING;
 }
 
@@ -115,7 +135,7 @@ function startSnailRoute(agent: SummonAgent, context: SummonContext): boolean {
 
   const highLedge = context.nearest('highLedge', agent.x);
   if (highLedge && highLedge.x + highLedge.width * 0.5 + 0.02 >= agent.x) {
-    const startX = highLedge.x - highLedge.width * 0.5 - 0.08;
+    const startX = highLedge.x - highLedge.width * 0.5 - 0.18;
     if (startX < routeStartX) {
       routeStartX = startX;
       routeEndX = highLedge.x + highLedge.width * 0.5 + 0.02;
@@ -130,8 +150,9 @@ function startSnailRoute(agent: SummonAgent, context: SummonContext): boolean {
   agent.toX = routeEndX;
   agent.toY = routeEndY;
   agent.timer = 0;
+  agent.x = routeStartX;
   agent.y = routeStartY + 0.015;
-  agent.state = agent.x < routeStartX ? SNAIL_APPROACHING : SNAIL_LAYING;
+  agent.state = SNAIL_LAYING;
   return true;
 }
 
@@ -139,16 +160,6 @@ function updateSnail(agent: SummonAgent, context: SummonContext): void {
   if (agent.age >= GIFT_LIFETIME || agent.state === SNAIL_DONE) return;
 
   if (agent.state === 0 && !startSnailRoute(agent, context)) return;
-
-  if (agent.state === SNAIL_APPROACHING) {
-    agent.x = Math.min(agent.fromX, agent.x + SNAIL_SPEED * context.dt);
-    agent.y = agent.fromY + 0.015;
-    if (agent.x >= agent.fromX) {
-      agent.state = SNAIL_LAYING;
-      agent.timer = 0;
-    }
-    return;
-  }
 
   if (agent.state !== SNAIL_LAYING) return;
   agent.x = Math.min(agent.toX, agent.x + SNAIL_SPEED * context.dt);
@@ -158,16 +169,21 @@ function updateSnail(agent: SummonAgent, context: SummonContext): void {
   const cell = context.field.cell;
   if (progress - agent.timer >= cell || progress >= routeLength) {
     const left = agent.fromX + agent.timer;
-    const right = Math.min(agent.toX, agent.fromX + progress + cell);
-    const startHeight = agent.fromY + (agent.toY - agent.fromY) * (agent.timer / routeLength);
-    const endProgress = Math.min(routeLength, progress + cell);
-    const endHeight = agent.fromY + (agent.toY - agent.fromY) * (endProgress / routeLength);
+    const right = Math.min(agent.toX, agent.fromX + progress);
+    const ledge = context.nearest('highLedge', agent.x) ?? context.nearest('ledge', agent.x);
+    const riseEndX = ledge ? ledge.x - ledge.width * 0.5 : agent.toX;
+    const riseLength = Math.max(cell, riseEndX - agent.fromX);
+    const startHeight = agent.fromY + (agent.toY - agent.fromY) * Math.min(1, agent.timer / riseLength);
+    const endProgress = progress;
+    const endHeight = agent.fromY + (agent.toY - agent.fromY) * Math.min(1, endProgress / riseLength);
     context.addBridge(left, right, Math.min(startHeight, endHeight) - 0.02,
-      Math.max(startHeight, endHeight), BRIDGE_DURATION);
+      Math.max(startHeight, endHeight), BRIDGE_DURATION + (routeLength - progress) / SNAIL_SPEED);
     agent.timer = progress;
   }
 
-  const ratio = progress / routeLength;
+  const ledge = context.nearest('highLedge', agent.x) ?? context.nearest('ledge', agent.x);
+  const riseEndX = ledge ? ledge.x - ledge.width * 0.5 : agent.toX;
+  const ratio = Math.min(1, progress / Math.max(cell, riseEndX - agent.fromX));
   agent.y = agent.fromY + (agent.toY - agent.fromY) * ratio + 0.015;
   if (progress >= routeLength) {
     agent.uses++;

@@ -8,6 +8,7 @@ const WATER_Y = FLOOR_Y - 0.033;
 const DOG_RANGE = 0.30;
 const DOG_SPEED = 0.15;
 const RIVER_SPEED = 0.10;
+const RAFT_RETURN_SPEED = 0.45;
 const CARRY_COOLDOWN = 0.12;
 
 function moveToward(agent: SummonAgent, targetX: number, speed: number, dt: number): boolean {
@@ -36,12 +37,14 @@ function advanceCarry(agent: SummonAgent, context: SummonContext): boolean {
 function updateDog(agent: SummonAgent, context: SummonContext): void {
   agent.y = CREATURE_GROUND_Y;
   if (agent.state !== 0) {
-    agent.x = Math.min(0.62, agent.x + DOG_SPEED * context.dt);
+    const crow = context.nearest('crow', agent.x);
+    const guardX = Math.max(-0.37, Math.min(0.37, (crow?.x ?? agent.x) + 0.08));
+    moveToward(agent, guardX + 0.025 * Math.sin(agent.age * 3), DOG_SPEED * 0.35, context.dt);
     return;
   }
   const crow = context.nearest('crow', agent.x);
   if (!crow) {
-    agent.x = Math.min(0.62, agent.x + DOG_SPEED * context.dt);
+    agent.x = Math.min(0.37, agent.x + DOG_SPEED * context.dt);
     return;
   }
   if (Math.abs(crow.x - agent.x) <= DOG_RANGE
@@ -55,7 +58,6 @@ function updateDog(agent: SummonAgent, context: SummonContext): void {
 
 function updateDuck(agent: SummonAgent, context: SummonContext): void {
   if (advanceCarry(agent, context)) return;
-  if (agent.uses >= 3) return;
   const river = context.nearest('river', agent.x);
   if (!river) return;
 
@@ -64,20 +66,25 @@ function updateDuck(agent: SummonAgent, context: SummonContext): void {
   const raftX = left + 0.01;
   if (agent.x < left || agent.x > right) {
     agent.y = CREATURE_GROUND_Y;
-    moveToward(agent, raftX, RIVER_SPEED, context.dt);
+    moveToward(agent, raftX, RAFT_RETURN_SPEED, context.dt);
     return;
   }
   agent.y = WATER_Y;
-  if (!moveToward(agent, raftX, RIVER_SPEED, context.dt)) return;
+  if (!moveToward(agent, raftX, RAFT_RETURN_SPEED, context.dt)) return;
 
   const walker = context.walkerNear(raftX, 0.035, left + 0.025);
   if (!walker || (walker.state !== 'walking' && walker.state !== 'falling')) return;
   context.carry(agent, walker, right + 0.06, WALKER_Y, 1.2);
+  for (let index = 0; index < 2; index++) {
+    const companion = context.walkerNear(walker.x - 0.04, 0.08, walker.x);
+    if (!companion || !context.board(agent, companion)) break;
+  }
 }
 
-function walkerInWaterNear(agent: SummonAgent, context: SummonContext, left: number, right: number): Kindling | null {
+function walkerInWaterNear(agent: SummonAgent, context: SummonContext, left: number, right: number,
+  radius = 0.22): Kindling | null {
   let closest: Kindling | null = null;
-  let distance = 0.04;
+  let distance = radius;
   for (let index = 0; index < context.folk.count; index++) {
     const walker = context.folk.agents[index];
     if ((walker.state !== 'falling' && walker.state !== 'walking') || walker.carried
@@ -93,12 +100,17 @@ function walkerInWaterNear(agent: SummonAgent, context: SummonContext, left: num
 }
 
 function updateFish(agent: SummonAgent, context: SummonContext): void {
-  if (advanceCarry(agent, context)) return;
   const river = context.nearest('river', agent.x);
   if (!river) return;
 
   const left = river.x - river.width * 0.5;
   const right = river.x + river.width * 0.5;
+  if (agent.target) {
+    const passenger = walkerInWaterNear(agent, context, left, right, 0.40);
+    if (passenger) context.board(agent, passenger);
+    context.advanceCarry(agent);
+    return;
+  }
   const patrolLeft = left - 0.015;
   const patrolRight = right + 0.015;
   agent.y = WATER_Y;

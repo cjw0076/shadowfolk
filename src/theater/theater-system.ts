@@ -62,15 +62,15 @@ const LESSON_COPY: Record<Ability, string> = {
 };
 const SUMMON_COPY: Record<string, string> = {
   peacock: 'Make the peacock. Hold for its wind.',
-  rabbit: 'Make the rabbit. Hold for a ferry.',
+  rabbit: 'Make the rabbit. Ferry Kindlings together.',
   snail: 'Make the snail. Hold for a bridge.',
   dog: 'Make the dog. Hold; crows remember teeth.',
-  duck: 'Make the duck. Hold for a raft.',
+  duck: 'Make the duck. Ferry Kindlings across.',
   fish: 'Make the fish. Hold for a bubble.',
   elephant: 'Make the elephant. Hold; rain will listen.',
   heron: 'Make the heron. Hold to catch a fall.',
   crab: 'Make the crab. Hold to cut thorns.',
-  butterfly: 'Make the butterfly. Hold for a lift.',
+  butterfly: 'Make the butterfly. Lift Kindlings together.',
   stag: 'Make the stag. Hold against the stone.',
 };
 const ABILITIES = Object.keys(LESSON_COPY) as Ability[];
@@ -252,6 +252,7 @@ export class TheaterSystem extends createSystem({
   private playSandbox = typeof location !== 'undefined' && new URLSearchParams(location.search).has('playSandbox');
   private classic = typeof location !== 'undefined' && new URLSearchParams(location.search).has('classic');
   private crossingOnly = typeof location !== 'undefined' && new URLSearchParams(location.search).has('crossingOnly');
+  private summonFilm = typeof location !== 'undefined' && new URLSearchParams(location.search).has('summonFilm');
   private forcedNight = typeof location !== 'undefined' && new URLSearchParams(location.search).has('night')
     ? Number(new URLSearchParams(location.search).get('night')) : NaN;
   private crossingSeed = typeof location !== 'undefined' && new URLSearchParams(location.search).has('seed')
@@ -765,6 +766,7 @@ export class TheaterSystem extends createSystem({
       : kind === 'elephant' ? 'rain' : kind === 'heron' || kind === 'butterfly' ? 'highLedge'
         : kind === 'crab' ? 'thorns' : kind === 'stag' ? 'boulder' : 'gap';
     this.crossing.start(1, this.arcSeed() ^ index, [trouble], 5);
+    this.playFolk?.configure({ spawnX: -0.37 });
     this.playView.root.visible = true;
     this.lessonSummonFired = false;
     this.summonTrigger.reset();
@@ -786,6 +788,7 @@ export class TheaterSystem extends createSystem({
     const count = Number(params.get('kindlings'));
     this.crossing.start(night, this.arcSeed(), hazards,
       this.crossingOnly && Number.isSafeInteger(count) && count > 0 ? Math.min(40, count) : undefined);
+    this.playFolk?.configure({ spawnX: -0.44 });
     this.summonTrigger.reset();
     this.summonForms?.reset();
     this.summonProbeAt = -Infinity;
@@ -2080,7 +2083,7 @@ export class TheaterSystem extends createSystem({
         if (hazard.kind === 'boulder') return kind === 'stag';
         return kind === 'butterfly' || kind === 'heron' || kind === 'snail';
       });
-      this.summonDemoKind = [...preferred, ...this.firstWoken(), ...TARGETS.map((entry) => entry.id)]
+      this.summonDemoKind = [this.summonRequested, ...preferred, ...this.firstWoken(), ...TARGETS.map((entry) => entry.id)]
         .find(fit) as SummonKind | undefined ?? null;
       const hazard = hazards.find((entry) => entry.kind === 'gap' || entry.kind === 'river'
         || entry.kind === 'crow' || entry.kind === 'rain' || entry.kind === 'thorns'
@@ -2091,12 +2094,19 @@ export class TheaterSystem extends createSystem({
     const first = hazards[0];
     const second = hazards[1];
     const elapsed = this.animationTime - this.crossingDemoAt;
-    if (this.phase === Phase.Crossing && elapsed >= 1.5 && this.summonDemoScreen !== crossing.screen
+    const chargeAt = this.summonFilm ? 3.25 : 0.55;
+    const fireAt = this.summonFilm ? 4.20 : 1.5;
+    if (this.summonFilm && this.summonDemoKind && elapsed < chargeAt) {
+      this.demoHand.valid = this.demoHand2.valid = false;
+      crossing.summons.setCharge(null, 0, 0, 0);
+      return;
+    }
+    if (this.phase === Phase.Crossing && elapsed >= fireAt && this.summonDemoScreen !== crossing.screen
       && this.summonDemoKind) {
       if (crossing.summons.spawn(this.summonDemoKind, this.summonDemoX, -0.18))
         this.summonDemoScreen = crossing.screen;
     }
-    if (this.phase === Phase.Crossing && this.summonDemoKind && elapsed >= 0.55 && elapsed < 1.5) {
+    if (this.phase === Phase.Crossing && this.summonDemoKind && elapsed >= chargeAt && elapsed < fireAt) {
       const index = JOURNEY_TARGET_INDEX[this.summonDemoKind];
       const summonTarget = this.baked[index];
       if (summonTarget) {
@@ -2104,7 +2114,7 @@ export class TheaterSystem extends createSystem({
         if (summonTarget.partner) this.setProjectedPlayHand(this.demoHand2, summonTarget.partner, this.summonDemoX + 0.12, -0.055);
         else this.demoHand2.valid = false;
         crossing.summons.setCharge(this.summonDemoKind, this.summonDemoX, -0.055,
-          Math.max(0, Math.min(1, (elapsed - 0.55) / 0.8)));
+          Math.max(0, Math.min(1, (elapsed - chargeAt) / 0.8)));
         return;
       }
     }

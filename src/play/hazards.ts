@@ -972,7 +972,8 @@ export class HazardWorld {
         if (y < hazard.floorY || y > hazard.floorY + 0.045) continue;
         for (let column = 0; column < this.field.w; column++) {
           const px = this.field.x0 + (column + 0.5) * this.field.cell;
-          if (px >= left && px <= right) this.field.staticSolid[row * this.field.w + column] = 0;
+          if (px >= left - this.field.cell && px <= right + this.field.cell * 2)
+            this.field.staticSolid[row * this.field.w + column] = 0;
         }
       }
       const visual = this.visuals[hazard.slot];
