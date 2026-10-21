@@ -2118,6 +2118,12 @@ export class TheaterSystem extends createSystem({
         return;
       }
     }
+    if (this.summonFilm && this.summonDemoKind === 'elephant'
+      && this.summonDemoScreen === crossing.screen) {
+      this.demoHand.valid = this.demoHand2.valid = false;
+      crossing.summons.setCharge(null, 0, 0, 0);
+      return;
+    }
     crossing.summons.setCharge(null, 0, 0, 0);
     const targetX = first?.x ?? -0.17;
     const targetY = first?.kind === 'rain' ? -0.055 : first?.kind === 'crow' ? 0.04

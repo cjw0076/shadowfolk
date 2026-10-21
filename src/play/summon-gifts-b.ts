@@ -108,7 +108,7 @@ function updateFish(agent: SummonAgent, context: SummonContext): void {
   if (agent.target) {
     const passenger = walkerInWaterNear(agent, context, left, right, 0.40);
     if (passenger) context.board(agent, passenger);
-    context.advanceCarry(agent);
+    if (context.advanceCarry(agent)) agent.uses++;
     return;
   }
   const patrolLeft = left - 0.015;
