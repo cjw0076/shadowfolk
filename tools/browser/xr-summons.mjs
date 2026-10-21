@@ -382,13 +382,15 @@ async function runDemoNight(browser, night) {
       puppetFrames,
       home: state?.home ?? 0,
       total: state?.total ?? 0,
+      homeRate: state?.total > 0 ? +(state.home / state.total).toFixed(3) : 0,
       lost: state?.lost ?? 0,
       totalSummons: state?.fireCount ?? 0,
       explicitDemoSummons: (state?.fireCount ?? 0) - (state?.autoFireCount ?? 0),
       autoFireCount: state?.autoFireCount ?? null,
       finished: !!state?.finished,
     };
-    row.passed = row.finished && row.puppetFrames > 0 && row.autoFireCount === 0;
+    row.passed = row.finished && row.puppetFrames > 0 && row.autoFireCount === 0
+      && row.total > 0 && row.home / row.total >= 0.75;
     console.log(`Demo night ${night}: ${row.passed ? 'PASS' : 'FAIL'} ${JSON.stringify(row)}`);
     return row;
   } finally {
