@@ -3,7 +3,7 @@
  * shines through, shaped by the real lunar phase of the date. Every night of
  * play looks a little different, and a full moon brings its own line.
  */
-import { CanvasTexture, Mesh, MeshBasicMaterial, PlaneGeometry, SRGBColorSpace } from '@iwsdk/core';
+import { AdditiveBlending, CanvasTexture, Mesh, MeshBasicMaterial, PlaneGeometry, RingGeometry, SRGBColorSpace } from '@iwsdk/core';
 
 const SYNODIC = 29.530588853;
 const NEW_MOON_2000 = Date.UTC(2000, 0, 6, 18, 14) / 86400000; // days since epoch
@@ -24,6 +24,10 @@ export class Moon {
   private texture: CanvasTexture;
   private material: MeshBasicMaterial;
   private phase = 0;
+  private targetPhase = 0;
+  private phaseDrawIn = 0;
+  private flash = 0;
+  private flashMaterial: MeshBasicMaterial;
   private stars = 0;
 
   constructor(diameter = 0.075) {
@@ -34,20 +38,51 @@ export class Moon {
     this.mesh = new Mesh(new PlaneGeometry(diameter * 1.6, diameter * 1.6), this.material);
     this.mesh.name = 'Moon';
     this.mesh.renderOrder = 0.5;
+    this.flashMaterial = new MeshBasicMaterial({
+      color: '#ffd18a', transparent: true, opacity: 0, depthWrite: false,
+      toneMapped: false, blending: AdditiveBlending,
+    });
+    const rimFlash = new Mesh(new RingGeometry(diameter * 0.47, diameter * 0.57, 48), this.flashMaterial);
+    rimFlash.position.z = 0.0005;
+    rimFlash.renderOrder = 0.6;
+    this.mesh.add(rimFlash);
   }
 
   /** Paint the phase once (each night): lit part as light through the paper, the rest a faint scorched ring. */
   setPhase(p: number): void {
-    this.phase = p;
+    this.phase = this.targetPhase = Math.max(0, Math.min(1, p));
+    this.paintPhase();
+  }
+
+  arrive(p: number): void {
+    this.targetPhase = Math.max(0, Math.min(1, p));
+    this.flash = 1;
+  }
+
+  update(dt: number): void {
+    if (this.flash > 0) {
+      this.flash = Math.max(0, this.flash - dt / 0.55);
+      this.flashMaterial.opacity = 0.9 * this.flash * this.flash;
+    }
+    if (Math.abs(this.targetPhase - this.phase) < 0.0005) return;
+    this.phase += (this.targetPhase - this.phase) * Math.min(1, dt * 7);
+    if (Math.abs(this.targetPhase - this.phase) < 0.0005) this.phase = this.targetPhase;
+    this.phaseDrawIn -= dt;
+    if (this.phaseDrawIn > 0 && this.phase !== this.targetPhase) return;
+    this.phaseDrawIn = 1 / 15;
+    this.paintPhase();
+  }
+
+  private paintPhase(): void {
     const c = this.canvas, g = c.getContext('2d', { willReadFrequently: true })!, N = c.width, R = N * 0.31, cx = N / 2, cy = N / 2;
     g.clearRect(0, 0, N, N);
     const glow = g.createRadialGradient(cx, cy, R * 0.6, cx, cy, N / 2);
-    glow.addColorStop(0, `rgba(255,236,190,${0.25 + 0.35 * (1 - Math.cos(p * Math.PI * 2)) / 2})`);
+    glow.addColorStop(0, `rgba(255,236,190,${0.25 + 0.35 * (1 - Math.cos(this.phase * Math.PI * 2)) / 2})`);
     glow.addColorStop(1, 'rgba(255,220,160,0)');
     g.fillStyle = glow;
     g.fillRect(0, 0, N, N);
     const img = g.getImageData(0, 0, N, N);
-    const th = p * Math.PI * 2, sx = Math.sin(th), sz = -Math.cos(th);
+    const th = this.phase * Math.PI * 2, sx = Math.sin(th), sz = -Math.cos(th);
     for (let y = 0; y < N; y++) {
       for (let x = 0; x < N; x++) {
         const u = (x + 0.5 - cx) / R, v = (y + 0.5 - cy) / R, d2 = u * u + v * v;

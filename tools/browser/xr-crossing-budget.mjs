@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 const [secondsArgument = '20'] = process.argv.slice(2);
 const seconds = Number(secondsArgument);
+const summonBudget = process.env.XR_SUMMON_BUDGET === '1';
 if (!Number.isFinite(seconds) || seconds <= 0) {
   throw new Error('Usage: node tools/browser/xr-crossing-budget.mjs [seconds]');
 }
@@ -26,7 +27,7 @@ const outputPath = process.env.XR_CROSSING_BUDGET_OUT
   : resolve(projectRoot, '../collab/codex/21-evidence/xr-crossing-budget.json');
 const kindlingCount = 40;
 const stepSeconds = 1 / 60;
-const warmupFrames = 300;
+const warmupFrames = summonBudget ? 120 : 300;
 const measuredFrames = Math.ceil(seconds / stepSeconds);
 const chunkFrames = 30;
 const sampleKeys = [
@@ -62,7 +63,7 @@ function changedTextureNames(before, after) {
 }
 
 const result = {
-  benchmark: 'codex-21-xr-crossing-budget',
+  benchmark: summonBudget ? 'codex-22-xr-summon-budget' : 'codex-21-xr-crossing-budget',
   url: url.toString(),
   browser: 'private Playwright Chromium with IWER',
   cpuThrottleRate: 6,
@@ -72,7 +73,7 @@ const result = {
   setup: null,
   finalState: null,
   metrics: null,
-  thresholds: { playP95Ms: 2, hazardsP95Ms: 0.5, wholeP95Ms: 5.5, playTextureVersionChanges: 0 },
+  thresholds: { playP95Ms: summonBudget ? 2.3 : 2, hazardsP95Ms: 0.5, wholeP95Ms: 5.5, playTextureVersionChanges: 0 },
   textureUploads: null,
   pageErrors: [],
   passed: false,
@@ -329,7 +330,7 @@ try {
 
       const textureSnapshot = () => {
         const versions = {};
-        theater.playView.root.traverse((object) => {
+        for (const root of [theater.playView.root, crossing.summons.root]) root.traverse((object) => {
           if (!object.isMesh) return;
           const materials = Array.isArray(object.material) ? object.material : [object.material];
           for (let index = 0; index < materials.length; index++) {
@@ -353,6 +354,7 @@ try {
           folkCount: folk.count,
           activeFolk: counts.walking + counts.falling,
           folkStates: counts,
+          activeSummons: crossing.summons.activeCount(),
           liveJointHands: {
             left: !!left?.valid && !!left.flat?.valid,
             right: !!right?.valid && !!right.flat?.valid,
@@ -389,6 +391,23 @@ try {
   await cdp.send('Emulation.setCPUThrottlingRate', { rate: 6 });
   for (let warmed = 0; warmed < warmupFrames; warmed += chunkFrames) {
     await page.evaluate((frames) => window.__crossingBudget.advance(frames), Math.min(chunkFrames, warmupFrames - warmed));
+  }
+  if (summonBudget) {
+    const spawned = await page.evaluate(() => {
+      const crossing = window.__theater.crossing;
+      const rain = crossing.hazards.layouts.find((hazard) => hazard.kind === 'rain');
+      const crow = crossing.hazards.layouts.find((hazard) => hazard.kind === 'crow');
+      return {
+        elephant: crossing.summons.spawn('elephant', rain.x, -0.18),
+        dog: crossing.summons.spawn('dog', crow.x - 0.08, -0.18),
+        active: crossing.summons.activeCount(),
+      };
+    });
+    if (!spawned.elephant || !spawned.dog || spawned.active !== 2) {
+      throw new Error(`Could not start two-summon budget: ${JSON.stringify(spawned)}`);
+    }
+    result.setup.summons = spawned;
+    await page.evaluate(() => window.__crossingBudget.advance(1));
   }
 
   await page.evaluate(() => window.__crossingBudget.resetMovement());
@@ -468,10 +487,11 @@ try {
   const handsMoved = finalState.movement.leftXRange[1] - finalState.movement.leftXRange[0] > 0.02
     && finalState.movement.rightXRange[1] - finalState.movement.rightXRange[0] > 0.02;
   const passed = play.count === measuredFrames && hazards.count === measuredFrames && whole.count === measuredFrames
-    && play.p95 <= 2 && hazards.p95 <= 0.5 && whole.p95 <= 5.5
+    && play.p95 <= result.thresholds.playP95Ms && hazards.p95 <= 0.5 && whole.p95 <= 5.5
     && textureUploads.playTextures.noPerFrameVersionChanges
     && finalState.immersive && finalState.placed && finalState.folkCount === kindlingCount
     && finalState.activeFolk === kindlingCount && finalState.liveJointHands.left && finalState.liveJointHands.right
+    && (!summonBudget || finalState.activeSummons === 2)
     && handsMoved && result.pageErrors.length === 0;
   result.finalState = finalState;
   result.measurementWallSeconds = round(measurementWallSeconds);

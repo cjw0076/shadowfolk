@@ -76,6 +76,8 @@ export interface HazardEvent {
 
 interface RuntimeHazard extends HazardLayout {
   clock: number;
+  suppressedUntil: number;
+  removed: boolean;
   random: number;
   casualties: number;
   hinted: boolean;
@@ -90,6 +92,11 @@ interface RuntimeHazard extends HazardLayout {
   crowControlY: number;
   crowTargetX: number;
   crowTargetY: number;
+  crowSwatted: boolean;
+  crowSwatElapsed: number;
+  crowSwatX: number;
+  crowSwatY: number;
+  crowSafeGlintShown: boolean;
   rainAccumulator: number;
   rainCursor: number;
   rainX: Float32Array;
@@ -106,11 +113,28 @@ interface RuntimeHazard extends HazardLayout {
 
 type HazardSprite = Mesh<PlaneGeometry, MeshBasicMaterial>;
 
+interface InstanceEffectPool {
+  mesh: InstancedMesh;
+  age: Float32Array;
+  x: Float32Array;
+  y: Float32Array;
+  rotation: Float32Array;
+  cursor: number;
+}
+
 interface HazardVisual {
   root: Group;
   textures: CanvasTexture[];
   crow: HazardSprite | null;
-  drops: InstancedMesh | null;
+  crowFeathers: InstancedMesh | null;
+  safeGlints: InstanceEffectPool | null;
+  rainStreaks: InstancedMesh | null;
+  rainStreakX: Float32Array | null;
+  rainStreakProgress: Float32Array | null;
+  rainStreakHold: Float32Array | null;
+  rainStreakStopY: Float32Array | null;
+  rainSplashes: InstanceEffectPool | null;
+  steamPuffs: InstanceEffectPool | null;
   boulder: HazardSprite | null;
   wind: HazardSprite[];
   waterTexture: CanvasTexture | null;
@@ -124,8 +148,27 @@ interface PlacementOverride {
 const FLOOR_Y = -0.20;
 const MAX_RAINDROPS = 32;
 const MAX_FOLK = 48;
+const MAX_RAIN_STREAKS = 45;
+const MAX_RAIN_SPLASHES = 24;
+const MAX_RAIN_STEAM_PUFFS = 16;
+const MAX_CROW_FEATHERS = 4;
+const MAX_SAFE_GLINTS = 4;
+const RAIN_CLOUD_WIDTH = 0.30;
+const RAIN_STREAK_LENGTH = 0.035;
+const RAIN_STREAK_TOP = 0.035;
+const RAIN_STREAK_SPEED = 0.6;
+const RAIN_STREAK_HOLD = 0.055;
+const RAIN_SPLASH_LIFETIME = 0.18;
+const RAIN_STEAM_LIFETIME = 0.62;
+const SAFE_GLINT_LIFETIME = 0.5;
+const CROW_TUMBLE_DURATION = 0.5;
+const CROW_EXIT_DURATION = 0.42;
 const STEP_RADIUS = 0.011;
 const DEFAULT_X: readonly [number, number] = [-0.17, 0.16];
+const FEATHER_VELOCITY_X: readonly number[] = [-0.065, -0.022, 0.028, 0.064];
+const FEATHER_VELOCITY_Y: readonly number[] = [0.075, 0.11, 0.095, 0.06];
+const FEATHER_ROTATION: readonly number[] = [-0.7, 0.35, -0.2, 0.85];
+const FEATHER_SPIN: readonly number[] = [8, -10, 12, -7];
 
 function boundedRandom(rng: HazardRng): number {
   const value = rng();
@@ -220,6 +263,8 @@ function makeRuntime(layout: HazardLayout, seed: number): RuntimeHazard {
   const hazard: RuntimeHazard = {
     ...layout,
     clock: 0,
+    suppressedUntil: 0,
+    removed: false,
     random,
     casualties: 0,
     hinted: false,
@@ -234,6 +279,11 @@ function makeRuntime(layout: HazardLayout, seed: number): RuntimeHazard {
     crowControlY: layout.floorY + 0.16,
     crowTargetX: layout.x,
     crowTargetY: layout.floorY + 0.04,
+    crowSwatted: false,
+    crowSwatElapsed: 0,
+    crowSwatX: layout.x,
+    crowSwatY: layout.floorY + 0.16,
+    crowSafeGlintShown: false,
     rainAccumulator: 0,
     rainCursor: 0,
     rainX: new Float32Array(MAX_RAINDROPS),
@@ -253,6 +303,9 @@ function makeRuntime(layout: HazardLayout, seed: number): RuntimeHazard {
 
 type HazardArt = {
   crowAtlas: HTMLCanvasElement;
+  feather: HTMLCanvasElement;
+  safeGlint: HTMLCanvasElement;
+  steamPuff: HTMLCanvasElement;
   rainCloud: HTMLCanvasElement;
   river: HTMLCanvasElement;
   bramble: HTMLCanvasElement;
@@ -323,20 +376,86 @@ function rainCloudArt(): HTMLCanvasElement {
   context.quadraticCurveTo(124, 137, 99, 119);
   context.quadraticCurveTo(65, 132, 47, 110);
   context.closePath();
-  context.fillStyle = 'rgba(66,72,83,0.31)';
+  context.fillStyle = 'rgba(43,49,59,0.62)';
   context.fill();
-  context.strokeStyle = 'rgba(44,48,58,0.62)';
-  context.lineWidth = 3;
+  context.strokeStyle = 'rgba(31,36,44,0.82)';
+  context.lineWidth = 4;
   context.stroke();
-  context.strokeStyle = 'rgba(136,155,164,0.56)';
+  return canvas;
+}
+
+function featherArt(): HTMLCanvasElement {
+  const canvas = document.createElement('canvas');
+  canvas.width = 48;
+  canvas.height = 80;
+  const context = canvas.getContext('2d', { willReadFrequently: true })!;
+  context.fillStyle = '#333a40';
+  context.strokeStyle = 'rgba(26,31,36,0.88)';
   context.lineWidth = 2;
-  for (let streak = 0; streak < 4; streak++) {
-    const x = 87 + streak * 31;
-    context.beginPath();
-    context.moveTo(x, 131 + streak % 2 * 3);
-    context.lineTo(x - 3, 151 + streak % 2 * 5);
-    context.stroke();
-  }
+  context.beginPath();
+  context.moveTo(24, 4);
+  context.bezierCurveTo(43, 19, 38, 48, 26, 67);
+  context.quadraticCurveTo(23, 73, 20, 77);
+  context.quadraticCurveTo(20, 65, 17, 59);
+  context.bezierCurveTo(6, 41, 7, 17, 24, 4);
+  context.closePath();
+  context.fill();
+  context.stroke();
+  context.strokeStyle = 'rgba(176,184,185,0.72)';
+  context.lineWidth = 1.6;
+  context.beginPath();
+  context.moveTo(24, 10);
+  context.quadraticCurveTo(26, 39, 21, 72);
+  context.stroke();
+  return canvas;
+}
+
+function steamPuffArt(): HTMLCanvasElement {
+  const canvas = document.createElement('canvas');
+  canvas.width = 80;
+  canvas.height = 64;
+  const context = canvas.getContext('2d', { willReadFrequently: true })!;
+  const haze = context.createRadialGradient(40, 35, 4, 40, 35, 34);
+  haze.addColorStop(0, 'rgba(219,227,225,0.72)');
+  haze.addColorStop(0.62, 'rgba(192,205,205,0.48)');
+  haze.addColorStop(1, 'rgba(177,191,192,0)');
+  context.fillStyle = haze;
+  context.beginPath();
+  context.ellipse(40, 36, 37, 27, 0, 0, Math.PI * 2);
+  context.fill();
+  context.strokeStyle = 'rgba(224,230,227,0.72)';
+  context.lineWidth = 2.5;
+  context.lineCap = 'round';
+  context.beginPath();
+  context.moveTo(28, 42);
+  context.bezierCurveTo(18, 31, 33, 27, 31, 18);
+  context.moveTo(47, 42);
+  context.bezierCurveTo(58, 31, 43, 26, 49, 15);
+  context.stroke();
+  return canvas;
+}
+
+function safeGlintArt(): HTMLCanvasElement {
+  const canvas = document.createElement('canvas');
+  canvas.width = 64;
+  canvas.height = 64;
+  const context = canvas.getContext('2d', { willReadFrequently: true })!;
+  const glow = context.createRadialGradient(32, 32, 1, 32, 32, 29);
+  glow.addColorStop(0, 'rgba(255,252,211,0.96)');
+  glow.addColorStop(0.18, 'rgba(255,237,157,0.86)');
+  glow.addColorStop(1, 'rgba(255,226,132,0)');
+  context.fillStyle = glow;
+  context.beginPath();
+  context.moveTo(32, 2);
+  context.quadraticCurveTo(37, 25, 62, 32);
+  context.quadraticCurveTo(37, 37, 32, 62);
+  context.quadraticCurveTo(27, 37, 2, 32);
+  context.quadraticCurveTo(27, 27, 32, 2);
+  context.fill();
+  context.fillStyle = '#fff8d4';
+  context.beginPath();
+  context.arc(32, 32, 3, 0, Math.PI * 2);
+  context.fill();
   return canvas;
 }
 
@@ -401,6 +520,9 @@ function hazardArt(): HazardArt {
   if (!bakedHazardArt) {
     bakedHazardArt = {
       crowAtlas: frameAtlas([crow(true), ...[0, 1, 2, 3].map((frame) => crowFlying(frame))]),
+      feather: featherArt(),
+      safeGlint: safeGlintArt(),
+      steamPuff: steamPuffArt(),
       rainCloud: rainCloudArt(),
       river: riverArt(),
       bramble: vineCurtain(),
@@ -437,13 +559,109 @@ function addInkSprite(
   return mesh;
 }
 
+function createEffectPool(
+  parent: Group,
+  count: number,
+  width: number,
+  height: number,
+  color: string,
+  opacity: number,
+  renderOrder: number,
+  map: CanvasTexture | null = null,
+): InstanceEffectPool {
+  const mesh = new InstancedMesh(
+    new PlaneGeometry(width, height),
+    new MeshBasicMaterial({ color, map, transparent: true, opacity, depthWrite: false, toneMapped: false }),
+    count,
+  );
+  mesh.instanceMatrix.setUsage(DynamicDrawUsage);
+  mesh.count = count;
+  mesh.renderOrder = renderOrder;
+  mesh.frustumCulled = false;
+  const hidden = new Object3D();
+  hidden.scale.set(0, 0, 0);
+  hidden.updateMatrix();
+  for (let index = 0; index < count; index++) mesh.setMatrixAt(index, hidden.matrix);
+  parent.add(mesh);
+  return {
+    mesh,
+    age: new Float32Array(count).fill(-1),
+    x: new Float32Array(count),
+    y: new Float32Array(count),
+    rotation: new Float32Array(count),
+    cursor: 0,
+  };
+}
+
+function triggerEffect(pool: InstanceEffectPool, x: number, y: number, rotation = 0): void {
+  const index = pool.cursor;
+  pool.cursor = (index + 1) % pool.age.length;
+  pool.age[index] = 0;
+  pool.x[index] = x;
+  pool.y[index] = y;
+  pool.rotation[index] = rotation;
+}
+
+function updateEffectPool(
+  pool: InstanceEffectPool,
+  transform: Object3D,
+  dt: number,
+  duration: number,
+  rise: number,
+  startScale: number,
+  endScale: number,
+  spin: number,
+  z: number,
+): void {
+  let changed = false;
+  for (let index = 0; index < pool.age.length; index++) {
+    const age = pool.age[index];
+    if (age < 0) continue;
+    const nextAge = age + dt;
+    if (nextAge >= duration) {
+      pool.age[index] = -1;
+      transform.position.set(0, 0, 0);
+      transform.rotation.z = 0;
+      transform.scale.set(0, 0, 0);
+      transform.updateMatrix();
+      pool.mesh.setMatrixAt(index, transform.matrix);
+      changed = true;
+      continue;
+    }
+    pool.age[index] = nextAge;
+    const progress = nextAge / duration;
+    const scale = startScale + (endScale - startScale) * progress;
+    transform.position.set(pool.x[index], pool.y[index] + rise * progress, z);
+    transform.rotation.z = pool.rotation[index] + spin * nextAge;
+    transform.scale.set(scale, scale, 1);
+    transform.updateMatrix();
+    pool.mesh.setMatrixAt(index, transform.matrix);
+    changed = true;
+  }
+  if (changed) pool.mesh.instanceMatrix.needsUpdate = true;
+}
+
 function newVisual(layout: HazardLayout): HazardVisual {
   const root = new Group();
   root.name = `hazard-${layout.kind}-${layout.slot}`;
   root.position.set(layout.x, 0, 0.0035);
   root.renderOrder = 8;
   const visual: HazardVisual = {
-    root, textures: [], crow: null, drops: null, boulder: null, wind: [], waterTexture: null,
+    root,
+    textures: [],
+    crow: null,
+    crowFeathers: null,
+    safeGlints: null,
+    rainStreaks: null,
+    rainStreakX: null,
+    rainStreakProgress: null,
+    rainStreakHold: null,
+    rainStreakStopY: null,
+    rainSplashes: null,
+    steamPuffs: null,
+    boulder: null,
+    wind: [],
+    waterTexture: null,
   };
   const width = layout.width;
   const art = hazardArt();
@@ -467,18 +685,51 @@ function newVisual(layout: HazardLayout): HazardVisual {
     visual.crow = addInkSprite(root, crowMap, 0.16, 0.151, 0.96);
     visual.crow.position.set(0, layout.floorY + 0.16, 0.008);
     visual.crow.renderOrder = 9;
+    const featherMap = createHazardTexture(visual, art.feather);
+    visual.crowFeathers = new InstancedMesh(
+      new PlaneGeometry(0.014, 0.027),
+      new MeshBasicMaterial({ map: featherMap, transparent: true, opacity: 0.94, depthWrite: false, toneMapped: false }),
+      MAX_CROW_FEATHERS,
+    );
+    visual.crowFeathers.instanceMatrix.setUsage(DynamicDrawUsage);
+    visual.crowFeathers.count = 0;
+    visual.crowFeathers.renderOrder = 10;
+    visual.crowFeathers.frustumCulled = false;
+    root.add(visual.crowFeathers);
+    visual.safeGlints = createEffectPool(
+      root, MAX_SAFE_GLINTS, 0.025, 0.025, '#ffffff', 0.94, 11,
+      createHazardTexture(visual, art.safeGlint),
+    );
   } else if (layout.kind === 'rain') {
-    const cloud = addInkSprite(root, createHazardTexture(visual, art.rainCloud), width * 0.96, 0.105, 0.76);
-    cloud.material.color.set('#e1e7e8');
+    const cloud = addInkSprite(root, createHazardTexture(visual, art.rainCloud), RAIN_CLOUD_WIDTH, 0.105, 0.92);
     cloud.position.set(0, 0.075, 0.004);
-    const dropGeometry = new PlaneGeometry(0.0022, 0.017);
-    const dropMaterial = new MeshBasicMaterial({ color: '#718794', transparent: true, opacity: 0.5, depthWrite: false });
-    visual.drops = new InstancedMesh(dropGeometry, dropMaterial, MAX_RAINDROPS);
-    visual.drops.instanceMatrix.setUsage(DynamicDrawUsage);
-    visual.drops.count = 0;
-    visual.drops.renderOrder = 10;
-    visual.drops.frustumCulled = false;
-    root.add(visual.drops);
+    visual.rainStreaks = new InstancedMesh(
+      new PlaneGeometry(0.0022, RAIN_STREAK_LENGTH),
+      new MeshBasicMaterial({ color: '#4d6879', transparent: true, opacity: 0.75, depthWrite: false, toneMapped: false }),
+      MAX_RAIN_STREAKS,
+    );
+    visual.rainStreaks.instanceMatrix.setUsage(DynamicDrawUsage);
+    visual.rainStreaks.count = MAX_RAIN_STREAKS;
+    visual.rainStreaks.renderOrder = 10;
+    visual.rainStreaks.frustumCulled = false;
+    visual.rainStreakX = new Float32Array(MAX_RAIN_STREAKS);
+    visual.rainStreakProgress = new Float32Array(MAX_RAIN_STREAKS);
+    visual.rainStreakHold = new Float32Array(MAX_RAIN_STREAKS);
+    visual.rainStreakStopY = new Float32Array(MAX_RAIN_STREAKS);
+    for (let index = 0; index < MAX_RAIN_STREAKS; index++) {
+      const row = Math.floor(index / 15);
+      const column = index % 15;
+      visual.rainStreakX[index] = ((column + 0.5 + (row % 2) * 0.32) / 15 - 0.5) * RAIN_CLOUD_WIDTH;
+      visual.rainStreakProgress[index] = (index * 0.61803398875) % 1;
+    }
+    root.add(visual.rainStreaks);
+    visual.rainSplashes = createEffectPool(
+      root, MAX_RAIN_SPLASHES, 0.018, 0.0028, '#526b79', 0.88, 11,
+    );
+    visual.steamPuffs = createEffectPool(
+      root, MAX_RAIN_STEAM_PUFFS, 0.046, 0.036, '#ffffff', 0.9, 12,
+      createHazardTexture(visual, art.steamPuff),
+    );
   } else if (layout.kind === 'thorns') {
     const bramble = addInkSprite(root, createHazardTexture(visual, art.bramble), 0.06, width, 0.84);
     bramble.rotation.z = -Math.PI / 2;
@@ -516,7 +767,7 @@ function disposeVisual(visual: HazardVisual): void {
 }
 
 function isActive(agent: Kindling): boolean {
-  return agent.state === 'walking' || agent.state === 'falling';
+  return !agent.carried && (agent.state === 'walking' || agent.state === 'falling');
 }
 
 function hasDynamicSolid(field: InkField, x: number, y: number): boolean {
@@ -531,6 +782,19 @@ function hasSolidNear(field: InkField, x: number, y: number, radius: number): bo
       const dx = ox * field.cell, dy = oy * field.cell;
       if (dx * dx + dy * dy > radius * radius) continue;
       if (hasDynamicSolid(field, x + dx, y + dy)) return true;
+    }
+  }
+  return false;
+}
+
+function hasFastSoftInkNear(field: InkField, x: number, y: number, radius: number): boolean {
+  const steps = Math.max(1, Math.ceil(radius / field.cell));
+  for (let offsetY = -steps; offsetY <= steps; offsetY++) {
+    for (let offsetX = -steps; offsetX <= steps; offsetX++) {
+      const dx = offsetX * field.cell, dy = offsetY * field.cell;
+      if (dx * dx + dy * dy > radius * radius) continue;
+      const index = field.index(x + dx, y + dy);
+      if (index >= 0 && field.soft[index] && Math.hypot(field.vx[index], field.vy[index]) >= 0.8) return true;
     }
   }
   return false;
@@ -668,6 +932,84 @@ export class HazardWorld {
     return true;
   }
 
+  repelCrow(x: number, radius: number, seconds: number): boolean {
+    let repelled = false;
+    for (const hazard of this.hazards) {
+      if (!hazard || hazard.kind !== 'crow' || Math.abs(hazard.crowX - x) > radius) continue;
+      hazard.crowMode = 2;
+      hazard.crowTimer = Math.max(hazard.crowTimer, seconds);
+      hazard.crowSwatted = true;
+      hazard.crowSwatElapsed = 0;
+      hazard.crowSwatX = hazard.crowX;
+      hazard.crowSwatY = hazard.crowY;
+      this.stats.crowSwats++;
+      this.onEvent?.({ kind: 'crow-swat', hazard: 'crow', x: hazard.crowX, y: hazard.crowY });
+      repelled = true;
+    }
+    return repelled;
+  }
+
+  suspendRain(x: number, radius: number, seconds: number): boolean {
+    let found = false;
+    for (const hazard of this.hazards) {
+      if (!hazard || hazard.kind !== 'rain' || Math.abs(hazard.x - x) > radius) continue;
+      hazard.suppressedUntil = Math.max(hazard.suppressedUntil, hazard.clock + seconds);
+      hazard.rainActive.fill(0);
+      found = true;
+    }
+    return found;
+  }
+
+  disableThorns(x: number, radius: number): boolean {
+    let found = false;
+    for (const hazard of this.hazards) {
+      if (!hazard || hazard.kind !== 'thorns' || hazard.removed || Math.abs(hazard.x - x) > radius) continue;
+      hazard.removed = true;
+      const left = hazard.x - hazard.width * 0.5;
+      const right = hazard.x + hazard.width * 0.5;
+      for (let row = 0; row < this.field.h; row++) {
+        const y = this.field.y0 + (row + 0.5) * this.field.cell;
+        if (y < hazard.floorY || y > hazard.floorY + 0.045) continue;
+        for (let column = 0; column < this.field.w; column++) {
+          const px = this.field.x0 + (column + 0.5) * this.field.cell;
+          if (px >= left - this.field.cell && px <= right + this.field.cell * 2)
+            this.field.staticSolid[row * this.field.w + column] = 0;
+        }
+      }
+      const visual = this.visuals[hazard.slot];
+      if (visual) visual.root.visible = false;
+      found = true;
+    }
+    return found;
+  }
+
+  cancelGust(x: number, radius: number, seconds: number): boolean {
+    let found = false;
+    for (const hazard of this.hazards) {
+      if (!hazard || hazard.kind !== 'gust' || Math.abs(hazard.x - x) > radius) continue;
+      hazard.suppressedUntil = Math.max(hazard.suppressedUntil, hazard.clock + seconds);
+      found = true;
+    }
+    return found;
+  }
+
+  shieldGust(x: number, radius: number, seconds: number): boolean {
+    return this.cancelGust(x, radius, seconds);
+  }
+
+  shatterBoulder(x: number, radius: number): boolean {
+    let found = false;
+    for (const hazard of this.hazards) {
+      if (!hazard || hazard.kind !== 'boulder' || !hazard.boulderActive || Math.abs(hazard.boulderX - x) > radius) continue;
+      hazard.boulderActive = false;
+      hazard.boulderNext = 8;
+      this.stats.bouldersCrumbled++;
+      this.onEvent?.({ kind: 'boulder-crumble', hazard: 'boulder', x: hazard.boulderX, y: hazard.floorY + hazard.radius });
+      found = true;
+    }
+    return found;
+  }
+
   dispose(): void {
     this.clearVisuals();
     this.hazards[0] = this.hazards[1] = null;
@@ -696,12 +1038,37 @@ export class HazardWorld {
     }
   }
 
+  private triggerSafeGlint(hazard: RuntimeHazard, agent: Kindling): void {
+    if (hazard.crowSafeGlintShown) return;
+    hazard.crowSafeGlintShown = true;
+    const visual = this.visuals[hazard.slot];
+    if (visual?.safeGlints) triggerEffect(visual.safeGlints, agent.x - hazard.x, agent.y + 0.022);
+  }
+
+  private glintShelteredWalkerNear(hazard: RuntimeHazard, x: number, y: number, radius: number): void {
+    if (hazard.crowSafeGlintShown) return;
+    const radiusSquared = radius * radius;
+    for (let index = 0; index < this.folk.count; index++) {
+      const agent = this.folk.agents[index];
+      if (!isActive(agent) || !hasShelterAbove(this.field, agent.x, agent.y)) continue;
+      const dx = agent.x - x, dy = agent.y - y;
+      if (dx * dx + dy * dy > radiusSquared) continue;
+      this.triggerSafeGlint(hazard, agent);
+      return;
+    }
+  }
+
   private updateCrow(hazard: RuntimeHazard, dt: number): void {
     if (hazard.crowMode === 2) {
+      if (hazard.crowSwatted) hazard.crowSwatElapsed += dt;
       hazard.crowTimer -= dt;
       if (hazard.crowTimer <= 0) {
         hazard.crowMode = 0;
         hazard.crowTimer = 0;
+        hazard.crowSwatted = false;
+        hazard.crowSafeGlintShown = false;
+        hazard.crowX = hazard.x;
+        hazard.crowY = hazard.floorY + 0.16;
       }
       return;
     }
@@ -722,6 +1089,7 @@ export class HazardWorld {
       }
       hazard.crowMode = 1;
       hazard.crowProgress = 0;
+      hazard.crowSafeGlintShown = false;
       hazard.crowStartX = hazard.x;
       hazard.crowStartY = hazard.floorY + 0.16;
       hazard.crowTargetX = nearest.x;
@@ -737,21 +1105,32 @@ export class HazardWorld {
       + 2 * inverse * t * hazard.crowControlX + t * t * hazard.crowTargetX;
     hazard.crowY = inverse * inverse * hazard.crowStartY
       + 2 * inverse * t * hazard.crowControlY + t * t * hazard.crowTargetY;
-    if (hasSolidNear(this.field, hazard.crowX, hazard.crowY, 0.014)) {
+    if (hasSolidNear(this.field, hazard.crowX, hazard.crowY, 0.014)
+      || hasFastSoftInkNear(this.field, hazard.crowX, hazard.crowY, 0.014)) {
+      this.glintShelteredWalkerNear(hazard, hazard.crowX, hazard.crowY, 0.18);
       hazard.crowMode = 2;
       hazard.crowTimer = 8;
+      hazard.crowSwatted = true;
+      hazard.crowSwatElapsed = 0;
+      hazard.crowSwatX = hazard.crowX;
+      hazard.crowSwatY = hazard.crowY;
       this.stats.crowSwats++;
       this.onEvent?.({ kind: 'crow-swat', hazard: hazard.kind, x: hazard.crowX, y: hazard.crowY });
       return;
     }
     for (let index = 0; index < this.folk.count; index++) {
       const agent = this.folk.agents[index];
-      if (!isActive(agent) || hasShelterAbove(this.field, agent.x, agent.y)) continue;
+      if (!isActive(agent)) continue;
       const dx = agent.x - hazard.crowX, dy = agent.y - hazard.crowY;
       if (dx * dx + dy * dy > 0.00042) continue;
+      if (hasShelterAbove(this.field, agent.x, agent.y)) {
+        this.triggerSafeGlint(hazard, agent);
+        continue;
+      }
       resetAgentAtDoor(this.folk, agent);
       hazard.crowMode = 2;
       hazard.crowTimer = 1.5;
+      hazard.crowSwatted = false;
       this.stats.crowGrabs++;
       this.onEvent?.({ kind: 'crow-grab', hazard: hazard.kind, x: agent.x, y: agent.y, agent });
       return;
@@ -759,10 +1138,12 @@ export class HazardWorld {
     if (hazard.crowProgress >= 1) {
       hazard.crowMode = 0;
       hazard.crowTimer = 6 + nextRandom(hazard) * 3;
+      hazard.crowSafeGlintShown = false;
     }
   }
 
   private updateRain(hazard: RuntimeHazard, dt: number): void {
+    if (hazard.clock < hazard.suppressedUntil) return;
     hazard.rainAccumulator += dt * 30;
     while (hazard.rainAccumulator >= 1) {
       hazard.rainAccumulator -= 1;
@@ -787,6 +1168,8 @@ export class HazardWorld {
       if (fieldIndex >= 0 && (this.field.solid[fieldIndex] || this.field.soft[fieldIndex])) {
         hazard.rainActive[drop] = 0;
         this.stats.rainDropsSheltered++;
+        const visual = this.visuals[hazard.slot];
+        if (visual?.rainSplashes) triggerEffect(visual.rainSplashes, x - hazard.x, y, -0.45);
         continue;
       }
       let hit = false;
@@ -797,6 +1180,8 @@ export class HazardWorld {
         if (dx * dx + dy * dy > 0.00036) continue;
         setAsh(this.folk, agent);
         this.stats.rainDropsHit++;
+        const visual = this.visuals[hazard.slot];
+        if (visual?.steamPuffs) triggerEffect(visual.steamPuffs, agent.x - hazard.x, agent.y + 0.006);
         this.onEvent?.({ kind: 'rain-hit', hazard: hazard.kind, x, y, agent });
         hit = true;
         break;
@@ -805,11 +1190,14 @@ export class HazardWorld {
       if (y <= hazard.floorY - 0.005 || fieldIndex < 0) {
         hazard.rainActive[drop] = 0;
         this.stats.rainDropsGrounded++;
+        const visual = this.visuals[hazard.slot];
+        if (visual?.rainSplashes) triggerEffect(visual.rainSplashes, x - hazard.x, hazard.floorY, 0);
       }
     }
   }
 
   private updateThorns(hazard: RuntimeHazard): void {
+    if (hazard.removed) return;
     const left = hazard.x - hazard.width * 0.5 - STEP_RADIUS;
     const right = hazard.x + hazard.width * 0.5 + STEP_RADIUS;
     for (let index = 0; index < this.folk.count; index++) {
@@ -825,6 +1213,7 @@ export class HazardWorld {
   }
 
   private updateGust(hazard: RuntimeHazard, dt: number): void {
+    if (hazard.clock < hazard.suppressedUntil) return;
     const phase = hazard.clock % 5;
     if (phase >= 2) return;
     const left = hazard.x - hazard.width * 0.5;
@@ -891,25 +1280,16 @@ export class HazardWorld {
 
   private updateVisual(hazard: RuntimeHazard, visual: HazardVisual, _dt: number): void {
     if (visual.waterTexture) visual.waterTexture.offset.x = (hazard.clock * 0.18) % 1;
-    if (visual.crow) {
-      visual.crow.visible = hazard.crowMode !== 2;
-      visual.crow.position.set(hazard.crowX - hazard.x, hazard.crowY, 0.008);
-      const frame = hazard.crowMode === 1 ? 1 + Math.floor(hazard.clock * 12) % 4 : 0;
-      visual.crow.material.map!.offset.x = frame / 5;
-      visual.crow.scale.x = hazard.crowMode === 1 && hazard.crowTargetX < hazard.crowStartX ? -1 : 1;
+    if (visual.crow) this.updateCrowVisual(hazard, visual);
+    if (visual.rainStreaks) this.updateRainVisual(hazard, visual, _dt);
+    if (visual.rainSplashes) {
+      updateEffectPool(visual.rainSplashes, this.transform, _dt, RAIN_SPLASH_LIFETIME, 0.001, 0.62, 0, 0, 0.011);
     }
-    if (visual.drops) {
-      let visible = 0;
-      for (let index = 0; index < MAX_RAINDROPS; index++) {
-        if (hazard.rainActive[index] === 0) continue;
-        this.transform.position.set(hazard.rainX[index] - hazard.x, hazard.rainY[index], 0.006);
-        this.transform.rotation.z = -0.12;
-        this.transform.scale.set(1, 1, 1);
-        this.transform.updateMatrix();
-        visual.drops.setMatrixAt(visible++, this.transform.matrix);
-      }
-      visual.drops.count = visible;
-      visual.drops.instanceMatrix.needsUpdate = visible > 0;
+    if (visual.steamPuffs) {
+      updateEffectPool(visual.steamPuffs, this.transform, _dt, RAIN_STEAM_LIFETIME, 0.026, 0.32, 1.28, 0.4, 0.012);
+    }
+    if (visual.safeGlints) {
+      updateEffectPool(visual.safeGlints, this.transform, _dt, SAFE_GLINT_LIFETIME, 0.006, 0.9, 0, 7, 0.012);
     }
     for (let index = 0; index < visual.wind.length; index++) {
       const streak = visual.wind[index];
@@ -924,6 +1304,128 @@ export class HazardWorld {
       const frame = Math.floor(hazard.clock * 8) % 3;
       visual.boulder.material.map!.offset.x = frame / 3;
     }
+  }
+
+  private updateCrowVisual(hazard: RuntimeHazard, visual: HazardVisual): void {
+    const crow = visual.crow!;
+    if (hazard.crowMode === 1) {
+      crow.visible = true;
+      crow.position.set(hazard.crowX - hazard.x, hazard.crowY, 0.008);
+      crow.material.map!.offset.x = (1 + Math.floor(hazard.clock * 12) % 4) / 5;
+      crow.rotation.z = 0;
+      crow.scale.x = hazard.crowTargetX < hazard.crowStartX ? -1 : 1;
+    } else if (hazard.crowMode === 2 && hazard.crowSwatted) {
+      const elapsed = hazard.crowSwatElapsed;
+      const exitEnd = CROW_TUMBLE_DURATION + CROW_EXIT_DURATION;
+      crow.visible = elapsed < exitEnd;
+      crow.material.map!.offset.x = 0;
+      crow.scale.x = hazard.crowTargetX < hazard.crowStartX ? -1 : 1;
+      if (elapsed < CROW_TUMBLE_DURATION) {
+        const progress = elapsed / CROW_TUMBLE_DURATION;
+        crow.position.set(
+          hazard.crowSwatX - hazard.x + Math.sin(progress * Math.PI * 4) * 0.008,
+          hazard.crowSwatY + Math.sin(progress * Math.PI * 3) * 0.012,
+          0.008,
+        );
+        crow.rotation.z = progress * Math.PI * 6;
+      } else {
+        const progress = Math.min(1, (elapsed - CROW_TUMBLE_DURATION) / CROW_EXIT_DURATION);
+        crow.position.set(hazard.crowSwatX - hazard.x, hazard.crowSwatY + progress * 0.62, 0.008);
+        crow.rotation.z = (1 - progress) * Math.PI * 6;
+      }
+    } else {
+      crow.visible = hazard.crowMode !== 2;
+      crow.position.set(hazard.crowX - hazard.x, hazard.crowY, 0.008);
+      crow.material.map!.offset.x = 0;
+      crow.rotation.z = 0;
+      crow.scale.x = 1;
+    }
+
+    const feathers = visual.crowFeathers;
+    if (!feathers) return;
+    const age = hazard.crowSwatElapsed;
+    if (!hazard.crowSwatted || age >= 0.72) {
+      feathers.count = 0;
+      return;
+    }
+    feathers.count = MAX_CROW_FEATHERS;
+    for (let index = 0; index < MAX_CROW_FEATHERS; index++) {
+      const featherAge = Math.min(age, 0.72);
+      const x = hazard.crowSwatX - hazard.x + FEATHER_VELOCITY_X[index] * featherAge;
+      const y = hazard.crowSwatY + FEATHER_VELOCITY_Y[index] * featherAge - 0.175 * featherAge * featherAge;
+      const scale = 1 - featherAge / 0.9;
+      this.transform.position.set(x, y, 0.009);
+      this.transform.rotation.z = FEATHER_ROTATION[index] + FEATHER_SPIN[index] * featherAge;
+      this.transform.scale.set(scale, scale, 1);
+      this.transform.updateMatrix();
+      feathers.setMatrixAt(index, this.transform.matrix);
+    }
+    feathers.instanceMatrix.needsUpdate = true;
+  }
+
+  private updateRainVisual(hazard: RuntimeHazard, visual: HazardVisual, dt: number): void {
+    if (hazard.clock < hazard.suppressedUntil) {
+      visual.root.position.y = Math.min(0.18, (hazard.suppressedUntil - hazard.clock) * 0.08);
+      if (visual.rainStreaks) visual.rainStreaks.visible = false;
+      return;
+    }
+    visual.root.position.y = 0;
+    if (visual.rainStreaks) visual.rainStreaks.visible = true;
+    const streaks = visual.rainStreaks!;
+    const streakX = visual.rainStreakX!;
+    const progress = visual.rainStreakProgress!;
+    const hold = visual.rainStreakHold!;
+    const stopY = visual.rainStreakStopY!;
+    const halfLength = RAIN_STREAK_LENGTH * 0.5;
+    const travel = RAIN_STREAK_TOP - (hazard.floorY + halfLength);
+    const progressStep = RAIN_STREAK_SPEED * dt / travel;
+
+    for (let index = 0; index < MAX_RAIN_STREAKS; index++) {
+      let centerY = RAIN_STREAK_TOP;
+      if (hold[index] > 0) {
+        hold[index] -= dt;
+        if (hold[index] > 0) {
+          centerY = stopY[index] + halfLength;
+        } else {
+          hold[index] = 0;
+          progress[index] = 0;
+        }
+      } else {
+        progress[index] += progressStep;
+        if (progress[index] >= 1) {
+          progress[index] = 1;
+          hold[index] = RAIN_STREAK_HOLD;
+          stopY[index] = hazard.floorY;
+          centerY = stopY[index] + halfLength;
+          if (visual.rainSplashes) triggerEffect(visual.rainSplashes, streakX[index], hazard.floorY);
+        } else {
+          centerY = RAIN_STREAK_TOP - progress[index] * travel;
+          const impactY = centerY - halfLength;
+          const worldX = hazard.x + streakX[index];
+          if (impactY <= hazard.floorY) {
+            hold[index] = RAIN_STREAK_HOLD;
+            stopY[index] = hazard.floorY;
+            centerY = stopY[index] + halfLength;
+            if (visual.rainSplashes) triggerEffect(visual.rainSplashes, streakX[index], hazard.floorY);
+          } else {
+            const fieldIndex = this.field.index(worldX, impactY);
+            if (fieldIndex >= 0 && (this.field.solid[fieldIndex] || this.field.soft[fieldIndex])) {
+              const contactY = impactY + this.field.cell * 0.5;
+              hold[index] = RAIN_STREAK_HOLD;
+              stopY[index] = contactY;
+              centerY = contactY + halfLength;
+              if (visual.rainSplashes) triggerEffect(visual.rainSplashes, streakX[index], contactY, -0.45);
+            }
+          }
+        }
+      }
+      this.transform.position.set(streakX[index], centerY, 0.006);
+      this.transform.rotation.z = -0.12;
+      this.transform.scale.set(1, 1, 1);
+      this.transform.updateMatrix();
+      streaks.setMatrixAt(index, this.transform.matrix);
+    }
+    streaks.instanceMatrix.needsUpdate = true;
   }
 
   private observeAsh(): void {
