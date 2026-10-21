@@ -7,6 +7,8 @@ export interface Kindling {
   state: FolkState; fallStartY: number; age: number; homeAge: number;
   pushCooldown: number; tint: number; scale: number; isWick: boolean;
   carried: boolean;
+  /** Stopped at an edge it will not walk off (prologue): drawn wobbling. */
+  waiting: boolean;
 }
 
 const MAX_FOLK = 48;
@@ -16,7 +18,7 @@ const STEP = 1 / 120;
 export class FolkWorld {
   readonly agents: Kindling[] = Array.from({ length: MAX_FOLK }, () => ({
     x: 0, y: 0, vx: 0, vy: 0, heading: 1, state: 'inactive', fallStartY: 0, age: 0, homeAge: 0, pushCooldown: 0,
-    tint: 0xffe0a0, scale: 1, isWick: false, carried: false,
+    tint: 0xffe0a0, scale: 1, isWick: false, carried: false, waiting: false,
   }));
   count = 0;
   homeCount = 0;
@@ -30,6 +32,8 @@ export class FolkWorld {
   waveCount = 0;
   walkSpeedFactor = 1;
   softWalkFactor = 0.5;
+  /** Walkers stop and wobble at a drop instead of walking off it (the prologue: Wick waits for your hand). */
+  edgeWait = false;
   onEvent?: (kind: 'walk' | 'ash' | 'home', agent: Kindling) => void;
   private clock = 0;
   private accumulator = 0;
@@ -64,6 +68,7 @@ export class FolkWorld {
     agent.heading = heading < 0 ? -1 : 1;
     agent.state = 'falling'; agent.fallStartY = y; agent.age = 0; agent.homeAge = 0; agent.pushCooldown = 0;
     agent.carried = false;
+    agent.waiting = false;
     agent.isWick = this.count === 1;
     agent.tint = agent.isWick ? 0xfff5d2 : 0xffe0a0;
     agent.scale = agent.isWick ? 1.2 : 1;
@@ -147,7 +152,11 @@ export class FolkWorld {
             while (height <= 2 && this.field.sample(aheadX, aheadY + height * cell) === 1) height++;
             if (height <= 2) agent.y += height * cell;
             else agent.heading = -agent.heading;
-          } else agent.x += agent.heading * 0.055 * this.walkSpeedFactor * (inSoft ? this.softWalkFactor : 1) * STEP;
+          } else if (this.edgeWait && this.dropAhead(agent, footY)) agent.waiting = true;
+          else {
+            agent.waiting = false;
+            agent.x += agent.heading * 0.055 * this.walkSpeedFactor * (inSoft ? this.softWalkFactor : 1) * STEP;
+          }
           const supportIndex = this.field.index(supportX, footY);
           const inkY = supportIndex >= 0 ? this.field.vy[supportIndex] : 0;
           if (inkY > 0.14 && agent.pushCooldown === 0 && supportIndex >= 0 && this.field.solid[supportIndex]) {
@@ -164,7 +173,7 @@ export class FolkWorld {
         agent.state = 'falling'; agent.fallStartY = agent.y; agent.vy = inSoft ? -0.04 : 0;
       }
       if (support === 1 && agent.vy <= 0) {
-        if (agent.fallStartY - agent.y > 0.24 && !inSoft) {
+        if (agent.fallStartY - agent.y > 0.24 && !inSoft && !this.edgeWait) {
           agent.state = 'ash'; this.ashCount++; this.onEvent?.('ash', agent); continue;
         }
         agent.y = this.field.y0 + (Math.floor((footY - this.field.y0) / cell) + 1) * cell + RADIUS;
@@ -177,9 +186,19 @@ export class FolkWorld {
       agent.vx *= 0.995;
       if (inSoft) agent.fallStartY = agent.y;
       if (agent.y < -0.37 || agent.x < -0.62 || agent.x > 0.62) {
-        agent.state = 'ash'; this.ashCount++; this.onEvent?.('ash', agent);
+        // Prologue: nothing is lost; a stray spark tumbles back out of the lantern door.
+        if (this.edgeWait) { agent.x = this.spawnX; agent.y = this.spawnY; agent.vx = agent.vy = 0; agent.fallStartY = agent.y; }
+        else { agent.state = 'ash'; this.ashCount++; this.onEvent?.('ash', agent); }
       }
     }
+  }
+
+  /** True when the next step would leave every support within three cells below the feet. */
+  private dropAhead(agent: Kindling, footY: number): boolean {
+    const cell = this.field.cell;
+    const leadX = agent.x + agent.heading * (RADIUS * 0.45 + cell);
+    for (let depth = 0; depth <= 3; depth++) if (this.field.sample(leadX, footY - depth * cell) === 1) return false;
+    return true;
   }
 
   private walkTick(agent: Kindling): void {

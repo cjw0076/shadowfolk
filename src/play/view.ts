@@ -256,7 +256,8 @@ export class PlayView {
         this.frames.setX(slot, agent.state === 'home' ? KINDLING_FRAMES.cheer
           : agent.state === 'falling' ? KINDLING_FRAMES.fall
           : wickNearHand ? KINDLING_FRAMES.wave
-            : KINDLING_FRAMES.walk[Math.floor(time * 7 + index) & 3]);
+            : agent.waiting ? (Math.floor(time * 3 + index) & 1 ? KINDLING_FRAMES.fall : KINDLING_FRAMES.idle)
+              : KINDLING_FRAMES.walk[Math.floor(time * 7 + index) & 3]);
       }
       const pulse = agent.state === 'walking' ? (Math.floor(time * 7 + index) % 2 ? 1 : 0.88) : 1;
       const size = agent.state === 'ash' ? 0.038 : agent.state === 'home' ? 0.029 : 0.067;
@@ -265,7 +266,8 @@ export class PlayView {
         agent.y + (particle === this.folk ? size * (0.5 - KINDLING_FOOT) - 0.011 : 0)
           + (agent.state === 'home' ? (0.25 - agent.y) * arrival + Math.sin(arrival * Math.PI) * 0.06 : 0), 0.003);
       this.transform.scale.set(size * agent.heading * pulse * agent.scale, size * agent.scale, 1);
-      this.transform.rotation.z = agent.state === 'falling' ? Math.max(-0.45, Math.min(0.45, agent.vx * 0.3)) : 0;
+      this.transform.rotation.z = agent.state === 'falling' ? Math.max(-0.45, Math.min(0.45, agent.vx * 0.3))
+        : agent.waiting ? Math.sin(time * 9 + index) * 0.14 * agent.heading : 0;
       this.transform.updateMatrix();
       particle.setMatrixAt(slot, this.transform.matrix);
     }

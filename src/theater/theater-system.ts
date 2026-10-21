@@ -413,6 +413,7 @@ export class TheaterSystem extends createSystem({
   private allHands: LiveHand[] = [];
   private mirrored: HandPose[] = [];
   private demoHand!: LiveHand;
+  private prologueWaitAt = -Infinity;
   private reliefJoints = [new Float32Array(JOINT_COUNT * 3), new Float32Array(JOINT_COUNT * 3)];
   private demoHand2!: LiveHand;
   private live = new Mask(170, 120, -0.68, -0.48, 0.008);
@@ -853,6 +854,9 @@ export class TheaterSystem extends createSystem({
     this.crossingHintAt = -Infinity;
     this.crossingCaption = night === 0 ? 'Every lantern in the shadow-world has gone out.'
       : `${arcNight(night, this.arcSeed()).moon} · Guide them home.`;
+    // Prologue: no fall is possible; Wick waits at the gap until a shadow bridges it.
+    this.playFolk!.edgeWait = night === 0;
+    this.prologueWaitAt = -Infinity;
     this.crossingCaptionAt = this.animationTime;
     this.crossingHomeAt = -Infinity;
     this.playView!.root.visible = true;
@@ -2166,9 +2170,43 @@ export class TheaterSystem extends createSystem({
     hand.valid = true;
   }
 
+  /** Prologue, as the story tells it: dark ember, the hand enters and the lantern blooms, Wick walks
+   * to the gap and wobbles, the ghost palm shows the bridge, then the hand lays it. */
+  private drivePrologueDemo(): void {
+    const crossing = this.crossing!;
+    this.demoHand2.valid = false;
+    if (crossing.screen !== this.crossingDemoScreen) {
+      this.crossingDemoScreen = crossing.screen;
+      this.crossingDemoAt = this.animationTime;
+    }
+    const elapsed = this.animationTime - this.crossingDemoAt;
+    if (elapsed < 3) { this.demoHand.valid = false; return; }
+    // The hand greets high in the middle, clear of Wick, then lays the bridge from below the gap.
+    const greetX = 0.06, greetY = 0.08;
+    const gapX = crossing.level.hazards[0]?.x ?? -0.17;
+    const waited = this.prologueWaitAt === -Infinity ? 0 : this.animationTime - this.prologueWaitAt;
+    let x: number, y: number;
+    if (waited < 1.8) {
+      const enter = ease((elapsed - 3) / 1.1);
+      x = 0.5 + (greetX - 0.5) * enter;
+      y = 0.26 + (greetY - 0.26) * enter;
+    } else if (waited < 3.0) {
+      const drop = ease((waited - 1.8) / 1.2);
+      x = greetX + (gapX + 0.02 - greetX) * drop;
+      y = greetY + (-0.40 - greetY) * drop;
+    } else {
+      const rise = ease((waited - 3.0) / 1.0);
+      x = gapX + 0.02 - 0.02 * rise;
+      y = -0.40 + (-0.23 + 0.40) * rise;
+    }
+    this.crossingDemoX = x; this.crossingDemoY = y;
+    this.setProjectedPlayHand(this.demoHand, this.playDemoPose, x, y, 1);
+  }
+
   private driveCrossingDemo(): void {
     const crossing = this.crossing;
     if (!crossing || crossing.finished) { this.demoHand.valid = this.demoHand2.valid = false; return; }
+    if (crossing.night === 0) { this.drivePrologueDemo(); return; }
     if (crossing.screen !== this.crossingDemoScreen) {
       this.crossingDemoScreen = crossing.screen;
       this.crossingDemoAt = this.animationTime;
@@ -2685,7 +2723,8 @@ export class TheaterSystem extends createSystem({
     } else if ((this.phase === Phase.Prologue || this.phase === Phase.Crossing) && this.crossing && this.playView && this.playField && this.playFolk) {
       const began = perf ? performance.now() : 0;
       this.updateSummonTrigger(dt, anyReal, useDemo);
-      if (this.demo || !this.immersive || !this.settle && this.fitUntil === 0) this.crossing.update(dt);
+      const prologueDark = this.phase === Phase.Prologue && this.awaitingLight;
+      if (!prologueDark && (this.demo || !this.immersive || !this.settle && this.fitUntil === 0)) this.crossing.update(dt);
       if (perf) perf.playAgents.push(performance.now() - began);
       const viewAt = perf ? performance.now() : 0;
       this.playView.update(this.playFolk, this.playField, this.animationTime);
@@ -2698,10 +2737,13 @@ export class TheaterSystem extends createSystem({
           this.crossingCaption = 'Yours is the last.';
           this.crossingCaptionAt = this.animationTime;
         }
-        if (this.crossing.home === 0 && this.playFolk.count > 0) {
-          this.poseToWorld(this.playDemoPose, this.posePositions, 0, [-0.17, -0.22, 0]);
+        const wick = this.playFolk.count > 0 ? this.playFolk.agents[0] : null;
+        if (wick?.waiting && this.prologueWaitAt === -Infinity) this.prologueWaitAt = this.animationTime;
+        if (this.crossing.home === 0 && wick?.waiting) {
+          const gapX = this.crossing.level.hazards[0]?.x ?? -0.17;
+          this.poseToWorld(this.playDemoPose, this.posePositions, 0, [gapX, -0.22, 0]);
           this.ghost.update(this.posePositions, this.playDemoPose.radii);
-          this.ghost.opacity = 0.28 * ease(this.phaseTime / 0.6);
+          this.ghost.opacity = 0.32 * ease((this.animationTime - this.prologueWaitAt - 0.5) / 0.6);
         } else this.ghost.opacity = 0;
       } else if (this.animationTime - this.crossingHintAt < 3) {
         this.poseToWorld(this.playDemoPose, this.posePositions, 0,
@@ -2711,7 +2753,8 @@ export class TheaterSystem extends createSystem({
           1 - ease((this.animationTime - this.crossingHintAt - 2.5) / 0.5));
       } else this.ghost.opacity = 0;
       if (this.animationTime - this.crossingCaptionAt < 4.5) p.caption(this.crossingCaption, 0.9, 0.25);
-      if (this.crossing.finished) this.finishCrossing();
+      // Prologue: let "One spark home. The moon remembers." and the first sliver of moon land before the wake.
+      if (this.crossing.finished && (this.phase !== Phase.Prologue || this.animationTime - this.crossingCaptionAt > 4)) this.finishCrossing();
     } else switch (this.phase) {
       case Phase.Seek: this.seek(target, stencil, casters, dt, this.animationTime); break;
       case Phase.Wake: this.wake(target, stencil, this.animationTime); break;
