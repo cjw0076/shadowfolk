@@ -23,6 +23,36 @@ function bakedTexture(canvas: HTMLCanvasElement): CanvasTexture {
   return texture;
 }
 
+/** Width of the sumi wash band in paper widths: its solid middle is exactly one paper wide. */
+const WASH_BAND = 1 / (1 - 2 * 0.12);
+
+/** The screen-change wash: a sumi band with ragged, feathered edges on both sides, baked once.
+ *  The outer columns stay transparent so clamped UVs outside the band draw nothing. */
+function washTexture(): CanvasTexture {
+  const width = 1024, height = 128;
+  const [canvas, context] = bakedCanvas(width, height);
+  const image = context.createImageData(width, height);
+  const feather = 0.12 * width;
+  for (let y = 0; y < height; y++) {
+    const v = y / height;
+    const ragged = (Math.sin(v * 23.1) * 0.5 + Math.sin(v * 57.3 + 1.7) * 0.3 + Math.sin(v * 131 + 0.4) * 0.2) * 0.32;
+    const raggedRight = (Math.sin(v * 19.7 + 2.2) * 0.5 + Math.sin(v * 61.9 + 0.8) * 0.3 + Math.sin(v * 127 + 2.9) * 0.2) * 0.32;
+    for (let x = 0; x < width; x++) {
+      const left = Math.min(1, Math.max(0, (x - 2) / feather + ragged));
+      const right = Math.min(1, Math.max(0, (width - 3 - x) / feather + raggedRight));
+      const edge = Math.min(left, right);
+      const fibre = 0.91 + 0.06 * Math.sin(x * 0.011 + y * 0.05) * Math.sin(y * 0.031 - x * 0.006);
+      const k = (y * width + x) * 4;
+      image.data[k] = 43; image.data[k + 1] = 33; image.data[k + 2] = 28;
+      image.data[k + 3] = x < 2 || x > width - 3 ? 0 : 255 * fibre * edge * edge * (3 - 2 * edge);
+    }
+  }
+  context.putImageData(image, 0, 0);
+  const texture = bakedTexture(canvas);
+  texture.repeat.set(1 / WASH_BAND, 1);
+  return texture;
+}
+
 function particleTexture(spark: boolean): CanvasTexture {
   const [canvas, context] = bakedCanvas(48, 48);
   const gradient = context.createRadialGradient(24, 24, 1, 24, 24, 23);
@@ -101,7 +131,7 @@ export class PlayView {
     this.doorGlow.renderOrder = 6.8;
     this.root.add(this.doorGlow);
     this.wash = new Mesh(new PlaneGeometry(1, 0.66), new MeshBasicMaterial({
-      color: '#2b211c', transparent: true, opacity: 0.94, depthWrite: false, toneMapped: false,
+      map: washTexture(), transparent: true, depthWrite: false, toneMapped: false,
     }));
     this.wash.position.z = 0.006;
     this.wash.renderOrder = 13;
@@ -223,10 +253,14 @@ export class PlayView {
     this.terrain.material.map!.needsUpdate = true;
   }
 
-  setWash(amount: number): void {
-    this.wash.visible = amount > 0;
-    this.wash.scale.x = Math.max(0.001, Math.min(1, amount));
-    this.wash.position.x = -0.5 + this.wash.scale.x * 0.5;
+  /** The wash sweeps in from the left (`cover` 0 → 1), then on across to uncover the new screen
+   *  (`reveal` 1 → 0). Only the texture offset moves; the plane stays clipped to the paper. */
+  setWash(cover: number, reveal = 0): void {
+    const smooth = (t: number) => { const u = Math.min(1, Math.max(0, t)); return u * u * (3 - 2 * u); };
+    const travel = 0.5 + WASH_BAND / 2;
+    const centre = reveal > 0 ? (1 - smooth(reveal)) * travel : -travel + smooth(cover) * travel;
+    this.wash.visible = cover > 0 || reveal > 0;
+    this.wash.material.map!.offset.x = (WASH_BAND / 2 - 0.5 - centre) / WASH_BAND;
   }
 
   /** The saved Kindlings climb from the moon door; only instance transforms change. */
