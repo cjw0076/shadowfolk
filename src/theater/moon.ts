@@ -28,6 +28,7 @@ export class Moon {
   private phaseDrawIn = 0;
   private flash = 0;
   private flashMaterial: MeshBasicMaterial;
+  private wipe = { value: 1 };
   private stars = 0;
   private queen = false;
 
@@ -36,6 +37,13 @@ export class Moon {
     this.texture = new CanvasTexture(this.canvas);
     this.texture.colorSpace = SRGBColorSpace;
     this.material = new MeshBasicMaterial({ map: this.texture, transparent: true, depthWrite: false, toneMapped: false });
+    this.material.onBeforeCompile = shader => {
+      shader.uniforms.moonWipe = this.wipe;
+      shader.vertexShader = `varying vec2 vMoonWipeUv;\n${shader.vertexShader}`
+        .replace('#include <begin_vertex>', '#include <begin_vertex>\n vMoonWipeUv = uv;');
+      shader.fragmentShader = `varying vec2 vMoonWipeUv;\nuniform float moonWipe;\n${shader.fragmentShader}`
+        .replace('void main() {', 'void main() { if (vMoonWipeUv.x > moonWipe) discard;');
+    };
     this.mesh = new Mesh(new PlaneGeometry(diameter * 1.6, diameter * 1.6), this.material);
     this.mesh.name = 'Moon';
     this.mesh.renderOrder = 0.5;
@@ -65,6 +73,9 @@ export class Moon {
     this.targetPhase = Math.max(0, Math.min(1, p));
     this.flash = 1;
   }
+
+  /** Reveal a prepainted phase without uploading a canvas during the night card. */
+  setWipe(value: number): void { this.wipe.value = Math.max(0, Math.min(1, value)); }
 
   update(dt: number): void {
     if (this.flash > 0) {

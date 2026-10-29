@@ -216,7 +216,8 @@ try {
     && result.endingDuration <= 30.5 && result.daily.moonDiameter <= 0.12
     && (process.env.XR_ENDING_NOWAVE === '1' ? result.waveAt === null : result.waveAt !== null)
     && (process.env.XR_ENDING_IWER !== '1' || result.waveTrials.every(Boolean));
-  writeFileSync(`../collab/codex/24-ending-${fastWave ? 'xr-wave' : process.env.XR_ENDING_NOWAVE === '1' ? 'nowave' : 'browser'}.json`,
+  writeFileSync(process.env.XR_ENDING_OUT
+    ?? `../collab/codex/24-ending-${fastWave ? 'xr-wave' : process.env.XR_ENDING_NOWAVE === '1' ? 'nowave' : 'browser'}.json`,
     `${JSON.stringify(result, null, 2)}\n`);
   console.log(JSON.stringify(result, null, 2));
   if (!result.pass) process.exitCode = 1;

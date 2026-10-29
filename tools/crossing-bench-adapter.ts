@@ -388,6 +388,8 @@ function runLevel(
 
   const field = new InkField();
   const folk = new FolkWorld(field, options.seed);
+  // The no-hand arm is a tracked but idle hand: trackingGrace stays false.
+  // That preserves the ordinary unbridged crossing baseline.
   const hazards = new HazardWorld(field, folk);
   const handCache = new Map<string, SyntheticHand>();
   let total = 0;
