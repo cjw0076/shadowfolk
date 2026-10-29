@@ -2791,7 +2791,7 @@ export class TheaterSystem extends createSystem({
       if (perf) perf.playAgents.push(performance.now() - began);
       const viewAt = perf ? performance.now() : 0;
       this.playView.update(this.playFolk, this.playField, this.animationTime);
-      this.playView.setWash(this.crossing.wiping ? this.crossing.wash : 0);
+      this.playView.setWash(this.crossing.wiping ? this.crossing.wash : 0, this.crossing.reveal);
       if (perf) perf.playView.push(performance.now() - viewAt);
       perf?.play.push(playMs + performance.now() - began);
       if (this.phase === Phase.Prologue) {

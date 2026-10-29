@@ -30,6 +30,8 @@ export class CrossingRuntime {
   finished = false;
   wiping = false;
   wash = 0;
+  /** After a screen change, the wash moves on across the new screen (1 → 0); drawing only. */
+  reveal = 0;
   onEvent?: (event: CrossingEvent) => void;
   onHazardTiming?: (milliseconds: number) => void;
   private elapsed = 0;
@@ -60,6 +62,7 @@ export class CrossingRuntime {
     this.stars = 0;
     this.finished = this.wiping = this.warned = false;
     this.wash = 0;
+    this.reveal = 0;
     this.summons.reset();
     this.startScreen();
   }
@@ -70,9 +73,10 @@ export class CrossingRuntime {
     if (this.finished) return;
     if (this.wiping) {
       this.wash = Math.min(1, this.wash + dt / 0.8);
-      if (this.wash >= 1) { this.wiping = false; this.screen++; this.startScreen(); }
+      if (this.wash >= 1) { this.wiping = false; this.screen++; this.startScreen(); this.reveal = 1; }
       return;
     }
+    this.reveal = Math.max(0, this.reveal - dt / 0.6);
     this.screenElapsed += dt;
     if (this.night !== 0) {
       this.elapsed += dt;

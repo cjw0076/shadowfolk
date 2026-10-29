@@ -122,7 +122,14 @@ try {
     });
     if (ready) break;
   }
-  if (!ready) throw new Error('IWER living-room table placement did not settle');
+  if (!ready) {
+    const state = await page.evaluate(() => {
+      const theater = window.__theater;
+      return { immersive: theater.immersive, mode: theater.mode, placed: theater.placed, anchored: theater.anchored,
+        settle: theater.settle, fitUntil: theater.fitUntil, phase: theater.phase };
+    });
+    throw new Error(`IWER living-room table placement did not settle: ${JSON.stringify(state)}`);
+  }
   for (let index = 0; index < Math.round((shot.warmup ?? 0) * fps); index++) await step(page);
   const rig = await page.evaluate(() => {
     const theater = window.__theater;
