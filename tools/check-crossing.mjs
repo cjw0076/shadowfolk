@@ -199,6 +199,10 @@ async function runNight(page, night, expectedPlayed, beforeFireflies, previousMo
   `night ${night} best score was not persisted: ${JSON.stringify(progress?.best)}`);
   assert(progress.fireflies === beforeFireflies + crossing.home,
     `night ${night} fireflies mismatch: saved ${progress.fireflies}, expected ${beforeFireflies + crossing.home}`);
+  // The Home card now holds the prior moon until its 3–5 s wax beat, then commits
+  // the new texture as it leaves at 8 s. Inspect that committed phase.
+  await advance(page, Math.ceil(8.1 / STEP_SECONDS));
+  state = await snapshot(page);
   assert(state.moonSignature && state.moonPhase > previousMoon,
     `night ${night} moon did not brighten after a saved best score`);
   assertNoErrors(errors, `night ${night}`);

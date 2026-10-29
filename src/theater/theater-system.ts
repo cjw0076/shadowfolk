@@ -30,6 +30,7 @@ import { GhostHand, Lantern, PaperScreen, RoomDim, buildLantern, buildRoomDim, b
 import { SkinHand } from './skin-hand.js';
 import { captureControl } from '../capture.js';
 import { Moon, isFullMoon, moonPhase } from './moon.js';
+import { NightCardView } from './night-card.js';
 import { PreviewRoom } from './preview-room.js';
 import { WallLayer } from './wall.js';
 import { LightRays } from './rays.js';
@@ -38,6 +39,7 @@ import { InkField } from '../play/ink-field.js';
 import { FolkWorld } from '../play/folk.js';
 import { PlayView } from '../play/view.js';
 import { arcNight, moonFill, validArcSave, type ArcSave } from '../play/arc.js';
+import { DAILY_MOOD, TOMORROW_HINTS } from '../play/teasers.js';
 import { CrossingRuntime } from '../play/crossing.js';
 import { MothWorld, type MothAgent, type MothPoint, type MothStage } from '../play/moths.js';
 import { detectWave, type WaveSample } from '../play/wave.js';
@@ -386,6 +388,18 @@ export class TheaterSystem extends createSystem({
   private fresh = -1; // index into TARGETS of tonight's newly joined creature
   private nightTitle = '';
   private moon = new Moon(0.11);
+  private cardMoon = new Moon(0.11);
+  private nightCard = new NightCardView();
+  private cardMoonBefore = 0;
+  private cardMoonAfter = 0;
+  private cardNewBest = false;
+  private cardMoonFlash = false;
+  private cardTeaser = '';
+  private replayHold = [0, 0];
+  private replayWrist = [new Vector3(), new Vector3()];
+  private replayWristSeen = [false, false];
+  private activeCrossingSeed = 0;
+  private trackingLostFor = 0;
   private moonPreviewBest: number[] | null = null;
   private fullMoon = false;
   // Inventing a creature of your own after the finale.
@@ -608,6 +622,10 @@ export class TheaterSystem extends createSystem({
     // Tonight's moon sits in the paper's top-left corner, under the shadows.
     this.moon.mesh.position.set(SCREEN_W / 2 - 0.095, SCREEN_H / 2 - 0.09, 0.0002);
     this.painter.root.add(this.moon.mesh);
+    this.cardMoon.mesh.visible = false;
+    this.cardMoon.mesh.renderOrder = 0.51;
+    this.painter.root.add(this.cardMoon.mesh);
+    this.painter.root.add(this.nightCard.root);
     const cap = captureControl();
     if (cap) this.audio.onCue = (kind, arg) => cap.cues.push({ t: cap.time, kind, arg });
     if (cap) {
@@ -627,6 +645,11 @@ export class TheaterSystem extends createSystem({
               y: agent.y, age: agent.age, uses: agent.uses })),
           summonFires: this.crossing.summons.fireCount,
           autoSummonFires: this.crossing.summons.autoFireCount } : null,
+        nightCard: this.phase === Phase.Home && this.crossing?.night !== 8 ? {
+          t: this.phaseTime, stamped: this.nightCard.stamped, earned: this.crossing?.stars ?? 0,
+          moonBefore: this.cardMoonBefore, moonAfter: this.cardMoonAfter,
+          teaser: this.cardTeaser, seed: this.activeCrossingSeed,
+        } : null,
       });
     }
     this.newNight();
@@ -839,15 +862,21 @@ export class TheaterSystem extends createSystem({
   }
 
   private beginCrossing(night = Number.isSafeInteger(this.forcedNight) && this.forcedNight >= 0
-    ? this.forcedNight : this.saved.v3?.night ?? 1): void {
+    ? this.forcedNight : this.saved.v3?.night ?? 1, replaySeed?: number): void {
     if (!this.crossing) return;
     const params = new URLSearchParams(location.search);
     const hazards = this.crossingOnly && params.has('hazards') ? (params.get('hazards') ?? '').split(',')
       .filter((kind): kind is HazardKind => ['gap', 'ledge', 'highLedge', 'river', 'crow', 'rain', 'thorns', 'gust', 'boulder'].includes(kind)) : undefined;
     const count = Number(params.get('kindlings'));
-    this.crossing.start(night, this.arcSeed(), hazards,
+    this.activeCrossingSeed = replaySeed ?? this.arcSeed();
+    this.crossing.start(night, this.activeCrossingSeed, hazards,
       this.crossingOnly && Number.isSafeInteger(count) && count > 0 ? Math.min(40, count) : undefined);
-    this.moths.start(night, this.arcSeed(), moonPhase());
+    this.moths.start(night, this.activeCrossingSeed, moonPhase());
+    this.cardMoon.mesh.visible = false;
+    this.nightCard.reset();
+    this.replayHold[0] = this.replayHold[1] = 0;
+    this.replayWristSeen[0] = this.replayWristSeen[1] = false;
+    this.trackingLostFor = 0;
     this.mothDemoReachAt = this.mothDemoReachUntil = -Infinity;
     this.endingMoonLit = false;
     this.endingEntries = this.endingLeaps = this.endingNotes = 0;
@@ -882,6 +911,7 @@ export class TheaterSystem extends createSystem({
       : `${arcNight(night, this.arcSeed()).moon} · Guide them home.`;
     // Prologue: no fall is possible; Wick waits at the gap until a shadow bridges it.
     this.playFolk!.edgeWait = night === 0;
+    this.playFolk!.trackingGrace = false;
     this.prologueWaitAt = -Infinity;
     this.crossingCaptionAt = this.animationTime;
     this.crossingHomeAt = -Infinity;
@@ -904,17 +934,32 @@ export class TheaterSystem extends createSystem({
       return;
     }
     const fraction = crossing.home / Math.max(1, crossing.total);
+    const previousBest = progress.best[crossing.night] ?? 0;
+    this.cardMoonBefore = moonFill(this.moonPreviewBest ?? progress.best);
+    this.cardNewBest = fraction > previousBest + 0.00001;
     if (crossing.night <= 8) progress.best[crossing.night] = Math.max(progress.best[crossing.night], fraction);
     if (this.moonPreviewBest && crossing.night <= 8)
       this.moonPreviewBest[crossing.night] = Math.max(this.moonPreviewBest[crossing.night], fraction);
+    this.cardMoonAfter = moonFill(this.moonPreviewBest ?? progress.best);
     progress.fireflies += crossing.home;
     progress.nightsPlayed++;
     progress.night = crossing.night + 1;
     this.saved.nights++;
     save(this.saved);
     this.wall.setFireflies(progress.fireflies, this.animationTime);
-    this.moon.setPhase(crossing.night > 8 ? moonPhase() : 0.5 * moonFill(this.moonPreviewBest ?? progress.best));
+    this.moon.setPhase(crossing.night > 8 ? moonPhase() : 0.5 * (crossing.night === 8 ? this.cardMoonAfter : this.cardMoonBefore));
     this.moon.setStars(crossing.stars);
+    if (crossing.night !== 8) {
+      this.cardMoon.setPhase(crossing.night > 8 ? moonPhase() : 0.5 * this.cardMoonAfter);
+      this.cardMoon.setWipe(0);
+      this.cardMoon.mesh.position.copy(this.moon.mesh.position);
+      this.cardMoon.mesh.position.z += 0.0002;
+      this.cardMoon.mesh.visible = false;
+      this.cardMoonFlash = false;
+      const next = arcNight(crossing.night + 1, this.activeCrossingSeed).wakes[0];
+      this.cardTeaser = next ?? '';
+      this.nightCard.reset();
+    }
     if (crossing.night === 8) {
       this.moths.beginQueenVictory();
       this.audio.play('queen-swell');
@@ -2544,6 +2589,11 @@ export class TheaterSystem extends createSystem({
     this.handMask = handMask;
     this.observeSessionHands(handMask, dt);
     const anyReal = handMask !== 0;
+    if (this.phase === Phase.Crossing && this.immersive && !this.demo) {
+      this.trackingLostFor = anyReal ? 0 : this.trackingLostFor + dt;
+      if (this.playFolk) this.playFolk.trackingGrace = !anyReal
+        && this.trackingLostFor > 0.25 && this.trackingLostFor <= 4.25;
+    } else if (this.playFolk?.trackingGrace) this.playFolk.trackingGrace = false;
     if (anyReal) this.handsSeenAt = time;
     else if (this.handsSeenAt < 0) this.handsSeenAt = time;
     const useDemo = this.playSandbox ? this.demo : this.demo || (!this.immersive && !anyReal && !this.journeyOnly);
@@ -2582,12 +2632,13 @@ export class TheaterSystem extends createSystem({
             0.13 * Math.sin((endingTime - 21.8) * Math.PI * 3.6), -0.13);
         }
       }
+      else if (this.phase === Phase.Home) this.demoHand.valid = this.demoHand2.valid = false;
       else this.driveDemo(demoTarget, this.animationTime);
     } else this.demoHand.valid = this.demoHand2.valid = false;
     this.updateMoths(dt, anyReal, useDemo);
     // Filming in an emulator (`?capture` in XR): no passthrough shows the player's hands, so the wooden
     // stand-in follows the real tracked joints. On a headset, real hands are seen through passthrough.
-    const showEndingHand = endingTime < 0 || endingTime >= 20;
+    const showEndingHand = (this.phase !== Phase.Home && endingTime < 0) || endingTime >= 20;
     const shown = showEndingHand && (this.demoHand.valid ? this.demoHand : this.immersive && captureControl() && this.hands[0].valid ? this.hands[0] : null);
     const shown2 = showEndingHand && (this.demoHand2.valid ? this.demoHand2 : this.immersive && captureControl() && this.hands[1].valid ? this.hands[1] : null);
     this.puppeteer.opacity = shown ? 1 : 0;
@@ -2631,11 +2682,12 @@ export class TheaterSystem extends createSystem({
     const moonWash = endingTime < 3.5 ? 0 : 0.25 * ease((endingTime - 3.5) / 4.5);
     const paperTone = (brightPaper + (0.32 + 0.68 * EMBER - brightPaper) * this.paperDim) * mothLight * (1 + moonWash);
     this.painter.setTone(paperTone);
-    this.painter.setLargeCaptions(endingTime >= 0);
+    this.painter.setLargeCaptions(endingTime >= 0
+      || (this.phase === Phase.Home && this.crossing?.night !== 8 && this.phaseTime < 1.2));
 
     // Shadows: project every hand from the lantern onto the paper.
     const p = this.painter;
-    p.begin(endingTime >= 0);
+    p.begin(endingTime >= 0 || this.phase === Phase.Home);
     let playMs = 0;
     const playClearAt = this.playField && perf ? performance.now() : 0;
     const activePlay = this.playSandbox || this.phase === Phase.Prologue
@@ -2849,8 +2901,8 @@ export class TheaterSystem extends createSystem({
       }
       case Phase.Home:
         if (this.crossing?.night === 8) this.updateEnding(endingTime);
-        else p.caption(`${this.crossing?.home ?? 0} Kindlings came home.`, 1, 0.2);
-        if (this.phaseTime >= 8) this.enter(Phase.Finale);
+        else this.updateNightCard(dt, anyReal, useDemo);
+        if (this.crossing?.night === 8 && this.phaseTime >= 8) this.enter(Phase.Finale);
         break;
     }
 
@@ -2869,7 +2921,7 @@ export class TheaterSystem extends createSystem({
     if (this.phase === Phase.Wake) this.journeyView?.updateLesson(this.animationTime);
 
     const screenDistance = this.screenCentre.distanceTo(L);
-    if (endingTime < 0) for (const hand of this.allHands) {
+    if (endingTime < 0 && this.phase !== Phase.Home) for (const hand of this.allHands) {
       if (!hand.valid || !hand.flat.valid) continue;
       let distance = 0;
       for (let joint = 0; joint < JOINT_COUNT; joint++) {
@@ -2884,7 +2936,7 @@ export class TheaterSystem extends createSystem({
       const blur = Math.min(12, Math.max(0.8, (penumbraMetres * SHADOW_PX_PER_METRE) / 3));
       p.shadow(hand.flat, this.phase === Phase.Journey ? blur * (1 - this.journeyPossession * 0.55) : blur);
     }
-    if (endingTime < 0) p.flushShadows(this.phase === Phase.Wake ? 0.35 : 0.9);
+    if (endingTime < 0 && this.phase !== Phase.Home) p.flushShadows(this.phase === Phase.Wake ? 0.35 : 0.9);
     if (this.phase === Phase.Journey) {
       if (this.journeyPossession > 0.01) p.possess(this.journeyEyeX, this.journeyEyeY, this.journeyPossession);
       if (this.journeyShownForm >= 0) {
@@ -3257,6 +3309,97 @@ export class TheaterSystem extends createSystem({
       if (far > near * 1.3) open++;
     }
     return open >= 3;
+  }
+
+  private replayPalmFacesLantern(j: Float32Array, side: number): boolean {
+    const ax = j[15] - j[0], ay = j[16] - j[1], az = j[17] - j[2];
+    const bx = j[60] - j[0], by = j[61] - j[1], bz = j[62] - j[2];
+    const nx = ay * bz - az * by, ny = az * bx - ax * bz, nz = ax * by - ay * bx;
+    const lx = this.lanternPos.x - j[0], ly = this.lanternPos.y - j[1], lz = this.lanternPos.z - j[2];
+    const length = Math.hypot(nx, ny, nz) * Math.hypot(lx, ly, lz);
+    return length > 0.000001 && (side === 0 ? 1 : -1) * (nx * lx + ny * ly + nz * lz) / length > 0.45;
+  }
+
+  private updateReplay(dt: number, anyReal: boolean, useDemo: boolean): boolean {
+    if (!anyReal || useDemo) {
+      this.replayHold[0] = this.replayHold[1] = 0;
+      this.replayWristSeen[0] = this.replayWristSeen[1] = false;
+      return false;
+    }
+    const form = this.summonForms?.update(dt, this.hands, [0]);
+    for (let side = 0; side < 2; side++) {
+      const hand = this.hands[side];
+      if (!hand.valid) { this.replayHold[side] = 0; this.replayWristSeen[side] = false; continue; }
+      const j = hand.joints;
+      const speed = this.replayWristSeen[side] ? Math.hypot(
+        j[0] - this.replayWrist[side].x, j[1] - this.replayWrist[side].y,
+        j[2] - this.replayWrist[side].z) / Math.max(0.001, dt) : 0;
+      this.replayWrist[side].set(j[0], j[1], j[2]);
+      this.replayWristSeen[side] = true;
+      const open = this.openPalm(j) || form?.stable === true && form.form === 0;
+      this.replayHold[side] = open && speed < 0.05 && this.replayPalmFacesLantern(j, side)
+        ? this.replayHold[side] + dt : 0;
+      if (this.replayHold[side] >= 1.2) {
+        const night = this.crossing!.night, seed = this.activeCrossingSeed;
+        this.saved.v3!.night = night;
+        this.saved.nights = Math.max(0, this.saved.nights - 1);
+        save(this.saved);
+        this.moon.setPhase(night > 8 ? moonPhase() : 0.5 * this.cardMoonAfter);
+        this.beginCrossing(night, seed);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private updateNightCard(dt: number, anyReal: boolean, useDemo: boolean): void {
+    const began = perf ? performance.now() : 0;
+    const crossing = this.crossing!;
+    const t = this.phaseTime;
+    this.nightCard.update(t, crossing.stars, index => this.audio.chime(index + 1));
+    if (t < 1.2) {
+      this.painter.caption(`${crossing.home} / ${crossing.total} home`, 1, 0.10);
+    } else if (t < 3) {
+      if (this.cardNewBest) this.painter.caption('A new best.', 0.9, -0.15);
+    } else if (t < 5) {
+      this.cardMoon.mesh.visible = true;
+      this.cardMoon.setWipe(ease((t - 3) / 2));
+      if (!this.cardMoonFlash) {
+        this.cardMoon.arrive(crossing.night > 8 ? moonPhase() : 0.5 * this.cardMoonAfter);
+        this.cardMoonFlash = true;
+      }
+      this.cardMoon.update(dt);
+      this.painter.caption(arcNight(crossing.night, this.activeCrossingSeed).moon, 1, -0.23);
+    } else {
+      this.cardMoon.mesh.visible = true;
+      this.cardMoon.setWipe(1);
+      this.cardMoon.update(dt);
+      if (crossing.night > 8) this.painter.caption(DAILY_MOOD, 1, -0.23);
+      else if (this.cardTeaser) {
+        const next = TARGETS.findIndex(target => target.id === this.cardTeaser);
+        const st = this.stencils[next];
+        if (st) {
+          const peek = ease((t - 5) / 0.8);
+          this.painter.creature(st, -SCREEN_W / 2 - st.w * 0.5 + st.w * 0.45 * peek,
+            -0.05, 0.6, 0.1, false, Math.sin(this.animationTime * 3) > 0.9, 0.85 * peek);
+          this.painter.caption(TOMORROW_HINTS[this.cardTeaser], 1, -0.23);
+        }
+      } else this.painter.caption('The full moon waits tomorrow.', 1, -0.23);
+      if (crossing.stars < 3) {
+        this.painter.caption('Hold an open palm to try again', 0.85, -0.30);
+        if (this.updateReplay(dt, anyReal, useDemo)) {
+          perf?.play.push(performance.now() - began);
+          return;
+        }
+      }
+    }
+    if (t >= 8) {
+      this.moon.setPhase(crossing.night > 8 ? moonPhase() : 0.5 * this.cardMoonAfter);
+      this.cardMoon.mesh.visible = false;
+      this.nightCard.reset();
+      this.enter(Phase.Finale);
+    }
+    perf?.play.push(performance.now() - began);
   }
 
   private finishEnding(): void {

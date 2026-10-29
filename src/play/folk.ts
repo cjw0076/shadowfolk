@@ -34,6 +34,8 @@ export class FolkWorld {
   softWalkFactor = 0.5;
   /** Walkers stop and wobble at a drop instead of walking off it (the prologue: Wick waits for your hand). */
   edgeWait = false;
+  /** Temporary tracking loss only stops walkers at a drop; all ordinary ash rules still apply. */
+  trackingGrace = false;
   onEvent?: (kind: 'walk' | 'ash' | 'home', agent: Kindling) => void;
   private clock = 0;
   private accumulator = 0;
@@ -152,7 +154,7 @@ export class FolkWorld {
             while (height <= 2 && this.field.sample(aheadX, aheadY + height * cell) === 1) height++;
             if (height <= 2) agent.y += height * cell;
             else agent.heading = -agent.heading;
-          } else if (this.edgeWait && this.dropAhead(agent, footY)) agent.waiting = true;
+          } else if ((this.edgeWait || this.trackingGrace) && this.dropAhead(agent, footY)) agent.waiting = true;
           else {
             agent.waiting = false;
             agent.x += agent.heading * 0.055 * this.walkSpeedFactor * (inSoft ? this.softWalkFactor : 1) * STEP;

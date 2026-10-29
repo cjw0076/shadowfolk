@@ -172,7 +172,22 @@ try {
       });
       process.stdout.write(`dbg ${frame} ${JSON.stringify(d)}\n`);
     }
-    if (!audioOnly) await page.screenshot({ path: `${outDir}/frames/f${String(frame).padStart(5, '0')}.png`, timeout: 120000 });
+    if (!audioOnly) {
+      const framePath = `${outDir}/frames/f${String(frame).padStart(5, '0')}.png`;
+      try {
+        await page.screenshot({ path: framePath, timeout: 15000 });
+      } catch (error) {
+        if (error?.name !== 'TimeoutError') throw error;
+        // Vulkan occasionally stalls Playwright's screenshot wait after hundreds of frames.
+        // CDP captures the already rendered XR surface without resetting the shot clock.
+        const cdp = await page.context().newCDPSession(page);
+        const { data } = await cdp.send('Page.captureScreenshot', {
+          format: 'png', fromSurface: true, captureBeyondViewport: false,
+        });
+        writeFileSync(framePath, Buffer.from(data, 'base64'));
+        console.log(`screenshot fallback frame ${frame}`);
+      }
+    }
     if (frame % 30 === 0) process.stdout.write(`frame ${frame}/${frames}\n`);
   }
   const frameTimeMs = (Date.now() - began) / frames;
