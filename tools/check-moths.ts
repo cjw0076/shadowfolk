@@ -67,14 +67,14 @@ for (let trial = 0; trial < 5; trial++) {
   const near = new MothWorld();
   near.start(6, 30000 + trial, 0.25);
   const nearMoth = near.spawn(stage)!;
-  advance(near, 1.55);
+  advance(near, 2.55);
   near.update(STEP, stage, [handAt(nearMoth.x + 0.05, nearMoth.y, nearMoth.z)]);
   swatNear.push(near.shooed === 1 && nearMoth.phase === 'tumble');
 
   const far = new MothWorld();
   far.start(6, 40000 + trial, 0.25);
   const farMoth = far.spawn(stage)!;
-  advance(far, 1.55);
+  advance(far, 2.55);
   far.update(STEP, stage, [handAt(farMoth.x + 0.12, farMoth.y, farMoth.z)]);
   swatFar.push(far.shooed === 0);
 
@@ -94,7 +94,7 @@ queen.start(8, 21021, 0.4);
 advance(queen, 17);
 const queenPeelsAt15 = queen.agents[queen.agents.length - 1].phase === 'queenOrbit';
 queen.beginQueenVictory();
-advance(queen, 3.1);
+advance(queen, 3.6);
 const queenReachesMoon = queen.queenOnMoon;
 const victoryClearsSmallMoths = queen.agents.every((agent) => agent.queen || agent.phase === 'hidden');
 const festival = new MothWorld();

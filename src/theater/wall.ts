@@ -50,18 +50,22 @@ export class WallLayer {
   private eyeOpenGeometry = new PlaneGeometry(1, 1);
   private eyeBlinkGeometry = new PlaneGeometry(1, 1);
   private sprites: WallSprite[] = [];
-  private leapSprite: WallSprite;
+  private leapSprites: WallSprite[] = [];
   private fit: WallFit | null = null;
   private x0 = 0; private y1 = 0; private wM = 1; private hM = 1;
   private cx = 0; private cy = 0;
   private residents: Resident[] = [];
   private cooldownUntil = new Map<string, number>();
   private slots: [number, number][] = [];
-  private leaper: Leaper | null = null;
+  private leapers: Leaper[] = [];
   private start: [number, number] = [0, 0];
   private startScale = 1;
   private celebrate = 0;
   private eyePulse = 0;
+  private endingTime = -1;
+  private lanternProjection: [number, number] = [0, 0];
+  private moonProjection: [number, number] = [0, 0];
+  private settledAt = new Map<string, number>();
   /** Woken shadows grow with the wall's distance behind the paper. */
   private scale = 1;
   private soft = new Map<Stencil, WallInk>();
@@ -112,7 +116,7 @@ export class WallLayer {
       this.eyeOpenGeometry.attributes.uv.setX(index, this.eyeOpenGeometry.attributes.uv.getX(index) * 0.5);
       this.eyeBlinkGeometry.attributes.uv.setX(index, 0.5 + this.eyeBlinkGeometry.attributes.uv.getX(index) * 0.5);
     }
-    this.leapSprite = this.makeSprite(3);
+    for (let index = 0; index < 12; index++) this.leapSprites.push(this.makeSprite(3));
     this.root.visible = false;
   }
 
@@ -189,7 +193,7 @@ export class WallLayer {
     count: number, cell: { w: number; h: number } = { w: 0.3, h: 0.25 },
   ): void {
     this.fit = fit;
-    this.leaper = null;
+    this.leapers.length = 0;
     if (!fit) { this.root.visible = false; return; }
     const shadow: [number, number][] = [], view: [number, number][] = [];
     for (const c of corners) {
@@ -198,6 +202,10 @@ export class WallLayer {
       if (this.onWall(head, c, b)) view.push(b);
     }
     if (view.length < 4 || !this.onWall(head, exit, this.start)) { this.fit = null; this.root.visible = false; return; }
+    this.onWall(head, lantern, this.lanternProjection);
+    this.moonProjection[0] = (view[0][0] + view[1][0] + view[2][0] + view[3][0]) / 4;
+    this.moonProjection[1] = (view[0][1] + view[1][1]) * 0.38
+      + (view[2][1] + view[3][1]) * 0.12;
     // How big a paper-sized shape looks once it reaches the wall, seen from the head.
     const dHead = this.v.subVectors(fit.point, head).length();
     const dExit = this.w.subVectors(exit, head).length();
@@ -316,8 +324,10 @@ export class WallLayer {
       const sprite = this.sprites[index] ?? (this.sprites[index] = this.makeSprite(0));
       this.setStencil(sprite, st);
     }
-    this.setStencil(this.leapSprite, r.st);
-    this.leaper = { r, fx: this.start[0], fy: this.start[1], fromScale: this.startScale, t0: time };
+    if (this.leapers.length >= this.leapSprites.length) return false;
+    const sprite = this.leapSprites[this.leapers.length];
+    this.setStencil(sprite, r.st);
+    this.leapers.push({ r, fx: this.start[0], fy: this.start[1], fromScale: this.startScale, t0: time });
     return true;
   }
 
@@ -326,6 +336,10 @@ export class WallLayer {
     this.celebrate = level;
     this.eyePulse = eyePulse;
   }
+
+  setEndingHalo(time: number): void { this.endingTime = time; }
+
+  get residentCount(): number { return this.residents.length; }
 
   update(time: number): void {
     if (!this.fit) return;
@@ -341,41 +355,65 @@ export class WallLayer {
         + swirl * Math.cos(time * 2.1 + index * 2.4);
       const y = this.start[1] - this.cy + (destinationY - (this.start[1] - this.cy)) * arrival
         + Math.sin(arrival * Math.PI) * 0.16 + swirl * Math.sin(time * 2.1 + index * 2.4);
+      let finalX = x, finalY = y;
+      if (this.endingTime >= 10) {
+        const sweep = Math.min(1, (this.endingTime - 10) / 5);
+        const angle = index * 2.39996 + sweep * Math.PI * 2;
+        const lanternX = this.lanternProjection[0] - this.cx + Math.cos(angle) * 0.18;
+        const lanternY = this.lanternProjection[1] - this.cy + Math.sin(angle) * 0.16;
+        const moonX = this.moonProjection[0] - this.cx + Math.cos(angle) * 0.23;
+        const moonY = this.moonProjection[1] - this.cy + Math.sin(angle) * 0.19;
+        if (this.endingTime < 15) {
+          const blend = ease((this.endingTime - 10) / 2);
+          finalX = x + (lanternX - x) * blend;
+          finalY = y + (lanternY - y) * blend;
+        } else {
+          const blend = ease((this.endingTime - 15) / 5);
+          finalX = lanternX + (moonX - lanternX) * blend;
+          finalY = lanternY + (moonY - lanternY) * blend;
+        }
+      }
       const size = 0.018 + 0.009 * (0.5 + 0.5 * Math.sin(time * 4 + index * 3.7));
-      this.fireflyTransform.position.set(x, y, 0.003);
+      this.fireflyTransform.position.set(finalX, finalY, 0.003);
       this.fireflyTransform.scale.set(size, size, 1);
       this.fireflyTransform.updateMatrix();
       this.fireflies.setMatrixAt(index, this.fireflyTransform.matrix);
     }
     this.fireflies.instanceMatrix.needsUpdate = this.fireflies.count > 0;
-    let leaper = this.leaper;
-    if (leaper && time - leaper.t0 >= LEAP_TIME) {
-      this.leaper = leaper = null;
-      this.leapSprite.group.visible = false;
+    for (let index = this.leapers.length - 1; index >= 0; index--) {
+      const leaper = this.leapers[index];
+      if (time - leaper.t0 < LEAP_TIME) continue;
+      this.settledAt.set(leaper.r.id, time);
+      this.leapers.splice(index, 1);
       this.onSettle?.();
     }
     for (let index = 0; index < this.residents.length; index++) {
       const r = this.residents[index];
       const sprite = this.sprites[index];
-      if (leaper?.r === r) { sprite.group.visible = false; continue; }
-      const hop = this.celebrate * Math.abs(Math.sin(time * 4 + r.seed * 3)) * 0.05;
+      if (this.leapers.some((leaper) => leaper.r === r)) { sprite.group.visible = false; continue; }
+      const settleAge = time - (this.settledAt.get(r.id) ?? -Infinity);
+      const squashHop = settleAge < 0.6 ? Math.sin(settleAge / 0.6 * Math.PI) * 0.045 : 0;
+      const hop = this.celebrate * Math.abs(Math.sin(time * 4 + r.seed * 3)) * 0.05 + squashHop;
       const walk = this.celebrate * Math.sin(time * 1.4 + r.seed * 3) * 0.08;
-      this.placeSprite(sprite, r.x + walk, r.y + hop, this.scale, 0, time, r.seed);
+      this.placeSprite(sprite, r.x + walk, r.y + hop, this.scale * (1 + squashHop), 0, time, r.seed);
       if (time < (this.cooldownUntil.get(r.id) ?? 0)) {
         sprite.eyesOpen.material.opacity *= 0.2;
         sprite.eyesBlink.material.opacity *= 0.2;
       }
     }
-    if (leaper) {
+    for (let index = 0; index < this.leapers.length; index++) {
+      const leaper = this.leapers[index];
+      const leapSprite = this.leapSprites[index];
+      this.setStencil(leapSprite, leaper.r.st);
       const k = (time - leaper.t0) / LEAP_TIME;
       const e = ease(k);
       const x = leaper.fx + (leaper.r.x - leaper.fx) * e;
       const arc = Math.sin(Math.PI * e) * 0.28 + Math.abs(Math.sin(k * Math.PI * 3)) * 0.04 * (1 - e);
       const y = leaper.fy + (leaper.r.y - leaper.fy) * e + arc;
       const s = leaper.fromScale + (this.scale - leaper.fromScale) * e;
-      this.placeSprite(this.leapSprite, x, y, s, Math.sin(k * Math.PI * 2) * 0.12, time, leaper.r.seed);
+      this.placeSprite(leapSprite, x, y, s, Math.sin(k * Math.PI * 2) * 0.12, time, leaper.r.seed);
     }
-    else this.leapSprite.group.visible = false;
+    for (let index = this.leapers.length; index < this.leapSprites.length; index++) this.leapSprites[index].group.visible = false;
   }
 
   /** Ink and both eye states are baked once, then only sprite transforms change. */

@@ -349,6 +349,24 @@ export class TheaterAudio {
       this.burst(1900, 3, 0, 0.28, 0.13);
       this.bus = 'stage';
     }
+    else if (kind === 'queen-swell') {
+      const ctx = this.live();
+      if (ctx) {
+        const t = this.now();
+        const oscillator = ctx.createOscillator();
+        const gain = ctx.createGain();
+        oscillator.type = 'triangle';
+        oscillator.frequency.setValueAtTime(110, t);
+        oscillator.frequency.exponentialRampToValueAtTime(220, t + 3.1);
+        gain.gain.setValueAtTime(0, t);
+        gain.gain.linearRampToValueAtTime(0.065, t + 2.6);
+        gain.gain.exponentialRampToValueAtTime(0.0005, t + 3.5);
+        oscillator.connect(gain).connect(this.mothOut ?? this.master!);
+        if (this.send) gain.connect(this.send);
+        oscillator.start(t);
+        oscillator.stop(t + 3.55);
+      }
+    }
     else if (kind === 'caw') {
       this.burst(1250, 1.6, 0, 0.21, 0.12);
       this.tone(420, 210, 0, 0.22, 0.08, 'sawtooth');

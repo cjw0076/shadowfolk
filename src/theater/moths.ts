@@ -1,4 +1,5 @@
-import { CanvasTexture, DoubleSide, Group, Mesh, MeshBasicMaterial, PlaneGeometry, Shape, ShapeGeometry, SphereGeometry,
+import { AdditiveBlending, CanvasTexture, DoubleSide, DynamicDrawUsage, Group, InstancedMesh, Mesh, MeshBasicMaterial,
+  Object3D, PlaneGeometry, Shape, ShapeGeometry, SphereGeometry,
   SRGBColorSpace } from '@iwsdk/core';
 import type { MothStage, MothWorld } from '../play/moths.js';
 
@@ -45,6 +46,22 @@ function wingGeometry(): ShapeGeometry {
   return new ShapeGeometry(shape, 8);
 }
 
+function glowTexture(ring: boolean): CanvasTexture {
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = 64;
+  const context = canvas.getContext('2d', { willReadFrequently: true })!;
+  const gradient = context.createRadialGradient(32, 32, ring ? 15 : 0, 32, 32, 31);
+  gradient.addColorStop(0, ring ? 'rgba(255,204,123,0)' : 'rgba(255,221,166,0.85)');
+  gradient.addColorStop(0.62, 'rgba(255,186,91,0.75)');
+  gradient.addColorStop(1, 'rgba(255,156,66,0)');
+  context.fillStyle = gradient;
+  context.fillRect(0, 0, 64, 64);
+  const texture = new CanvasTexture(canvas);
+  texture.colorSpace = SRGBColorSpace;
+  texture.generateMipmaps = false;
+  return texture;
+}
+
 export class MothView {
   readonly root = new Group();
   readonly paperRoot = new Group();
@@ -53,10 +70,26 @@ export class MothView {
   private paperGeometry = new PlaneGeometry(1, 1);
   private paperTextures: [CanvasTexture, CanvasTexture] = [paperTexture(false), paperTexture(true)];
   private sprites: MothSprite[] = [];
+  private dust = new InstancedMesh(new PlaneGeometry(1, 1), new MeshBasicMaterial({
+    map: glowTexture(false), transparent: true, depthWrite: false,
+    blending: AdditiveBlending, toneMapped: false,
+  }), 42);
+  private palms = new InstancedMesh(new PlaneGeometry(1, 1), new MeshBasicMaterial({
+    map: glowTexture(true), transparent: true, depthWrite: false,
+    blending: AdditiveBlending, toneMapped: false,
+  }), 2);
+  private particle = new Object3D();
+  private palmHit = { x: 0, y: 0, z: 0, at: -Infinity };
+  private cup = { x: 0, y: 0, z: 0, visible: false };
 
   constructor() {
     this.root.name = 'DuskMoths';
     this.paperRoot.name = 'PaperMothShadows';
+    this.dust.instanceMatrix.setUsage(DynamicDrawUsage);
+    this.palms.instanceMatrix.setUsage(DynamicDrawUsage);
+    this.dust.count = this.palms.count = 0;
+    this.dust.frustumCulled = this.palms.frustumCulled = false;
+    this.root.add(this.dust, this.palms);
     for (let index = 0; index < 8; index++) {
       const body = new Group();
       const materials: MeshBasicMaterial[] = [];
@@ -91,6 +124,14 @@ export class MothView {
     }
   }
 
+  flashPalm(x: number, y: number, z: number, time: number): void {
+    this.palmHit.x = x; this.palmHit.y = y; this.palmHit.z = z; this.palmHit.at = time;
+  }
+
+  cupPalm(x: number, y: number, z: number, visible: boolean): void {
+    this.cup.x = x; this.cup.y = y; this.cup.z = z; this.cup.visible = visible;
+  }
+
   update(world: MothWorld, stage: MothStage): void {
     const flame = stage.flame, paper = stage.paper, right = stage.right;
     const toPaperX = paper.x - flame.x, toPaperY = paper.y - flame.y, toPaperZ = paper.z - flame.z;
@@ -103,20 +144,24 @@ export class MothView {
       const isRoom = agent.phase !== 'hidden' && !isPaper;
       sprite.body.visible = isRoom && agent.opacity > 0;
       if (sprite.body.visible) {
+        const peel = agent.intro && agent.phase === 'approach'
+          ? Math.min(1, agent.phaseTime / 0.45) : 1;
         sprite.body.position.set(agent.x, agent.y, agent.z);
         sprite.body.lookAt(stage.head.x, stage.head.y, stage.head.z);
-        sprite.body.scale.setScalar(agent.queen ? 5.5 : 1);
+        sprite.body.scale.setScalar(agent.queen ? agent.phase === 'moon' ? 2.7 : 5.5
+          : agent.intro ? 0.65 + 0.35 * peel : 1);
         sprite.left.rotation.y = agent.flap * 0.75;
         sprite.right.rotation.y = -agent.flap * 0.75;
         sprite.body.rotation.z = agent.phase === 'tumble' ? agent.angle : Math.sin(agent.age * 3) * 0.12;
-        for (const material of sprite.materials) material.opacity = agent.opacity * 0.95;
+        for (const material of sprite.materials) material.opacity = agent.opacity * 0.95 * (agent.intro ? 0.4 + 0.6 * peel : 1);
       }
       const shadow = isPaper || isRoom && agent.phase !== 'moon'
-        && Math.hypot(agent.x - flame.x, agent.y - flame.y, agent.z - flame.z) < 0.40;
+        && (agent.intro && agent.phase === 'approach' && agent.phaseTime < 0.45
+          || Math.hypot(agent.x - flame.x, agent.y - flame.y, agent.z - flame.z) < 0.40);
       const frame = Math.floor(agent.age * 8) % 2;
       for (let part = 0; part < 2; part++) sprite.paper[part].visible = shadow && part === frame;
       if (!shadow) continue;
-      let x = agent.paperX, y = agent.queen ? 0.06 : 0.20;
+      let x = agent.paperX, y = agent.queen ? 0.06 : agent.paperY;
       if (!isPaper) {
         const along = (agent.x - flame.x) * forwardX + (agent.y - flame.y) * forwardY
           + (agent.z - flame.z) * forwardZ;
@@ -128,16 +173,55 @@ export class MothView {
         y = projectedY;
       }
       const size = agent.queen ? (isPaper ? 0.35 + 0.15 * Math.min(1, agent.phaseTime / 1.5) : 0.45)
-        : isPaper ? 0.09 : 0.12;
+        : isPaper ? agent.intro ? 0.04 + 0.06 * Math.min(1, agent.phaseTime / 2.5) : 0.09 : 0.12;
       const activePaper = sprite.paper[frame];
       activePaper.position.set(x, y, 0.005);
       activePaper.scale.set(size, size * 0.75, 1);
-      (activePaper.material as MeshBasicMaterial).opacity = isPaper ? agent.opacity * (agent.queen ? 0.75 : 0.88) : 0.16;
+      (activePaper.material as MeshBasicMaterial).opacity = isPaper ? agent.opacity * (agent.queen ? 0.75 : 0.88)
+        : agent.intro && agent.phase === 'approach' ? 0.88 * (1 - agent.phaseTime / 0.45) : 0.16;
     }
+    let specks = 0;
+    for (const agent of world.agents) {
+      if (agent.phase !== 'tumble' || agent.phaseTime > 0.55) continue;
+      for (let index = 0; index < 6 && specks < 42; index++) {
+        const angle = index * Math.PI / 3 + agent.phaseTime * 3;
+        const radius = 0.01 + agent.phaseTime * (0.10 + index % 2 * 0.04);
+        this.particle.position.set(agent.x + Math.cos(angle) * radius,
+          agent.y + Math.sin(angle) * radius, agent.z + 0.008);
+        this.particle.lookAt(stage.head.x, stage.head.y, stage.head.z);
+        const size = 0.012 * (1 - agent.phaseTime / 0.55);
+        this.particle.scale.set(size, size, 1);
+        this.particle.updateMatrix();
+        this.dust.setMatrixAt(specks++, this.particle.matrix);
+      }
+    }
+    this.dust.count = specks;
+    this.dust.instanceMatrix.needsUpdate = specks > 0;
+    let glowing = 0;
+    const palmAge = world.time - this.palmHit.at;
+    if (palmAge >= 0 && palmAge < 0.3) {
+      this.particle.position.set(this.palmHit.x, this.palmHit.y, this.palmHit.z);
+      this.particle.lookAt(stage.head.x, stage.head.y, stage.head.z);
+      this.particle.scale.setScalar(0.11 * (1 - palmAge / 0.3));
+      this.particle.updateMatrix();
+      this.palms.setMatrixAt(glowing++, this.particle.matrix);
+    }
+    if (this.cup.visible) {
+      this.particle.position.set(this.cup.x, this.cup.y, this.cup.z);
+      this.particle.lookAt(stage.head.x, stage.head.y, stage.head.z);
+      this.particle.scale.setScalar(0.105);
+      this.particle.updateMatrix();
+      this.palms.setMatrixAt(glowing++, this.particle.matrix);
+    }
+    this.palms.count = glowing;
+    this.palms.instanceMatrix.needsUpdate = glowing > 0;
   }
 
   dispose(): void {
     this.wing.dispose();
+    for (const mesh of [this.dust, this.palms]) {
+      mesh.geometry.dispose(); mesh.material.map?.dispose(); mesh.material.dispose();
+    }
     this.bodyGeometry.dispose();
     this.paperGeometry.dispose();
     for (const texture of this.paperTextures) texture.dispose();

@@ -40,6 +40,7 @@ import { PlayView } from '../play/view.js';
 import { arcNight, moonFill, validArcSave, type ArcSave } from '../play/arc.js';
 import { CrossingRuntime } from '../play/crossing.js';
 import { MothWorld, type MothAgent, type MothPoint, type MothStage } from '../play/moths.js';
+import { detectWave, type WaveSample } from '../play/wave.js';
 import { SummonTrigger } from '../play/summon-trigger.js';
 import { MothView } from './moths.js';
 import type { SummonKind } from '../play/summon-contract.js';
@@ -225,6 +226,11 @@ export class TheaterSystem extends createSystem({
   private mothDemoReachUntil = -Infinity;
   private mothDemoReachTarget = new Vector3();
   private endingMoonLit = false;
+  private endingEntries = 0;
+  private endingLeaps = 0;
+  private endingNotes = 0;
+  private endingWaveAt = -Infinity;
+  private endingWaveHistory: WaveSample[][] = [[], []];
   private fwd = new Vector3(0, 0, -1);
   private right = new Vector3(1, 0, 0);
   private anchor = new Vector3(); // where a hand naturally casts a centred shadow
@@ -430,6 +436,7 @@ export class TheaterSystem extends createSystem({
   private handsSeenAt = -1;
   private saved: Saved = loadSaved();
   private demo = false;
+  private noWaveDemo = false;
   private immersive = false;
   private visible = true;
   private resumeFrame = false;
@@ -455,6 +462,7 @@ export class TheaterSystem extends createSystem({
 
   init(): void {
     this.demo = new URLSearchParams(location.search).has('demo');
+    this.noWaveDemo = new URLSearchParams(location.search).has('noWaveDemo');
     this.demoOneHand = this.demo && new URLSearchParams(location.search).has('demoOneHand');
     this.painter = new ScreenPainter(() => xrRenderStatusLine(this.world.renderer));
     this.lantern = buildLantern();
@@ -486,14 +494,26 @@ export class TheaterSystem extends createSystem({
     this.mothDemoHands = [this.demoHand, this.demoHand2];
     this.world.createTransformEntity(this.mothView.root);
     this.painter.root.add(this.mothView.paperRoot);
-    this.moths.onEvent = (event) => {
-      if (event === 'gutter') {
+    this.moths.onEvent = (event, agent) => {
+      if (event === 'spawn' && agent.intro) {
+        this.crossingCaption = 'A dusk moth. Shoo it, or cup the flame.';
+        this.crossingCaptionAt = this.animationTime;
+      } else if (event === 'gutter') {
         if (this.crossing) this.crossing.candlePenaltySeconds += 5;
         this.audio.play('hiss');
-      } else if (event === 'shoo') this.audio.play('moth-swat');
+      } else if (event === 'shoo') {
+        this.audio.play('moth-swat');
+        this.audio.play('moth-flutter');
+        if (agent.hitSide >= 0 && agent.phase === 'tumble') {
+          const hand = (this.handMask ? this.mothRealHands : this.mothDemoHands)[agent.hitSide];
+          if (hand?.valid) this.mothView.flashPalm(hand.joints[0], hand.joints[1], hand.joints[2], this.moths.time);
+          agent.hitSide = -1;
+        }
+      }
       else if (event === 'peel') this.audio.play('moth-flutter');
       else if (event === 'queen-moon') {
         this.moon.setQueen(true);
+        if (this.crossing?.night === 8 && this.phase === Phase.Home) this.moon.arrive(0.5);
       }
     };
     this.cleanupFuncs.push(() => this.mothView.dispose());
@@ -757,6 +777,8 @@ export class TheaterSystem extends createSystem({
     this.fresh = this.order[0] ?? -1;
     this.moon.setPhase(night > 8 ? moonPhase() : 0.5 * moonFill(this.moonPreviewBest ?? progress.best));
     this.moon.setQueen(progress.complete && night > 8);
+    this.moon.mesh.scale.setScalar(1);
+    this.moon.mesh.position.set(SCREEN_W / 2 - 0.095, SCREEN_H / 2 - 0.09, 0.0002);
     this.moon.setStars(0);
     this.fullMoon = night > 8 && isFullMoon(moonPhase());
     this.nightTitleAt = -1;
@@ -828,6 +850,10 @@ export class TheaterSystem extends createSystem({
     this.moths.start(night, this.arcSeed(), moonPhase());
     this.mothDemoReachAt = this.mothDemoReachUntil = -Infinity;
     this.endingMoonLit = false;
+    this.endingEntries = this.endingLeaps = this.endingNotes = 0;
+    this.endingWaveAt = -Infinity;
+    this.endingWaveHistory[0].length = this.endingWaveHistory[1].length = 0;
+    this.wall.setEndingHalo(-1);
     if (night === 8) this.moon.setQueen(false);
     this.playFolk?.configure({ spawnX: -0.44 });
     this.summonTrigger.reset();
@@ -889,7 +915,10 @@ export class TheaterSystem extends createSystem({
     this.wall.setFireflies(progress.fireflies, this.animationTime);
     this.moon.setPhase(crossing.night > 8 ? moonPhase() : 0.5 * moonFill(this.moonPreviewBest ?? progress.best));
     this.moon.setStars(crossing.stars);
-    if (crossing.night === 8) this.moths.beginQueenVictory();
+    if (crossing.night === 8) {
+      this.moths.beginQueenVictory();
+      this.audio.play('queen-swell');
+    }
     this.crossingHomeAt = this.animationTime;
     this.enter(Phase.Home);
   }
@@ -1899,8 +1928,10 @@ export class TheaterSystem extends createSystem({
     this.mothView.root.visible = this.mothView.paperRoot.visible = active;
     if (!active) return;
     this.camera.getWorldPosition(this.mothHead);
-    this.mothMoon.copy(this.screenCentre).addScaledVector(this.right, SCREEN_W / 2 - 0.095);
-    this.mothMoon.y += SCREEN_H / 2 - 0.09;
+    this.mothMoon.copy(this.screenCentre).addScaledVector(this.right, this.moon.mesh.position.x);
+    this.mothMoon.x += this.frame.ux * this.moon.mesh.position.y;
+    this.mothMoon.y += this.frame.uy * this.moon.mesh.position.y;
+    this.mothMoon.z += this.frame.uz * this.moon.mesh.position.y;
     (this.mothStage.right as Vector3).copy(this.right);
     this.mothControllers[0] = this.mothControllers[1] = null;
     if (this.immersive) {
@@ -1922,8 +1953,21 @@ export class TheaterSystem extends createSystem({
         }
       }
     }
-    this.moths.update(dt, this.mothStage, useDemo && !anyReal ? this.mothDemoHands : this.mothRealHands,
+    const mothHands = useDemo && !anyReal ? this.mothDemoHands : this.mothRealHands;
+    this.moths.update(dt, this.mothStage, mothHands,
       this.mothControllers);
+    let cupHand: LiveHand | null = null;
+    if (this.moths.shielded) {
+      for (const hand of mothHands) {
+        if (hand?.valid && Math.hypot(hand.joints[0] - this.lanternPos.x,
+          hand.joints[1] - this.lanternPos.y, hand.joints[2] - this.lanternPos.z) < 0.2) {
+          cupHand = hand as LiveHand;
+          break;
+        }
+      }
+    }
+    this.mothView.cupPalm(cupHand?.joints[0] ?? 0, cupHand?.joints[1] ?? 0,
+      cupHand?.joints[2] ?? 0, !!cupHand);
     this.mothView.update(this.moths, this.mothStage);
     for (const agent of this.moths.agents) {
       if (agent.phase === 'hidden' || agent.phase === 'paper' || agent.phase === 'moon') continue;
@@ -2505,6 +2549,14 @@ export class TheaterSystem extends createSystem({
     const useDemo = this.playSandbox ? this.demo : this.demo || (!this.immersive && !anyReal && !this.journeyOnly);
     if (this.immersive) this.handleCarry(time);
     this.phaseTime += dt;
+    const endingTime = this.crossing?.night === 8 && (this.phase === Phase.Home || this.phase === Phase.Finale)
+      ? this.animationTime - this.crossingHomeAt : -1;
+    if (endingTime >= 0) {
+      const rise = ease((endingTime - 3.5) / 4.5);
+      this.moon.mesh.position.set((SCREEN_W / 2 - 0.095) * (1 - rise),
+        SCREEN_H / 2 - 0.09 - 0.065 * rise, 0.0002);
+      this.moon.mesh.scale.setScalar(1 + (0.30 / 0.11 - 1) * rise);
+    }
 
     const target = this.baked[this.order[this.step % this.order.length] ?? 0];
     const stencil = this.stencils[this.order[this.step % this.order.length] ?? 0];
@@ -2523,13 +2575,21 @@ export class TheaterSystem extends createSystem({
         } else this.demoHand.valid = this.demoHand2.valid = false;
       }
       else if (this.phase === Phase.Journey) this.driveJourneyDemo(dt);
+      else if (endingTime >= 0) {
+        this.demoHand.valid = this.demoHand2.valid = false;
+        if (!this.noWaveDemo && endingTime >= 21.8 && endingTime <= 23.7) {
+          this.setProjectedPlayHand(this.demoHand, this.playDemoPose,
+            0.13 * Math.sin((endingTime - 21.8) * Math.PI * 3.6), -0.13);
+        }
+      }
       else this.driveDemo(demoTarget, this.animationTime);
     } else this.demoHand.valid = this.demoHand2.valid = false;
     this.updateMoths(dt, anyReal, useDemo);
     // Filming in an emulator (`?capture` in XR): no passthrough shows the player's hands, so the wooden
     // stand-in follows the real tracked joints. On a headset, real hands are seen through passthrough.
-    const shown = this.demoHand.valid ? this.demoHand : this.immersive && captureControl() && this.hands[0].valid ? this.hands[0] : null;
-    const shown2 = this.demoHand2.valid ? this.demoHand2 : this.immersive && captureControl() && this.hands[1].valid ? this.hands[1] : null;
+    const showEndingHand = endingTime < 0 || endingTime >= 20;
+    const shown = showEndingHand && (this.demoHand.valid ? this.demoHand : this.immersive && captureControl() && this.hands[0].valid ? this.hands[0] : null);
+    const shown2 = showEndingHand && (this.demoHand2.valid ? this.demoHand2 : this.immersive && captureControl() && this.hands[1].valid ? this.hands[1] : null);
     this.puppeteer.opacity = shown ? 1 : 0;
     if (shown) this.puppeteer.update(this.standInJoints(shown, 0), shown.radii);
     this.puppeteer2.opacity = shown2 ? 1 : 0;
@@ -2537,7 +2597,8 @@ export class TheaterSystem extends createSystem({
 
     // Lantern: a dim ember until a hand reaches its light, then a warm flicker.
     this.lit += (this.litTarget - this.lit) * Math.min(1, dt * 3.5);
-    const flick = 0.92 + 0.05 * Math.sin(this.animationTime * 7.3) + 0.03 * Math.sin(this.animationTime * 17.1);
+    const flickerScale = this.moths.shielded ? 0.5 : 1;
+    const flick = 0.92 + flickerScale * (0.05 * Math.sin(this.animationTime * 7.3) + 0.03 * Math.sin(this.animationTime * 17.1));
     const glow = (0.3 + 0.7 * this.lit) * flick;
     this.lantern.bodyMat.color.setRGB(glow, 0.81 * glow, 0.54 * glow);
     const candle = this.crossing && (this.phase === Phase.Prologue || this.phase === Phase.Crossing)
@@ -2567,12 +2628,14 @@ export class TheaterSystem extends createSystem({
       ? ease((this.phaseTime - FINALE_TIME + 2.2) / 2.2) : this.phase === Phase.Invent ? 0.45 : 0;
     this.paperDim += (finaleDim - this.paperDim) * Math.min(1, dt * 2.5);
     const brightPaper = 0.32 + 0.68 * this.lit;
-    const paperTone = (brightPaper + (0.32 + 0.68 * EMBER - brightPaper) * this.paperDim) * mothLight;
+    const moonWash = endingTime < 3.5 ? 0 : 0.25 * ease((endingTime - 3.5) / 4.5);
+    const paperTone = (brightPaper + (0.32 + 0.68 * EMBER - brightPaper) * this.paperDim) * mothLight * (1 + moonWash);
     this.painter.setTone(paperTone);
+    this.painter.setLargeCaptions(endingTime >= 0);
 
     // Shadows: project every hand from the lantern onto the paper.
     const p = this.painter;
-    p.begin();
+    p.begin(endingTime >= 0);
     let playMs = 0;
     const playClearAt = this.playField && perf ? performance.now() : 0;
     const activePlay = this.playSandbox || this.phase === Phase.Prologue
@@ -2785,9 +2848,8 @@ export class TheaterSystem extends createSystem({
         break;
       }
       case Phase.Home:
-        p.caption(this.crossing?.night === 8 && this.moths.queenOnMoon
-          ? 'Even moths only wanted the light.'
-          : `${this.crossing?.home ?? 0} Kindlings came home.`, 1, 0.2);
+        if (this.crossing?.night === 8) this.updateEnding(endingTime);
+        else p.caption(`${this.crossing?.home ?? 0} Kindlings came home.`, 1, 0.2);
         if (this.phaseTime >= 8) this.enter(Phase.Finale);
         break;
     }
@@ -2807,7 +2869,7 @@ export class TheaterSystem extends createSystem({
     if (this.phase === Phase.Wake) this.journeyView?.updateLesson(this.animationTime);
 
     const screenDistance = this.screenCentre.distanceTo(L);
-    for (const hand of this.allHands) {
+    if (endingTime < 0) for (const hand of this.allHands) {
       if (!hand.valid || !hand.flat.valid) continue;
       let distance = 0;
       for (let joint = 0; joint < JOINT_COUNT; joint++) {
@@ -2822,7 +2884,7 @@ export class TheaterSystem extends createSystem({
       const blur = Math.min(12, Math.max(0.8, (penumbraMetres * SHADOW_PX_PER_METRE) / 3));
       p.shadow(hand.flat, this.phase === Phase.Journey ? blur * (1 - this.journeyPossession * 0.55) : blur);
     }
-    p.flushShadows(this.phase === Phase.Wake ? 0.35 : 0.9);
+    if (endingTime < 0) p.flushShadows(this.phase === Phase.Wake ? 0.35 : 0.9);
     if (this.phase === Phase.Journey) {
       if (this.journeyPossession > 0.01) p.possess(this.journeyEyeX, this.journeyEyeY, this.journeyPossession);
       if (this.journeyShownForm >= 0) {
@@ -3068,10 +3130,12 @@ export class TheaterSystem extends createSystem({
   private finale(time: number): void {
     const t = this.phaseTime;
     const ending = !this.classic && !this.journeyOnly && this.crossing?.night === 8;
-    const duration = ending ? 20 : FINALE_TIME;
-    if (ending && !this.endingMoonLit) {
-      this.moon.arrive(0.5);
-      this.endingMoonLit = true;
+    const duration = FINALE_TIME;
+    if (ending) {
+      const endingTime = this.animationTime - this.crossingHomeAt;
+      this.updateEnding(endingTime);
+      if (endingTime >= 30) this.finishEnding();
+      return;
     }
     const n = this.order.length;
     for (let k = 0; k < n; k++) {
@@ -3100,10 +3164,6 @@ export class TheaterSystem extends createSystem({
         : this.wall.active ? 'They will wait for you on the wall.' : 'Come back after dark for new shapes.', a * 0.8, -0.24);
     }
     if (t >= duration) {
-      if (ending) {
-        this.saved.v3!.complete = true;
-        save(this.saved);
-      }
       this.wall.cheer(0);
       this.finaleX.fill(0);
       this.inventBorn = false;
@@ -3112,6 +3172,104 @@ export class TheaterSystem extends createSystem({
       this.makeInventPose();
       this.enter(Phase.Invent);
     }
+  }
+
+  private updateEnding(t: number): void {
+    const began = perf ? performance.now() : 0;
+    if (t >= 3.5 && !this.endingMoonLit) {
+      this.moon.setPhase(0.5);
+      this.moon.arrive(0.5);
+      this.endingMoonLit = true;
+    }
+    const total = this.saved.v3?.fireflies ?? 0;
+    const entries = this.playView?.showEnding(t, total, this.moon.mesh.position.x, this.moon.mesh.position.y,
+      t - this.endingWaveAt < 2) ?? 0;
+    if (entries > this.endingEntries) {
+      for (let index = this.endingEntries; index < entries; index++) this.audio.note(index % 5);
+      this.endingEntries = entries;
+    }
+    this.wall.setEndingHalo(t);
+    if (t >= 10 && t < 21) {
+      for (let index = 0; index < TARGETS.length; index++) {
+        const peelAt = 10 + index * 0.65;
+        const st = this.stencils[index];
+        if (t < peelAt + 0.45) {
+          const peel = ease((t - peelAt) / 0.45);
+          const scale = 0.12 / st.h;
+          const row = Math.floor(index / 6);
+          const column = index % 6;
+          const startX = -0.40 + column * 0.16;
+          const startY = row === 0 ? 0.02 : -0.135;
+          const x = startX + (0.48 - startX) * peel;
+          this.painter.creature(st, x, startY + 0.10 * Math.sin(peel * Math.PI),
+            scale * (1 - peel * 0.25), peel * 0.25, false,
+            Math.sin(this.animationTime * 3 + index) > 0.95, 0.95 * (1 - peel), peel, this.animationTime);
+        }
+        if (t >= peelAt && this.endingNotes <= index) {
+          this.audio.note(index + 2);
+          this.endingNotes = index + 1;
+        }
+        if (t >= peelAt + 0.45 && this.endingLeaps <= index) {
+          this.wall.leap(TARGETS[index].id, st, this.animationTime);
+          this.endingLeaps = index + 1;
+        }
+      }
+    }
+    if (t >= 20 && t < 26 && this.endingWaveAt === -Infinity) {
+      const sources = this.handMask ? this.hands : this.mothDemoHands;
+      for (let side = 0; side < 2; side++) {
+        const hand = sources[side];
+        const history = this.endingWaveHistory[side];
+        if (!hand?.valid) { history.length = 0; continue; }
+        const joints = hand.joints;
+        const wristX = joints[0] * this.frame.rx + joints[1] * this.frame.ry + joints[2] * this.frame.rz;
+        const open = !this.handMask || this.openPalm(joints);
+        history.push({ t: this.animationTime, x: wristX, open });
+        while (history.length && history[0].t < this.animationTime - 1.5) history.shift();
+        if (detectWave(history)) {
+          this.endingWaveAt = t;
+          this.audio.chime(5);
+          break;
+        }
+      }
+    }
+    const waveAge = t - this.endingWaveAt;
+    if (waveAge >= 0 && waveAge < 0.45) this.moon.mesh.scale.y *= 1 - 0.25 * Math.sin(waveAge / 0.45 * Math.PI);
+    this.wall.cheer(t >= 10 ? Math.min(0.5, ease((t - 10) / 1)) : 0,
+      waveAge >= 0 && waveAge < 2 ? 1 : 0);
+    if (t < 3.5) this.painter.caption('Even moths only wanted the light.', 1, -0.275);
+    else if (t < 6) this.painter.caption('', 0, -0.275);
+    else if (t < 20) {
+      const count = Math.min(total, entries * Math.ceil(total / Math.max(1, Math.min(40, total))));
+      this.painter.caption(`${count} sparks home.`, 1, -0.275);
+    } else if (t < 26) this.painter.caption('Wave goodnight.', 1, -0.275);
+    else if (t < 28) this.painter.caption('The shadow-world is awake.', 1, -0.275);
+    else this.painter.caption('Come back tomorrow night.', 1, -0.275);
+    perf?.play.push(performance.now() - began);
+  }
+
+  private openPalm(joints: Float32Array): boolean {
+    let open = 0;
+    for (const [base, tip] of [[5, 9], [10, 14], [15, 19], [20, 24]]) {
+      const b = base * 3, e = tip * 3;
+      const near = Math.hypot(joints[b] - joints[0], joints[b + 1] - joints[1], joints[b + 2] - joints[2]);
+      const far = Math.hypot(joints[e] - joints[0], joints[e + 1] - joints[1], joints[e + 2] - joints[2]);
+      if (far > near * 1.3) open++;
+    }
+    return open >= 3;
+  }
+
+  private finishEnding(): void {
+    this.saved.v3!.complete = true;
+    save(this.saved);
+    this.wall.cheer(0);
+    this.playView?.hideEnding();
+    this.finaleX.fill(0);
+    this.inventBorn = false;
+    this.inventStable = 0;
+    this.inventPrev.area = 0;
+    this.makeInventPose();
+    this.enter(Phase.Invent);
   }
 
 }

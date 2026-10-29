@@ -90,6 +90,8 @@ async function snapshot(page) {
       memorySave: JSON.parse(JSON.stringify(theater.saved)),
       persisted,
       moonPhase: theater.moon?.phase ?? null,
+      moonScale: theater.moon?.mesh?.scale?.x ?? null,
+      moonQueen: theater.moon?.queen ?? null,
       moonSignature,
     };
   });
@@ -263,7 +265,13 @@ async function checkLegacyCampaign(browser, errors) {
       console.log(`PASS: night ${night} ${nightResult.home}/${nightResult.total} home, ${nightResult.stars} stars, ${fireflies} fireflies`);
     }
 
-    await page.reload({ waitUntil: 'load' });
+    // Night 8 now has a 30 s Home/Finale beat. Let it persist completion before
+    // checking the next daily night, whose moon returns to its normal corner form.
+    await advance(page, 660);
+    state = await snapshot(page);
+    assert(state.persisted?.v3?.complete === true,
+      `night 8 ending did not complete before reload: ${JSON.stringify(state)}`);
+    await page.goto(urlFor({ capture: '', demo: '', night: '9', seed: '21030' }), { waitUntil: 'load' });
     await page.waitForFunction(() => typeof window.__capture?.state === 'function'
       && window.__theater?.saved?.v3, null, { timeout: 60_000 });
     state = await snapshot(page);
@@ -272,8 +280,11 @@ async function checkLegacyCampaign(browser, errors) {
       `eight-night campaign did not persist night 9: ${JSON.stringify(finalProgress)}`);
     assert(finalProgress.fireflies === fireflies,
       `fireflies did not survive reload: ${finalProgress.fireflies} vs ${fireflies}`);
-    assert(Math.abs(state.moonPhase - previousMoon) < 1e-9,
-      `moon phase did not survive reload: ${state.moonPhase} vs ${previousMoon}`);
+    assert(finalProgress.complete === true,
+      `ending completion did not survive reload: ${JSON.stringify(finalProgress)}`);
+    assert(state.moonScale === 1 && state.moonQueen === true
+      && Number.isFinite(state.moonPhase) && state.moonPhase >= 0 && state.moonPhase <= 1,
+    `daily moon did not return to its corner form with the Queen: ${JSON.stringify(state)}`);
     assertNoErrors(errors, 'legacy campaign and reload');
     return { nights, finalProgress, moonSignature: state.moonSignature };
   } finally {

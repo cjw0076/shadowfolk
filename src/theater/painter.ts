@@ -214,6 +214,7 @@ export class ScreenPainter {
   private progressTotal = -1;
   private progressCalled = false;
   private lastPerfText = 0;
+  private largeCaptions = false;
 
   constructor(private readonly xrStatusLine: () => string) {
     [this.canvas, this.ctx] = canvas(CW, CH);
@@ -357,6 +358,8 @@ export class ScreenPainter {
     this.sparksMesh.material.color.setScalar(value);
   }
 
+  setLargeCaptions(value: boolean): void { this.largeCaptions = value; }
+
   /** Washi paper with fibres, warmly lit around the lantern's footprint. */
   paintPaper(lightX: number, lightY: number): HTMLCanvasElement {
     if (this.paperReady && lightX === this.paperX && lightY === this.paperY) return this.canvas;
@@ -407,7 +410,7 @@ export class ScreenPainter {
     this.texture.needsUpdate = true;
   }
 
-  begin(): void {
+  begin(skipShadowClear = false): void {
     const started = perf ? performance.now() : 0;
     this.cutMesh.visible = false;
     this.glowMesh.visible = false;
@@ -422,11 +425,13 @@ export class ScreenPainter {
     this.perfXrCaption.mesh.visible = false;
     this.journeyCaption.mesh.visible = false;
     this.progressCalled = false;
-    const s = this.sctx;
-    s.setTransform(1, 0, 0, 1, 0, 0);
-    s.clearRect(0, 0, this.soft.width, this.soft.height);
-    this.handContext.setTransform(1, 0, 0, 1, 0, 0);
-    this.handContext.clearRect(0, 0, this.handCanvas.width, this.handCanvas.height);
+    if (!skipShadowClear) {
+      const s = this.sctx;
+      s.setTransform(1, 0, 0, 1, 0, 0);
+      s.clearRect(0, 0, this.soft.width, this.soft.height);
+      this.handContext.setTransform(1, 0, 0, 1, 0, 0);
+      this.handContext.clearRect(0, 0, this.handCanvas.width, this.handCanvas.height);
+    }
     this.shadowCount = 0;
     perf?.endCall('begin', started);
   }
@@ -603,7 +608,8 @@ export class ScreenPainter {
 
   private drawCaption(layer: CaptionLayer, text: string, alpha: number, y: number, small: boolean): void {
     if (!small && !this.fontReady) return;
-    if (layer.text !== text) {
+    const textKey = !small && this.largeCaptions ? `large:${text}` : text;
+    if (layer.text !== textKey) {
       const context = layer.ctx;
       context.clearRect(0, 0, layer.canvas.width, layer.canvas.height);
       const xrPerf = layer === this.perfXrCaption || layer === this.journeyCaption;
@@ -614,12 +620,12 @@ export class ScreenPainter {
       context.fillStyle = xrPerf ? '#ffe8bd' : layer === this.formCaption ? '#23160f' : '#4a3020';
       context.font = xrPerf ? '27px Arial, sans-serif' : small ? '22px Arial, sans-serif'
         : layer === this.formCaption ? 'italic 29px "Playfair Display", Georgia, serif'
-          : 'italic 34px "Playfair Display", Georgia, serif';
+        : `italic ${this.largeCaptions ? 51 : 34}px "Playfair Display", Georgia, serif`;
       context.textAlign = small ? 'left' : 'center';
       context.textBaseline = 'middle';
       context.fillText(text, small ? 12 : layer.canvas.width / 2, layer.canvas.height / 2);
       layer.mesh.material.map!.needsUpdate = true;
-      layer.text = text;
+      layer.text = textKey;
     }
     layer.y = y;
     layer.mesh.position.x = small ? -SCREEN_W / 2 + layer.canvas.width / (2 * PX) + 0.012 : 0;
