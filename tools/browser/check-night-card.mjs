@@ -2,9 +2,9 @@ import { chromium } from 'playwright';
 import { mkdirSync, writeFileSync } from 'node:fs';
 
 const base = process.env.XR_BASE ?? 'https://127.0.0.1:4178/';
-const out = process.env.XR_NIGHT_CARD_OUT ?? '../collab/codex/25-night-card-browser.json';
+const out = process.env.XR_NIGHT_CARD_OUT ?? '../collab/codex/26-night-card-browser.json';
 const errors = [];
-const result = { base, nights: [], replay: null, pageErrors: errors, passed: false };
+const result = { base, nights: [], guests: [], replay: null, pageErrors: errors, passed: false };
 const browser = await chromium.launch({ args: [
   '--ignore-certificate-errors', '--use-gl=angle', '--use-angle=vulkan',
   '--enable-features=Vulkan', '--ignore-gpu-blocklist', '--enable-gpu',
@@ -42,11 +42,16 @@ try {
       const samples = [];
       for (let frame = 0; frame < 120; frame++) {
         await window.__capture.step(0.05);
-        if ([10, 34, 48, 72, 115].includes(frame)) samples.push({
+        if ([10, 34, 48, 72, 79, 89, 113, 115].includes(frame)) samples.push({
           t: theater.phaseTime, stamped: theater.nightCard.stamped,
           starVisible: theater.nightCard.root.visible,
           moonWipe: theater.cardMoon.wipe.value,
           moonVisible: theater.cardMoon.mesh.visible,
+          moonBaseVisible: theater.cardMoonBase.mesh.visible,
+          cornerVisible: theater.moon.mesh.visible,
+          moonDiameter: theater.cardMoon.mesh.geometry.parameters.width / 1.6 * theater.cardMoon.mesh.scale.x,
+          moonX: theater.cardMoon.mesh.position.x,
+          moonY: theater.cardMoon.mesh.position.y,
           phase: theater.phase,
         });
       }
@@ -56,9 +61,40 @@ try {
     }, { night });
     result.nights.push(data);
     if (night === 2) {
-      mkdirSync('../collab/codex/25-night-card', { recursive: true });
-      await page.screenshot({ path: '../collab/codex/25-night-card/card-night2.png' });
+      mkdirSync('../collab/codex/26-night-card', { recursive: true });
+      await page.screenshot({ path: '../collab/codex/26-night-card/card-night2.png' });
     }
+  }
+
+  // Render every authored stencil through the Home card, then measure the conservative
+  // axis-aligned bounds of the tilted sprite against the 1.0 × 0.66 m paper.
+  const guestIds = await page.evaluate(async () => (await import('/src/shadow/targets.ts')).TARGETS.map(target => target.id));
+  mkdirSync('../collab/codex/26-guests', { recursive: true });
+  for (const id of guestIds) {
+    const guest = await page.evaluate(async id => {
+      const theater = window.__theater;
+      const { TARGETS } = await import('/src/shadow/targets.ts');
+      const stencil = theater.stencils[TARGETS.findIndex(target => target.id === id)];
+      theater.cardTeaser = id;
+      theater.phaseTime = 6.45;
+      await window.__capture.step(0.05);
+      const mesh = theater.painter.creatures[0].mesh;
+      const width = Math.abs(mesh.scale.x), height = Math.abs(mesh.scale.y);
+      const cosine = Math.abs(Math.cos(mesh.rotation.z)), sine = Math.abs(Math.sin(mesh.rotation.z));
+      const halfWidth = (width * cosine + height * sine) / 2;
+      const halfHeight = (height * cosine + width * sine) / 2;
+      const left = mesh.position.x - halfWidth, right = mesh.position.x + halfWidth;
+      const bottom = mesh.position.y - halfHeight, top = mesh.position.y + halfHeight;
+      const insideWidth = Math.max(0, Math.min(0.5, right) - Math.max(-0.5, left));
+      const insideHeight = Math.max(0, Math.min(0.33, top) - Math.max(-0.33, bottom));
+      const inside = insideWidth * insideHeight / (4 * halfWidth * halfHeight);
+      return { id, t: theater.phaseTime, inside, width, height,
+        x: mesh.position.x, y: mesh.position.y, left, right, bottom, top,
+        leanDegrees: -mesh.rotation.z * 180 / Math.PI, flipped: mesh.scale.x < 0,
+        eyes: stencil.eyes };
+    }, id);
+    result.guests.push(guest);
+    await page.screenshot({ path: `../collab/codex/26-guests/${id}.png` });
   }
 
   // Browser injected joint trials exercise the real hold gate without waiting through a whole Crossing.
@@ -112,9 +148,18 @@ try {
     return { seed, night, trials };
   });
   const expected = ['snail', 'dog', 'duck'];
-  result.passed = !errors.length && result.nights.every((entry, index) =>
+  result.passed = !errors.length && result.guests.length === 11
+    && result.guests.every(guest => guest.inside >= 0.60 && Math.abs(guest.t - 6.5) < 0.01
+      && Math.abs(guest.leanDegrees - 6) < 0.01)
+    && result.nights.every((entry, index) =>
     entry.earned >= 2 && entry.samples.some(sample => sample.stamped === entry.earned)
     && entry.samples.some(sample => sample.moonVisible && sample.moonWipe > 0.2)
+    && entry.samples.some(sample => sample.t >= 3.98 && sample.t <= 4.08
+      && sample.moonVisible && sample.moonBaseVisible && !sample.cornerVisible
+      && Math.abs(sample.moonDiameter - 0.22) <= 0.01
+      && Math.abs(sample.moonX) < 0.01 && Math.abs(sample.moonY - 0.10) < 0.01)
+    && entry.samples.some(sample => sample.t >= 5.65 && sample.t <= 5.75
+      && !sample.moonVisible && !sample.moonBaseVisible && sample.cornerVisible)
     && Math.abs(entry.actualAfter - entry.storedFill) < 1e-6
     && entry.teaser === expected[index])
     && result.replay.trials.still.every(trial => trial.restarted && trial.night === result.replay.night && trial.seed === result.replay.seed)

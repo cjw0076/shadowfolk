@@ -49,14 +49,14 @@ export class NightCardView {
       const star = new Mesh(new PlaneGeometry(0.102, 0.102), new MeshBasicMaterial({
         map: this.outline, transparent: true, depthWrite: false, toneMapped: false,
       }));
-      star.position.set((i - 1) * 0.105, 0, 0.0032);
+      star.position.set((i - 1) * 0.105, -0.16, 0.0032);
       star.renderOrder = 8;
       this.root.add(star);
       this.stars.push(star);
       const ring = new Mesh(new PlaneGeometry(0.15, 0.15), new MeshBasicMaterial({
         map: this.splash, transparent: true, depthWrite: false, toneMapped: false,
       }));
-      ring.position.set(star.position.x, 0, 0.0033);
+      ring.position.set(star.position.x, star.position.y, 0.0033);
       ring.renderOrder = 9;
       this.root.add(ring);
       this.rings.push(ring);
@@ -65,7 +65,8 @@ export class NightCardView {
       const spark = new Mesh(new PlaneGeometry(0.012, 0.012), new MeshBasicMaterial({
         map: this.filled, transparent: true, opacity: 0, depthWrite: false, toneMapped: false,
       }));
-      spark.position.set(0.40 - 0.11 * Math.sin(i / 8 * Math.PI), -0.22 + i / 8 * 0.46, 0.0034);
+      const along = i / 8;
+      spark.position.set(0.40 * (1 - along), -0.22 + 0.32 * along + 0.035 * Math.sin(along * Math.PI), 0.0034);
       spark.renderOrder = 9;
       spark.visible = false;
       this.root.add(spark);
@@ -95,7 +96,7 @@ export class NightCardView {
         ring.scale.setScalar(0.72 + age * 1.6);
       }
     }
-    const travel = (t - 3) / 2;
+    const travel = (t - 3.6) / 1.4;
     for (let i = 0; i < this.arc.length; i++) {
       const age = travel - i / (this.arc.length - 1);
       const spark = this.arc[i];
