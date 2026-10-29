@@ -25,6 +25,9 @@ export interface MothAgent {
   phaseTime: number;
   angle: number;
   paperX: number;
+  paperY: number;
+  intro: boolean;
+  hitSide: number;
   flap: number;
   opacity: number;
   swats: number;
@@ -64,7 +67,8 @@ function setPhase(agent: MothAgent, phase: MothPhase): void {
 export class MothWorld {
   readonly agents: MothAgent[] = Array.from({ length: ALL_COUNT }, (_, index) => ({
     phase: 'hidden', queen: index === SMALL_COUNT, x: 0, y: 0, z: 0, age: 0, phaseTime: 0,
-    angle: 0, paperX: 0, flap: 0, opacity: 0, swats: 0, dives: 0,
+    angle: 0, paperX: 0, paperY: 0.2, intro: false, hitSide: -1,
+    flap: 0, opacity: 0, swats: 0, dives: 0,
   }));
   onEvent?: (event: MothEvent, agent: MothAgent) => void;
   night = 0;
@@ -84,6 +88,8 @@ export class MothWorld {
   private random = 1;
   private previousJoints = [new Float32Array(75), new Float32Array(75)];
   private previousValid = [false, false];
+  private moonStart: MothPoint | null = null;
+  private spawned = 0;
 
   start(night: number, seed: number, lunarPhase: number): void {
     this.night = night;
@@ -94,6 +100,8 @@ export class MothWorld {
     this.random = seed | 0 || 1;
     this.nextSpawn = night >= 6 && !this.festival ? night === 8 ? 6 : 4 : Infinity;
     this.previousValid[0] = this.previousValid[1] = false;
+    this.moonStart = null;
+    this.spawned = 0;
     for (const agent of this.agents) {
       agent.phase = 'hidden'; agent.age = agent.phaseTime = agent.opacity = agent.swats = agent.dives = 0;
     }
@@ -108,8 +116,11 @@ export class MothWorld {
     if (!agent) return null;
     this.random = (Math.imul(this.random, 1664525) + 1013904223) | 0;
     agent.paperX = (((this.random >>> 8) & 1023) / 1023 - 0.5) * 0.42;
+    agent.intro = this.night === 6 && this.spawned++ === 0;
+    agent.paperY = agent.intro ? 0.30 : 0.20;
+    agent.hitSide = -1;
     agent.x = stage.paper.x + stage.right.x * agent.paperX;
-    agent.y = stage.paper.y + 0.20;
+    agent.y = stage.paper.y + agent.paperY;
     agent.z = stage.paper.z + stage.right.z * agent.paperX;
     agent.age = agent.phaseTime = agent.swats = agent.dives = 0;
     agent.angle = 0;
@@ -120,14 +131,17 @@ export class MothWorld {
   }
 
   beginQueenVictory(): void {
-    if (!this.queenStarted || this.winning) return;
+    if (this.winning) return;
     this.winning = true;
     this.nextSpawn = Infinity;
     for (const agent of this.agents) {
       if (!agent.queen && agent.phase !== 'hidden') setPhase(agent, 'depart');
     }
     const queen = this.agents[SMALL_COUNT];
-    if (queen.phase !== 'hidden') setPhase(queen, 'moon');
+    // The last look is back at the small lantern before she chooses the moon.
+    this.moonStart = null;
+    queen.opacity = 1;
+    setPhase(queen, 'moon');
   }
 
   update(dt: number, stage: MothStage, hands: readonly MothHand[], controllers: readonly (MothPoint | null)[] = []): void {
@@ -147,7 +161,12 @@ export class MothWorld {
       agent.flap = Math.sin(agent.age * (agent.queen ? 9 : 22));
       if (agent.phase === 'paper') {
         agent.opacity = Math.min(1, agent.phaseTime / 0.25);
-        if (agent.phaseTime >= PAPER_SECONDS) {
+        if (agent.intro) {
+          const progress = Math.min(1, agent.phaseTime / 2.5);
+          agent.paperY = 0.30 - 0.16 * progress;
+          agent.y = stage.paper.y + agent.paperY;
+        }
+        if (agent.phaseTime >= (agent.intro ? 2.5 : PAPER_SECONDS)) {
           setPhase(agent, agent.queen ? 'queenOrbit' : 'approach');
           this.peeled++;
           this.onEvent?.('peel', agent);
@@ -177,9 +196,14 @@ export class MothWorld {
       } else if (agent.phase === 'queenDive') {
         advanceToward(agent, stage.flame.x, stage.flame.y, stage.flame.z, 0.55 * step);
       } else if (agent.phase === 'moon') {
-        const fraction = Math.min(1, agent.phaseTime / 3);
-        advanceToward(agent, stage.moon.x, stage.moon.y, stage.moon.z, 0.9 * step);
-        agent.opacity = 1 - Math.max(0, (fraction - 0.75) * 4);
+        if (!this.moonStart) this.moonStart = { x: stage.flame.x, y: stage.flame.y + 0.08, z: stage.flame.z };
+        const fraction = Math.min(1, agent.phaseTime / 3.5);
+        const eased = fraction * fraction * (3 - 2 * fraction);
+        const start = this.moonStart;
+        agent.x = start.x + (stage.moon.x - start.x) * eased;
+        agent.y = start.y + (stage.moon.y - start.y) * eased + Math.sin(Math.PI * eased) * 0.10;
+        agent.z = start.z + (stage.moon.z - start.z) * eased - Math.sin(Math.PI * eased) * 0.11;
+        agent.opacity = 1 - Math.max(0, (fraction - 0.88) / 0.12);
         if (fraction >= 1) {
           this.queenOnMoon = true;
           setPhase(agent, 'hidden');
@@ -208,9 +232,11 @@ export class MothWorld {
         this.onEvent?.('shoo', agent);
         continue;
       }
-      if (this.swatted(agent, hands, controllers, step)) {
+      const hitSide = this.swatted(agent, hands, controllers, step);
+      if (hitSide >= 0) {
         this.shooed++;
         agent.swats++;
+        agent.hitSide = hitSide;
         setPhase(agent, agent.queen ? 'queenOrbit' : 'tumble');
         if (agent.queen) agent.phaseTime = -3;
         this.onEvent?.('shoo', agent);
@@ -277,7 +303,7 @@ export class MothWorld {
     return false;
   }
 
-  private swatted(agent: MothAgent, hands: readonly MothHand[], controllers: readonly (MothPoint | null)[], dt: number): boolean {
+  private swatted(agent: MothAgent, hands: readonly MothHand[], controllers: readonly (MothPoint | null)[], dt: number): number {
     const baseReach = agent.queen ? 0.12 : 0.06;
     for (let side = 0; side < Math.min(2, hands.length); side++) {
       const hand = hands[side];
@@ -288,12 +314,13 @@ export class MothWorld {
         const speed = this.previousValid[side]
           ? Math.hypot(x - previous[joint], y - previous[joint + 1], z - previous[joint + 2]) / Math.max(dt, 1 / 240) : 0;
         const reach = agent.queen ? baseReach : speed > 0.6 ? 0.09 : baseReach;
-        if ((x - agent.x) ** 2 + (y - agent.y) ** 2 + (z - agent.z) ** 2 < reach * reach) return true;
+        if ((x - agent.x) ** 2 + (y - agent.y) ** 2 + (z - agent.z) ** 2 < reach * reach) return side;
       }
     }
-    for (const controller of controllers) {
-      if (controller && distanceSquared(agent.x, agent.y, agent.z, controller) < baseReach * baseReach) return true;
+    for (let side = 0; side < controllers.length; side++) {
+      const controller = controllers[side];
+      if (controller && distanceSquared(agent.x, agent.y, agent.z, controller) < baseReach * baseReach) return side;
     }
-    return false;
+    return -1;
   }
 }

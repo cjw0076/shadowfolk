@@ -1,6 +1,6 @@
 import {
   AdditiveBlending, CanvasTexture, Color, DynamicDrawUsage, Group, InstancedBufferAttribute, InstancedMesh, LinearFilter, Mesh, MeshBasicMaterial,
-  Object3D, PlaneGeometry, SRGBColorSpace,
+  Object3D, PlaneGeometry, RingGeometry, SRGBColorSpace,
 } from '@iwsdk/core';
 import { InkField } from './ink-field.js';
 import { FolkWorld } from './folk.js';
@@ -52,6 +52,8 @@ export class PlayView {
   private readonly terrainCanvas: HTMLCanvasElement;
   private readonly terrainContext: CanvasRenderingContext2D;
   private readonly wash: Mesh<PlaneGeometry, MeshBasicMaterial>;
+  private readonly moonbeam: Mesh<PlaneGeometry, MeshBasicMaterial>;
+  private readonly moonRing: Mesh<RingGeometry, MeshBasicMaterial>;
   private debugContext: CanvasRenderingContext2D | null = null;
   private debugPixels: ImageData | null = null;
   private debugAt = -Infinity;
@@ -105,6 +107,22 @@ export class PlayView {
     this.wash.renderOrder = 13;
     this.wash.visible = false;
     this.root.add(this.wash);
+    this.moonbeam = new Mesh(new PlaneGeometry(1, 1), new MeshBasicMaterial({
+      color: '#ffe2a0', transparent: true, opacity: 0, depthWrite: false,
+      toneMapped: false, blending: AdditiveBlending,
+    }));
+    this.moonbeam.renderOrder = 5.8;
+    this.moonbeam.position.z = 0.003;
+    this.moonbeam.visible = false;
+    this.root.add(this.moonbeam);
+    this.moonRing = new Mesh(new RingGeometry(0.145, 0.15, 64), new MeshBasicMaterial({
+      color: '#ffe4a3', transparent: true, opacity: 0, depthWrite: false,
+      toneMapped: false, blending: AdditiveBlending,
+    }));
+    this.moonRing.renderOrder = 8.8;
+    this.moonRing.position.z = 0.004;
+    this.moonRing.visible = false;
+    this.root.add(this.moonRing);
     this.halo = this.instances(kindlingHalo(), 48, 6.5);
     this.halo.material.blending = AdditiveBlending;
     this.halo.geometry.scale(0.085 / 0.067, 0.085 / 0.067, 1);
@@ -209,6 +227,83 @@ export class PlayView {
     this.wash.visible = amount > 0;
     this.wash.scale.x = Math.max(0.001, Math.min(1, amount));
     this.wash.position.x = -0.5 + this.wash.scale.x * 0.5;
+  }
+
+  /** The saved Kindlings climb from the moon door; only instance transforms change. */
+  showEnding(t: number, total: number, moonX: number, moonY: number, waveBack: boolean): number {
+    this.root.visible = true;
+    this.terrain.visible = true;
+    this.wash.visible = false;
+    this.ash.count = this.sparkle.count = 0;
+    const count = Math.min(40, Math.max(0, Math.floor(total)));
+    const entered = Math.min(count, Math.floor(Math.max(0, t - 6) / 10 * count));
+    const fromX = 0.43, fromY = -0.11;
+    const endY = moonY - 0.13;
+    const dx = moonX - fromX, dy = endY - fromY;
+    const length = Math.hypot(dx, dy);
+    this.moonbeam.visible = t >= 6 && t <= 20;
+    this.moonbeam.material.opacity = 0.17 * Math.min(1, (t - 6) / 0.6) * Math.min(1, (20 - t) / 1.5);
+    this.moonbeam.position.set((fromX + moonX) / 2, (fromY + endY) / 2, 0.003);
+    this.moonbeam.rotation.z = Math.atan2(dy, dx) - Math.PI / 2;
+    this.moonbeam.scale.set(0.04, length, 1);
+    const ringProgress = (t - 3.5) / 1.5;
+    this.moonRing.visible = ringProgress >= 0 && ringProgress <= 1;
+    this.moonRing.position.set(moonX, moonY, 0.004);
+    this.moonRing.scale.setScalar(1 + ringProgress * 1.5);
+    this.moonRing.material.opacity = 0.55 * (1 - ringProgress);
+    let visible = 0;
+    if (t >= 6 && t < 20) {
+      for (let index = entered; index < count; index++) {
+        const progress = (t - 6 - index * 10 / Math.max(1, count)) / 1.2;
+        if (progress < 0 || progress >= 1) continue;
+        const e = progress * progress * (3 - 2 * progress);
+        const x = fromX + dx * e + Math.sin(progress * Math.PI * 2 + index) * 0.008;
+        const y = fromY + dy * e + Math.sin(progress * Math.PI) * 0.025;
+        this.transform.position.set(x, y, 0.005);
+        this.transform.scale.set(0.063, 0.063, 1);
+        this.transform.rotation.z = -0.15 * Math.sin(progress * Math.PI);
+        this.transform.updateMatrix();
+        this.folk.setMatrixAt(visible, this.transform.matrix);
+        this.frames.setX(visible, KINDLING_FRAMES.walk[Math.floor(t * 8 + index) & 3]);
+        visible++;
+      }
+    }
+    let flashes = 0;
+    if (t >= 6 && t < 17) {
+      for (let index = Math.max(0, entered - 3); index < entered; index++) {
+        const age = t - (6 + (index + 1) * 10 / Math.max(1, count));
+        if (age < 0 || age > 0.4) continue;
+        this.transform.position.set(moonX + 0.025 * Math.sin(index * 2.4),
+          endY + 0.04, 0.006);
+        this.transform.scale.setScalar(0.06 * (1 - age / 0.4));
+        this.transform.rotation.z = 0;
+        this.transform.updateMatrix();
+        this.sparkle.setMatrixAt(flashes++, this.transform.matrix);
+      }
+    }
+    this.sparkle.count = flashes;
+    this.sparkle.instanceMatrix.needsUpdate = flashes > 0;
+    if (t >= 20) {
+      for (let index = 0; index < 3; index++) {
+        this.transform.position.set(-0.14 + index * 0.14, -0.18 + (waveBack ? Math.abs(Math.sin(t * 12 + index)) * 0.012 : 0), 0.005);
+        this.transform.scale.set(0.073, 0.073, 1);
+        this.transform.rotation.z = 0;
+        this.transform.updateMatrix();
+        this.folk.setMatrixAt(visible, this.transform.matrix);
+        this.frames.setX(visible, waveBack ? KINDLING_FRAMES.cheer : KINDLING_FRAMES.idle);
+        visible++;
+      }
+    }
+    this.folk.count = this.halo.count = visible;
+    this.folk.instanceMatrix.needsUpdate = visible > 0;
+    this.frames.needsUpdate = visible > 0;
+    return entered;
+  }
+
+  hideEnding(): void {
+    this.moonbeam.visible = this.moonRing.visible = false;
+    this.folk.count = this.halo.count = 0;
+    this.root.visible = false;
   }
 
   private instances(texture: CanvasTexture, capacity: number, order: number): InstancedMesh<PlaneGeometry, MeshBasicMaterial> {

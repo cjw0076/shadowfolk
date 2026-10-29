@@ -8,6 +8,7 @@ const shot = JSON.parse(readFileSync(shotPath, 'utf8'));
 const fps = shot.fps ?? 30;
 const seconds = shot.seconds;
 const frames = Math.round(seconds * fps);
+const audioOnly = process.env.XR_AUDIO_ONLY === '1';
 const width = shot.width ?? 1920;
 const height = shot.height ?? 1080;
 if (!(fps >= 20 && seconds > 0 && frames > 0)) throw new Error('XR capture needs fps >= 20 and positive seconds');
@@ -164,7 +165,7 @@ try {
       });
       process.stdout.write(`dbg ${frame} ${JSON.stringify(d)}\n`);
     }
-    await page.screenshot({ path: `${outDir}/frames/f${String(frame).padStart(5, '0')}.png`, timeout: 120000 });
+    if (!audioOnly) await page.screenshot({ path: `${outDir}/frames/f${String(frame).padStart(5, '0')}.png`, timeout: 120000 });
     if (frame % 30 === 0) process.stdout.write(`frame ${frame}/${frames}\n`);
   }
   const frameTimeMs = (Date.now() - began) / frames;
@@ -172,6 +173,10 @@ try {
     const control = window.__capture;
     const original = control.cues;
     control.cues = original.slice(startCue).map((cue) => ({ ...cue, t: cue.t - startTime }));
+    // A long cue can begin during warmup and still sound at frame zero.
+    const queenSwell = original.slice(0, startCue).filter((cue) => cue.kind === 'play'
+      && cue.arg === 'queen-swell' && startTime - cue.t < 3.5).at(-1);
+    if (queenSwell) control.cues.unshift({ ...queenSwell, t: 0 });
     const priorHold = original.slice(0, startCue).filter((cue) => cue.kind === 'hold').at(-1);
     if (priorHold) control.cues.unshift({ ...priorHold, t: 0 });
     try { return await control.renderAudio(seconds); }
