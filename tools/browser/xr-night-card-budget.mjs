@@ -5,7 +5,7 @@ import { loadavg } from 'node:os';
 const base = process.env.XR_BASE ?? 'https://127.0.0.1:4178/';
 const url = new URL(base);
 url.search = 'capture=keepdom&demo&crossingOnly&night=2&seed=25025&perf';
-const output = process.env.XR_NIGHT_CARD_BUDGET_OUT ?? '../collab/codex/25-night-card-budget.json';
+const output = process.env.XR_NIGHT_CARD_BUDGET_OUT ?? '../collab/codex/26-night-card-budget.json';
 const errors = [];
 const percentile = (values, fraction) => {
   const sorted = values.filter(Number.isFinite).sort((a, b) => a - b);
@@ -56,7 +56,8 @@ try {
   const readings = await page.evaluate(async () => {
     const t = window.__theater, perf = window.__perf;
     const textures = [t.painter.softTexture, t.painter.texture, t.moon.texture,
-      t.cardMoon.texture, t.nightCard.filled, t.nightCard.outline, t.nightCard.splash,
+      t.cardMoonBase.texture, t.cardMoon.texture,
+      t.nightCard.filled, t.nightCard.outline, t.nightCard.splash,
       ...t.painter.captions.map(layer => layer.mesh.material.map), t.wall.texture];
     const before = textures.map(texture => texture.version);
     for (const key of ['play', 'update']) perf[key].count = 0;

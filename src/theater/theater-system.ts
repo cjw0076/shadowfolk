@@ -388,12 +388,14 @@ export class TheaterSystem extends createSystem({
   private fresh = -1; // index into TARGETS of tonight's newly joined creature
   private nightTitle = '';
   private moon = new Moon(0.11);
+  private cardMoonBase = new Moon(0.11);
   private cardMoon = new Moon(0.11);
   private nightCard = new NightCardView();
   private cardMoonBefore = 0;
   private cardMoonAfter = 0;
   private cardNewBest = false;
   private cardMoonFlash = false;
+  private cardCornerCommitted = false;
   private cardTeaser = '';
   private replayHold = [0, 0];
   private replayWrist = [new Vector3(), new Vector3()];
@@ -622,8 +624,11 @@ export class TheaterSystem extends createSystem({
     // Tonight's moon sits in the paper's top-left corner, under the shadows.
     this.moon.mesh.position.set(SCREEN_W / 2 - 0.095, SCREEN_H / 2 - 0.09, 0.0002);
     this.painter.root.add(this.moon.mesh);
+    this.cardMoonBase.mesh.visible = false;
+    this.cardMoonBase.mesh.renderOrder = 0.51;
+    this.painter.root.add(this.cardMoonBase.mesh);
     this.cardMoon.mesh.visible = false;
-    this.cardMoon.mesh.renderOrder = 0.51;
+    this.cardMoon.mesh.renderOrder = 0.52;
     this.painter.root.add(this.cardMoon.mesh);
     this.painter.root.add(this.nightCard.root);
     const cap = captureControl();
@@ -872,6 +877,7 @@ export class TheaterSystem extends createSystem({
     this.crossing.start(night, this.activeCrossingSeed, hazards,
       this.crossingOnly && Number.isSafeInteger(count) && count > 0 ? Math.min(40, count) : undefined);
     this.moths.start(night, this.activeCrossingSeed, moonPhase());
+    this.cardMoonBase.mesh.visible = false;
     this.cardMoon.mesh.visible = false;
     this.nightCard.reset();
     this.replayHold[0] = this.replayHold[1] = 0;
@@ -950,12 +956,21 @@ export class TheaterSystem extends createSystem({
     this.moon.setPhase(crossing.night > 8 ? moonPhase() : 0.5 * (crossing.night === 8 ? this.cardMoonAfter : this.cardMoonBefore));
     this.moon.setStars(crossing.stars);
     if (crossing.night !== 8) {
+      this.cardMoonBase.setPhase(crossing.night > 8 ? moonPhase() : 0.5 * this.cardMoonBefore);
+      this.cardMoonBase.setStars(crossing.stars);
+      this.cardMoonBase.mesh.position.copy(this.moon.mesh.position);
+      this.cardMoonBase.mesh.position.z += 0.0002;
+      this.cardMoonBase.mesh.scale.setScalar(1);
+      this.cardMoonBase.mesh.visible = false;
       this.cardMoon.setPhase(crossing.night > 8 ? moonPhase() : 0.5 * this.cardMoonAfter);
+      this.cardMoon.setStars(crossing.stars);
       this.cardMoon.setWipe(0);
       this.cardMoon.mesh.position.copy(this.moon.mesh.position);
-      this.cardMoon.mesh.position.z += 0.0002;
+      this.cardMoon.mesh.position.z += 0.0004;
+      this.cardMoon.mesh.scale.setScalar(1);
       this.cardMoon.mesh.visible = false;
       this.cardMoonFlash = false;
+      this.cardCornerCommitted = false;
       const next = arcNight(crossing.night + 1, this.activeCrossingSeed).wakes[0];
       this.cardTeaser = next ?? '';
       this.nightCard.reset();
@@ -3357,31 +3372,48 @@ export class TheaterSystem extends createSystem({
     const crossing = this.crossing!;
     const t = this.phaseTime;
     this.nightCard.update(t, crossing.stars, index => this.audio.chime(index + 1));
-    if (t < 1.2) {
-      this.painter.caption(`${crossing.home} / ${crossing.total} home`, 1, 0.10);
-    } else if (t < 3) {
-      if (this.cardNewBest) this.painter.caption('A new best.', 0.9, -0.15);
-    } else if (t < 5) {
-      this.cardMoon.mesh.visible = true;
-      this.cardMoon.setWipe(ease((t - 3) / 2));
-      if (!this.cardMoonFlash) {
+    if (t >= 3) {
+      if (!this.cardCornerCommitted) {
+        this.moon.setPhase(crossing.night > 8 ? moonPhase() : 0.5 * this.cardMoonAfter);
+        this.cardCornerCommitted = true;
+      }
+      const out = ease((t - 3) / 0.6);
+      const back = ease((t - 5) / 0.6);
+      const away = out * (1 - back);
+      const corner = this.moon.mesh.position;
+      for (const layer of [this.cardMoonBase.mesh, this.cardMoon.mesh]) {
+        layer.position.set(corner.x * (1 - away), corner.y * (1 - away) + 0.10 * away, layer.position.z);
+        layer.scale.setScalar(1 + away); // 0.11 m corner disc → 0.22 m hero disc
+        layer.visible = t < 5.6;
+      }
+      this.moon.mesh.visible = t >= 5.6;
+      this.cardMoon.setWipe(ease((t - 3.6) / 1.4));
+      if (t >= 3.6 && !this.cardMoonFlash) {
         this.cardMoon.arrive(crossing.night > 8 ? moonPhase() : 0.5 * this.cardMoonAfter);
         this.cardMoonFlash = true;
       }
       this.cardMoon.update(dt);
-      this.painter.caption(arcNight(crossing.night, this.activeCrossingSeed).moon, 1, -0.23);
+    }
+    if (t < 1.2) {
+      this.painter.caption(`${crossing.home} / ${crossing.total} home`, 1, 0.10);
+    } else if (t < 3) {
+      if (this.cardNewBest) this.painter.caption('A new best.', 0.9, -0.25);
+    } else if (t < 5) {
+      if (t >= 3.6) this.painter.caption(arcNight(crossing.night, this.activeCrossingSeed).moon, 1, -0.07);
     } else {
-      this.cardMoon.mesh.visible = true;
-      this.cardMoon.setWipe(1);
-      this.cardMoon.update(dt);
       if (crossing.night > 8) this.painter.caption(DAILY_MOOD, 1, -0.23);
       else if (this.cardTeaser) {
         const next = TARGETS.findIndex(target => target.id === this.cardTeaser);
         const st = this.stencils[next];
         if (st) {
           const peek = ease((t - 5) / 0.8);
-          this.painter.creature(st, -SCREEN_W / 2 - st.w * 0.5 + st.w * 0.45 * peek,
-            -0.05, 0.6, 0.1, false, Math.sin(this.animationTime * 3) > 0.9, 0.85 * peek);
+          const scale = 0.85;
+          const width = st.w * scale;
+          const visibleWidth = 0.70 * peek;
+          const meshX = -SCREEN_W / 2 + (visibleWidth - 0.5) * width;
+          const flip = this.cardTeaser === 'duck' || this.cardTeaser === 'dog' || this.cardTeaser === 'elephant';
+          this.painter.creature(st, meshX - st.cx * scale, -0.02, scale, Math.PI / 30,
+            flip, Math.sin(this.animationTime * 3) > 0.9, 0.85 * peek);
           this.painter.caption(TOMORROW_HINTS[this.cardTeaser], 1, -0.23);
         }
       } else this.painter.caption('The full moon waits tomorrow.', 1, -0.23);
@@ -3394,7 +3426,8 @@ export class TheaterSystem extends createSystem({
       }
     }
     if (t >= 8) {
-      this.moon.setPhase(crossing.night > 8 ? moonPhase() : 0.5 * this.cardMoonAfter);
+      this.moon.mesh.visible = true;
+      this.cardMoonBase.mesh.visible = false;
       this.cardMoon.mesh.visible = false;
       this.nightCard.reset();
       this.enter(Phase.Finale);
